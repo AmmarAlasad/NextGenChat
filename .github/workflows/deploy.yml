@@ -1,0 +1,21 @@
+# Deployment workflow scaffold.
+# Reserved for future local/shared/cloud deployment automation described in `plan.md`.
+# Keep this placeholder so later rollout jobs have an explicit home in the repo.
+
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scaffold-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deployment scaffold notice
+        run: |
+          echo "Deployment automation is intentionally scaffold-only at this stage."
+          echo "Use this workflow as the placeholder for local/shared/cloud rollout jobs."

@@ -1,0 +1,118 @@
+/*
+ * Global Styles
+ *
+ * Defines the Antimatter UI design token palette, Tailwind v4 theme registration,
+ * global resets, and the background texture used on all pages.
+ * All color values come from the Stitch "Antimatter UI" design system (indigo primary).
+ * Dark-mode overrides follow the same token names.
+ * Add new tokens here first; never inline brand colors directly in component files.
+ */
+
+@import "tailwindcss";
+
+:root {
+  /* Background / foreground */
+  --background: #f7f9fb;
+  --foreground: #2a3439;
+
+  /* Surface hierarchy */
+  --surface: #f7f9fb;
+  --surface-low: #f0f4f7;
+  --surface-high: #e1e9ee;
+  --surface-variant: #d9e4ea;
+  --surface-container: #e8eff3;
+  --surface-container-low: #f0f4f7;
+  --surface-container-lowest: #ffffff;
+  --surface-container-high: #e1e9ee;
+
+  /* Primary accent — Antimatter UI indigo */
+  --primary: #4c58a6;
+  --primary-dim: #404c99;
+  --primary-container: #dfe0ff;
+  --on-primary: #f9f6ff;
+
+  /* On-surface text roles */
+  --on-surface: #2a3439;
+  --on-surface-variant: #566166;
+
+  /* Borders */
+  --outline: #717c82;
+  --outline-variant: #a9b4b9;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-low: var(--surface-low);
+  --color-surface-high: var(--surface-high);
+  --color-surface-variant: var(--surface-variant);
+  --color-surface-container: var(--surface-container);
+  --color-surface-container-low: var(--surface-container-low);
+  --color-surface-container-lowest: var(--surface-container-lowest);
+  --color-surface-container-high: var(--surface-container-high);
+  --color-primary: var(--primary);
+  --color-primary-dim: var(--primary-dim);
+  --color-primary-container: var(--primary-container);
+  --color-on-primary: var(--on-primary);
+  --color-on-surface: var(--on-surface);
+  --color-on-surface-variant: var(--on-surface-variant);
+  --color-outline: var(--outline);
+  --color-outline-variant: var(--outline-variant);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-headline: var(--font-manrope), "Manrope", sans-serif;
+
+  /* Typing indicator dots */
+  --animate-typing: typing 1.4s ease-in-out infinite;
+
+  @keyframes typing {
+    0%, 100% { opacity: 0.2; }
+    50%       { opacity: 1;   }
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0b0f10;
+    --foreground: #e2e8eb;
+    --surface: #0b0f10;
+    --surface-low: #161c1e;
+    --surface-high: #222c2e;
+    --surface-variant: #2c3a3c;
+    --surface-container: #1a2224;
+    --surface-container-low: #161c1e;
+    --surface-container-lowest: #111617;
+    --surface-container-high: #222c2e;
+    --primary: #9ca8fd;
+    --primary-dim: #b0bcff;
+    --primary-container: #2c3885;
+    --on-primary: #1a2260;
+    --on-surface: #e2e8eb;
+    --on-surface-variant: #9aa3a7;
+    --outline: #4a5558;
+    --outline-variant: #2e3a3c;
+  }
+}
+
+html {
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  background-image:
+    radial-gradient(circle at top left, rgba(76, 88, 166, 0.07), transparent 26%),
+    radial-gradient(circle at bottom right, rgba(83, 95, 120, 0.05), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0));
+  font-family: var(--font-geist-sans), sans-serif;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}

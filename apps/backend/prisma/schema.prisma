@@ -1,0 +1,622 @@
+/// Prisma Schema Scaffold
+///
+/// Defines the planned relational model for the full NextGenChat platform:
+/// auth, workspaces, channels, messages, agents, providers, rules, MCP,
+/// files, approvals, and future mobile/device support. Keep this file aligned
+/// with `plan.md` and prefer additive schema changes across future phases.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DeploymentMode {
+  LOCAL
+  NETWORK
+}
+
+enum UserStatus {
+  ACTIVE
+  LOCKED
+  DISABLED
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum ChannelType {
+  PUBLIC
+  PRIVATE
+  DIRECT
+}
+
+enum ChannelRole {
+  OWNER
+  MODERATOR
+  MEMBER
+}
+
+enum SenderType {
+  USER
+  AGENT
+}
+
+enum ContentType {
+  TEXT
+  MARKDOWN
+  FILE
+  SYSTEM
+}
+
+enum AgentStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum AgentTriggerMode {
+  MENTIONS_ONLY
+  ALL_MESSAGES
+  DISABLED
+}
+
+enum MemoryScope {
+  GLOBAL
+  CHANNEL
+  USER
+}
+
+enum RuleAction {
+  BLOCK
+  ALLOW
+  LOG
+  REQUIRE_APPROVAL
+}
+
+enum RuleScope {
+  TOOL
+  FILE
+  CHANNEL
+  AGENT
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  DENIED
+  EXPIRED
+}
+
+enum McpServerStatus {
+  STOPPED
+  STARTING
+  RUNNING
+  UNHEALTHY
+  FAILED
+}
+
+enum AttachmentScanStatus {
+  PENDING
+  CLEAN
+  QUARANTINED
+  FAILED
+}
+
+enum PushPlatform {
+  IOS
+  ANDROID
+  WEB
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
+enum AgentDocType {
+  AGENT_MD
+  IDENTITY_MD
+  MEMORY_MD
+  HEARTBEAT_MD
+}
+
+model SystemSetting {
+  id        String   @id @default(uuid()) @db.Uuid
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model User {
+  id                    String                @id @default(uuid()) @db.Uuid
+  username              String                @unique
+  email                 String?               @unique
+  passwordHash          String
+  status                UserStatus            @default(ACTIVE)
+  emailVerifiedAt       DateTime?
+  failedLoginCount      Int                   @default(0)
+  lockedUntil           DateTime?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  refreshTokens         RefreshToken[]
+  passwordResetTokens   PasswordResetToken[]
+  workspaceMemberships  WorkspaceMembership[]
+  ownedWorkspaces       Workspace[]           @relation("WorkspaceOwner")
+  channelMemberships    ChannelMembership[]
+  invitesCreated        Invite[]              @relation("InviteCreator")
+  invitesAccepted       Invite[]              @relation("InviteAcceptor")
+  createdAgents         Agent[]               @relation("AgentCreator")
+  approvedAgentTools    AgentTool[]           @relation("AgentToolApprover")
+  createdRules          Rule[]                @relation("RuleCreator")
+  uploadedFiles         WorkspaceFile[]       @relation("WorkspaceFileUploader")
+  uploadedAttachments   Attachment[]          @relation("AttachmentUploader")
+  messageReactions      MessageReaction[]
+  pushTokens            PushToken[]
+  createdMcpServers     McpServer[]           @relation("McpServerCreator")
+  auditLogs             AuditLog[]            @relation("AuditActor")
+  ruleViolations        RuleViolation[]       @relation("RuleViolationReporter")
+  pendingApprovals      PendingApproval[]     @relation("PendingApprovalResolver")
+}
+
+model RefreshToken {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @db.Uuid
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  tokenHash   String   @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Workspace {
+  id                 String                @id @default(uuid()) @db.Uuid
+  ownerId            String                @db.Uuid
+  name               String
+  slug               String                @unique
+  deploymentMode     DeploymentMode        @default(LOCAL)
+  archivedAt         DateTime?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  owner              User                  @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+  memberships        WorkspaceMembership[]
+  channels           Channel[]
+  agents             Agent[]
+  rules              Rule[]
+  invites            Invite[]
+  files              WorkspaceFile[]
+  mcpServers         McpServer[]
+}
+
+model WorkspaceMembership {
+  id          String        @id @default(uuid()) @db.Uuid
+  workspaceId String        @db.Uuid
+  userId      String        @db.Uuid
+  role        WorkspaceRole
+  joinedAt    DateTime      @default(now())
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Invite {
+  id            String       @id @default(uuid()) @db.Uuid
+  workspaceId    String       @db.Uuid
+  createdBy      String       @db.Uuid
+  acceptedBy     String?      @db.Uuid
+  tokenHash      String       @unique
+  email          String?
+  status         InviteStatus @default(PENDING)
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime     @default(now())
+  workspace      Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdByUser  User         @relation("InviteCreator", fields: [createdBy], references: [id])
+  acceptedByUser User?        @relation("InviteAcceptor", fields: [acceptedBy], references: [id])
+
+  @@index([workspaceId])
+}
+
+model Channel {
+  id                String                  @id @default(uuid()) @db.Uuid
+  workspaceId       String                  @db.Uuid
+  name              String
+  type              ChannelType
+  archivedAt        DateTime?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  workspace         Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  memberships       ChannelMembership[]
+  messages          Message[]
+  summaries         ConversationSummary[]
+  agentMemberships  AgentChannelMembership[]
+
+  @@index([workspaceId])
+}
+
+model ChannelMembership {
+  id          String      @id @default(uuid()) @db.Uuid
+  channelId    String      @db.Uuid
+  userId       String      @db.Uuid
+  role         ChannelRole @default(MEMBER)
+  joinedAt     DateTime    @default(now())
+  lastReadAt   DateTime?
+  channel      Channel     @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([userId])
+}
+
+model Message {
+  id              String           @id @default(uuid()) @db.Uuid
+  channelId        String           @db.Uuid
+  senderId         String           @db.Uuid
+  senderType       SenderType
+  content          String
+  contentType      ContentType      @default(TEXT)
+  metadata         Json?
+  editedAt         DateTime?
+  deletedAt        DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  channel          Channel          @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  reactions        MessageReaction[]
+  attachments      Attachment[]
+  toolCalls        AgentToolCall[]
+
+  @@index([channelId, createdAt])
+  @@index([senderId])
+}
+
+model MessageReaction {
+  id          String   @id @default(uuid()) @db.Uuid
+  messageId    String   @db.Uuid
+  userId       String   @db.Uuid
+  emoji        String
+  createdAt    DateTime @default(now())
+  message      Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([userId])
+}
+
+model Attachment {
+  id                String               @id @default(uuid()) @db.Uuid
+  messageId          String               @db.Uuid
+  uploadedBy         String?              @db.Uuid
+  fileKey            String               @unique
+  fileName           String
+  fileSize           Int
+  mimeType           String
+  virusScanStatus    AttachmentScanStatus @default(PENDING)
+  uploadedAt         DateTime             @default(now())
+  message            Message              @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  uploadedByUser     User?                @relation("AttachmentUploader", fields: [uploadedBy], references: [id])
+
+  @@index([messageId])
+}
+
+model Agent {
+  id                 String                  @id @default(uuid()) @db.Uuid
+  workspaceId        String                  @db.Uuid
+  createdBy          String                  @db.Uuid
+  name               String
+  slug               String
+  status             AgentStatus             @default(ACTIVE)
+  triggerMode        AgentTriggerMode        @default(MENTIONS_ONLY)
+  primaryChannelId   String?                 @db.Uuid
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  workspace          Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdByUser      User                    @relation("AgentCreator", fields: [createdBy], references: [id])
+  identity           AgentIdentity?
+  memoryEntries      AgentMemory[]
+  tools              AgentTool[]
+  cronJobs           AgentCronJob[]
+  channelMemberships AgentChannelMembership[]
+  toolCalls          AgentToolCall[]
+  providerConfig     ProviderConfig?
+  oauthToken         OAuthToken?
+  summaries          ConversationSummary[]
+  files              WorkspaceFile[]
+  ruleViolations     RuleViolation[]
+
+  @@unique([workspaceId, slug])
+}
+
+model AgentIdentity {
+  id           String   @id @default(uuid()) @db.Uuid
+  agentId       String   @unique @db.Uuid
+  avatarUrl     String?
+  persona       String?
+  voiceTone     String?
+  systemPrompt  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  agent         Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+}
+
+model AgentMemory {
+  id           String      @id @default(uuid()) @db.Uuid
+  agentId       String      @db.Uuid
+  channelId     String?     @db.Uuid
+  userId        String?     @db.Uuid
+  scope         MemoryScope
+  key           String
+  value         Json
+  updatedAt     DateTime    @updatedAt
+  agent         Agent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, scope, key, channelId, userId])
+  @@index([agentId, scope])
+}
+
+model AgentTool {
+  id               String         @id @default(uuid()) @db.Uuid
+  agentId           String         @db.Uuid
+  mcpServerToolId   String?        @db.Uuid
+  toolName          String
+  config            Json?
+  requiresApproval  Boolean        @default(false)
+  approvedBy        String?        @db.Uuid
+  approvedAt        DateTime?
+  createdAt         DateTime       @default(now())
+  agent             Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  approvedByUser    User?          @relation("AgentToolApprover", fields: [approvedBy], references: [id])
+  mcpServerTool     McpServerTool? @relation(fields: [mcpServerToolId], references: [id], onDelete: SetNull)
+
+  @@unique([agentId, toolName])
+}
+
+model AgentCronJob {
+  id          String      @id @default(uuid()) @db.Uuid
+  agentId      String      @db.Uuid
+  schedule     String
+  task         String
+  lastRunAt    DateTime?
+  nextRunAt    DateTime?
+  status       AgentStatus @default(ACTIVE)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  agent        Agent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId])
+}
+
+model AgentChannelMembership {
+  id          String   @id @default(uuid()) @db.Uuid
+  agentId      String   @db.Uuid
+  channelId    String   @db.Uuid
+  addedBy      String?  @db.Uuid
+  addedAt      DateTime @default(now())
+  agent        Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  channel      Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, channelId])
+  @@index([channelId])
+}
+
+model AgentToolCall {
+  id           String    @id @default(uuid()) @db.Uuid
+  agentId       String    @db.Uuid
+  messageId     String?   @db.Uuid
+  toolName      String
+  input         Json?
+  output        Json?
+  durationMs    Int?
+  success       Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  agent         Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  message       Message?  @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  approval      PendingApproval?
+
+  @@index([agentId, createdAt])
+}
+
+model ProviderConfig {
+  id           String   @id @default(uuid()) @db.Uuid
+  agentId       String   @unique @db.Uuid
+  providerName  String
+  model         String
+  credentials   String
+  config        Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  agent         Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+}
+
+model OAuthToken {
+  id            String   @id @default(uuid()) @db.Uuid
+  agentId        String   @unique @db.Uuid
+  accessToken    String
+  refreshToken   String
+  expiresAt      DateTime
+  scope          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  agent          Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+}
+
+model ConversationSummary {
+  id                  String   @id @default(uuid()) @db.Uuid
+  channelId            String   @db.Uuid
+  agentId              String   @db.Uuid
+  summary              String
+  tokenCount           Int
+  coversFromMessageId  String
+  covesToMessageId     String
+  createdAt            DateTime @default(now())
+  channel              Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  agent                Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, agentId, createdAt])
+}
+
+model WorkspaceFile {
+  id             String               @id @default(uuid()) @db.Uuid
+  workspaceId     String?              @db.Uuid
+  agentId         String?              @db.Uuid
+  uploadedBy      String?              @db.Uuid
+  docType         AgentDocType?
+  key             String               @unique
+  fileName        String
+  fileSize        Int
+  mimeType        String
+  version         Int                  @default(1)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  workspace       Workspace?           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agent           Agent?               @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  uploadedByUser  User?                @relation("WorkspaceFileUploader", fields: [uploadedBy], references: [id])
+  versions        WorkspaceFileVersion[]
+
+  @@index([workspaceId])
+  @@index([agentId])
+}
+
+model WorkspaceFileVersion {
+  id           String        @id @default(uuid()) @db.Uuid
+  fileId        String        @db.Uuid
+  key           String        @unique
+  fileSize      Int
+  mimeType      String
+  version       Int
+  createdAt     DateTime      @default(now())
+  file          WorkspaceFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([fileId, version])
+}
+
+model Rule {
+  id            String          @id @default(uuid()) @db.Uuid
+  workspaceId    String          @db.Uuid
+  createdBy      String          @db.Uuid
+  name           String
+  description    String?
+  priority       Int             @default(100)
+  active         Boolean         @default(true)
+  condition      Json
+  action         RuleAction
+  scope          RuleScope
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdByUser  User            @relation("RuleCreator", fields: [createdBy], references: [id])
+  violations     RuleViolation[]
+
+  @@index([workspaceId, priority])
+}
+
+model RuleViolation {
+  id            String    @id @default(uuid()) @db.Uuid
+  ruleId         String    @db.Uuid
+  agentId        String?   @db.Uuid
+  reportedBy     String?   @db.Uuid
+  context        Json?
+  resolvedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  rule           Rule      @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  agent          Agent?    @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  reportedByUser User?     @relation("RuleViolationReporter", fields: [reportedBy], references: [id])
+
+  @@index([ruleId, createdAt])
+}
+
+model PendingApproval {
+  id                String         @id @default(uuid()) @db.Uuid
+  agentToolCallId    String         @unique @db.Uuid
+  resolverId         String?        @db.Uuid
+  status             ApprovalStatus @default(PENDING)
+  expiresAt          DateTime
+  resolvedAt         DateTime?
+  createdAt          DateTime       @default(now())
+  agentToolCall      AgentToolCall  @relation(fields: [agentToolCallId], references: [id], onDelete: Cascade)
+  resolver           User?          @relation("PendingApprovalResolver", fields: [resolverId], references: [id])
+}
+
+model AuditLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId    String?  @db.Uuid
+  actorId        String?  @db.Uuid
+  action         String
+  targetType     String
+  targetId       String?
+  metadata       Json?
+  signature      String?
+  createdAt      DateTime @default(now())
+  actor          User?    @relation("AuditActor", fields: [actorId], references: [id])
+}
+
+model McpServer {
+  id             String          @id @default(uuid()) @db.Uuid
+  workspaceId     String          @db.Uuid
+  createdBy       String          @db.Uuid
+  name            String
+  command         String
+  args            Json?
+  env             String?
+  status          McpServerStatus @default(STOPPED)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  workspace       Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdByUser   User            @relation("McpServerCreator", fields: [createdBy], references: [id])
+  tools           McpServerTool[]
+}
+
+model McpServerTool {
+  id             String      @id @default(uuid()) @db.Uuid
+  serverId        String      @db.Uuid
+  name            String
+  description     String?
+  inputSchema     Json?
+  approved        Boolean     @default(false)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  server          McpServer   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  agentTools      AgentTool[]
+
+  @@unique([serverId, name])
+}
+
+model PushToken {
+  id           String       @id @default(uuid()) @db.Uuid
+  userId        String       @db.Uuid
+  deviceId      String
+  platform      PushPlatform
+  token         String
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+}

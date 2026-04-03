@@ -1,0 +1,26 @@
+{
+  "name": "@nextgenchat/types",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "zod": "^3.25.17"
+  },
+  "devDependencies": {
+    "@nextgenchat/config": "workspace:*",
+    "typescript": "^6.0.2"
+  }
+}

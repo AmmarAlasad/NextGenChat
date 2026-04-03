@@ -1,0 +1,15 @@
+# pnpm workspace manifest.
+# Declares monorepo package locations and native dependencies that should be built.
+
+packages:
+  - "apps/*"
+  - "packages/*"
+onlyBuiltDependencies:
+  - '@prisma/client'
+  - '@prisma/engines'
+  - argon2
+  - esbuild
+  - msgpackr-extract
+  - prisma
+  - sharp
+  - unrs-resolver
