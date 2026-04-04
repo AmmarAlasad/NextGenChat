@@ -1,1354 +1,252 @@
 /' ============================================================
-   NextGenChat — Architecture Diagrams
-   5 diagrams in this file, each rendered as a separate page:
-     [1] System Architecture Overview
-     [2] Agent Message Pipeline (Sequence)
-     [3] LLM Provider Layer (Class)
-     [4] Context Window Management (Activity)
-     [5] Deployment Mode Strategy
+   NextGenChat — Current Architecture Diagrams
+
+   These diagrams document the current implemented application behavior.
+   They intentionally describe the app as it exists today in local mode,
+   while leaving room for later shared, multi-agent, and tool-enabled phases.
    ============================================================ '/
 
-' ╔══════════════════════════════════════════════════════════════╗
-' ║  DIAGRAM 1 — System Architecture Overview                   ║
-' ╚══════════════════════════════════════════════════════════════╝
-
-@startuml SystemArchitecture
-
-!theme plain
-skinparam defaultFontName "Arial"
-skinparam defaultFontSize 11
-skinparam backgroundColor #FFFFFF
-skinparam roundcorner 6
-skinparam wrapWidth 220
-skinparam nodesep 50
-skinparam ranksep 60
-
-skinparam component {
-  BorderColor #2255AA
-  BackgroundColor #EAF2FB
-  FontColor #111111
-  FontSize 11
-}
-skinparam package {
-  BorderColor #555555
-  BackgroundColor #FAFAFA
-  FontStyle bold
-  FontSize 12
-}
-skinparam database {
-  BorderColor #996633
-  BackgroundColor #FFF4E6
-  FontColor #333333
-}
-skinparam note {
-  BackgroundColor #FEFEE8
-  BorderColor #CCCC66
-  FontSize 10
-}
-
-title <b>NextGenChat — System Architecture Overview</b>\n<size:10>One backend, multiple clients. Security posture controlled by DEPLOYMENT_MODE env var.</size>
-
-' ────────────────────────────────────────────────
-' CLIENTS
-' ────────────────────────────────────────────────
-package "Clients" #EAF8EA {
-  component "**Next.js 15**\nWeb App\n(App Router + TS)" as WebApp #C8EEC8
-  component "**React Native**\n+ Expo (Phase 8)\nMobile App" as Mobile #C8EEC8
-  component "**External**\nAPI Integrations\n(Future)" as ExtClient #C8EEC8
-}
-
-note as NMobile
-  <b>Mobile additions (Phase 8):</b>
-  • Expo SecureStore — never AsyncStorage
-  • Certificate pinning — MITM prevention
-  • Biometric auth — local, never sent to server
-  • Push notifications — FCM + APNs
-  • Device-bound refresh tokens (30-day)
-  • Remote revoke: DELETE /sessions/:deviceId
-end note
-Mobile .. NMobile
-
-' ────────────────────────────────────────────────
-' GATEWAY
-' ────────────────────────────────────────────────
-package "Gateway" #EBEBF8 {
-  component "**Caddy / Nginx**\nReverse Proxy\nTLS Termination\nWebSocket Upgrade" as GW #C8C8EE
-}
-
-note as NGW
-  <b>LOCAL mode:</b> HTTP, localhost only, no TLS
-  <b>SHARED mode:</b>
-  • Auto-TLS via Let's Encrypt
-  • HSTS: max-age=31536000; includeSubDomains; preload
-  • CORS: explicit domain allowlist (no wildcard)
-  • WebSocket upgrade proxied to Socket.io
-end note
-GW .. NGW
-
-' ────────────────────────────────────────────────
-' BACKEND
-' ────────────────────────────────────────────────
-package "Backend  •  Node.js 22 + TypeScript 5  •  Fastify" #FFFCF0 {
-
-  package "API & Real-time Layer" #F5F5F5 {
-    component "**Fastify**\nREST API\n(routes, middleware,\npreHandler hooks)" as Fastify #FFF3C8
-    component "**Socket.io 4**\n/chat  +  /presence\nrooms: channel:{id}" as SIO #FFF3C8
-  }
-
-  note as NSIO
-    <b>Namespaces:</b>
-    /chat  — messages, edits, reactions, streaming
-    /presence — online / away / offline status
-    <b>Rooms:</b> channel:{channelId}
-    Uses @socket.io/redis-adapter.
-    Every broadcast goes through Redis pub/sub —
-    works with 1 instance, scales to N instances.
-  end note
-  SIO .. NSIO
-
-  package "Feature Modules  (src/modules/)" #F5F5F5 {
-    component "**Auth**\nJWT · Argon2id\nRBAC · Setup Wizard" as M_Auth
-    component "**Chat**\nMessages · Channels\nReactions · Attachments\nFull-text search" as M_Chat
-    component "**Agents**\nTriggers · Memory\nCron · Tool approval" as M_Agent
-    component "**Rules Engine**\nPolicy evaluation\nApproval workflow\nAudit log" as M_Rules
-    component "**MCP Manager**\nSubprocess lifecycle\nTool discovery\nHealth monitoring" as M_MCP
-    component "**Workspace**\nFiles · Versioning\nDoc files (Agent.md\nidentity.md etc.)" as M_WS
-  }
-
-  ' LLM Provider Layer
-  package "LLM Provider Layer  (src/modules/providers/)" #FFF0EF {
-    component "**Provider Registry**\n[singleton]\nDecrypts credentials\nCaches instances" as PReg #FFD0CE
-
-    component "OpenAI\nProvider\ngpt-4o · o1 · o3" as P_OAI #FFBCBA
-    component "Codex OAuth\nProvider\n(OAuth 2.0 flow)" as P_Codex #FFBCBA
-    component "Anthropic\nProvider\nclaude-opus/sonnet/haiku" as P_Claude #FFBCBA
-    component "Kimi K2.5\nProvider\n(moonshot.cn)" as P_Kimi #FFBCBA
-    component "OpenRouter\nProvider\n(any model)" as P_OR #FFBCBA
-
-    PReg --> P_OAI
-    PReg --> P_Codex
-    PReg --> P_Claude
-    PReg --> P_Kimi
-    PReg --> P_OR
-  }
-
-  note as NReg
-    <b>All 5 implement LLMProvider interface:</b>
-    complete() · stream() · countTokens()
-    Credentials: AES-256-GCM encrypted in DB.
-    Never returned to any client via any endpoint.
-    Decrypted in memory only during LLM calls.
-    Kimi + OpenRouter extend OpenAIProvider
-    (OpenAI-compatible APIs, different baseURL only).
-    Codex OAuth: tokens auto-refreshed before expiry.
-  end note
-  PReg .. NReg
-
-  ' Context Window Management
-  package "Context Window Management  (src/modules/context/)" #F0F0FF {
-    component "**Context Builder**\nAssembles prompt\nwithin token budget" as CB #C8C8FF
-    component "**Token Counter**\ntiktoken (OAI·Kimi·OR)\nAnthropic API (exact)" as TC #C8C8FF
-    component "**Compaction Svc**\nSummarize old msgs\nasync — never blocks" as CS #C8C8FF
-    component "**Cache Service**\ncache_control hints\n(Anthropic prompt caching)" as CacheSvc #C8C8FF
-
-    CB --> TC
-    CB --> CacheSvc
-    CB ..> CS : if over budget\n(async job)
-  }
-
-  note as NCB
-    <b>Context build order (within token budget):</b>
-    1. System prompt       ← marked cacheable (Anthropic)
-    2. Agent memory        ← marked cacheable
-    3. ConversationSummary ← if compaction exists
-    4. Recent messages     ← fill remaining budget
-    5. Trigger message     ← always last
-    Reserve RESPONSE_BUFFER = 4096 tokens always.
-  end note
-  CB .. NCB
-
-  ' Async Workers
-  package "Async Workers  (BullMQ)" #F0FFF4 {
-    component "**Agent Processor**\nLLM call + streaming\nMemory update\ntimeout: 90s" as W_Agent #A8DDB0
-    component "**Compaction Worker**\nSummarize old context\nStore ConversationSummary" as W_Compact #A8DDB0
-    component "**File Scanner**\nClamAV virus scan\non attachment upload" as W_File #A8DDB0
-    component "**Cron Worker**\nAgent heartbeat\nwake-up jobs" as W_Cron #A8DDB0
-  }
-
-  note as NWorker
-    <b>ALL LLM calls happen in workers — NEVER in the HTTP cycle.</b>
-    Worker streams chunks back via Socket.io in real time.
-    On timeout (90s) or error: emit error message to channel.
-    Retry: max 2x, exponential backoff.
-    Cron jobs managed as BullMQ repeatable jobs.
-  end note
-  W_Agent .. NWorker
-
-}
-
-' ────────────────────────────────────────────────
-' STORAGE
-' ────────────────────────────────────────────────
-package "Storage" #F4F0FF {
-  database "**PostgreSQL 16**\nPrimary Database" as PG #DDD0FF
-  database "**Redis 7**\nCache · PubSub\nQueue · RateLimit" as Redis #DDD0FF
-  database "**MinIO / S3**\nFile Storage\n(workspaces + attachments)" as S3 #DDD0FF
-}
-
-note as NPG
-  <b>Key tables:</b>
-  User, RefreshToken, Workspace, Channel
-  Message (content + <b>metadata JSONB</b>)
-  Agent, AgentMemory, AgentToolCall
-  <b>ConversationSummary</b> (compaction results)
-  <b>ProviderConfig</b> (credentials encrypted)
-  <b>OAuthToken</b> (Codex OAuth tokens)
-  Rule, RuleViolation
-  AuditLog (append-only, HMAC-signed)
-end note
-PG .. NPG
-
-note as NRedis
-  <b>Redis responsibilities:</b>
-  • Socket.io pub/sub (multi-instance broadcast)
-  • BullMQ queue backend (all job queues)
-  • Rate-limit counters (per IP + per user)
-  • Presence: SET user:{id}:status EX 60
-  • Token count cache: 60s TTL
-  • OpenRouter model list: 1h TTL
-  • Session blacklist (revoked tokens)
-end note
-Redis .. NRedis
-
-' ────────────────────────────────────────────────
-' EXTERNAL
-' ────────────────────────────────────────────────
-package "External LLM APIs" #FFF5F5 {
-  component "OpenAI\napi.openai.com/v1" as E_OAI #FFCCCC
-  component "Anthropic\napi.anthropic.com/v1" as E_Claude #FFCCCC
-  component "Moonshot\napi.moonshot.cn/v1\n(Kimi K2.5)" as E_Kimi #FFCCCC
-  component "OpenRouter\nopenrouter.ai/api/v1" as E_OR #FFCCCC
-  component "OpenAI OAuth\n(Codex token refresh)" as E_Oauth #FFCCCC
-}
-
-' ────────────────────────────────────────────────
-' CONNECTIONS
-' ────────────────────────────────────────────────
-
-WebApp -down-> GW : HTTPS + WSS
-Mobile -down-> GW : HTTPS + WSS\n(cert pinned Ph.8)
-ExtClient -down-> GW : HTTPS
-
-GW -down-> Fastify : HTTP
-GW -down-> SIO : WebSocket
-
-Fastify -down-> M_Auth
-Fastify -down-> M_Chat
-Fastify -down-> M_Agent
-Fastify -down-> M_Rules
-Fastify -down-> M_MCP
-Fastify -down-> M_WS
-
-SIO ..> Redis : pub/sub adapter\n(horizontal scale)
-SIO --> M_Chat : message events
-SIO --> M_Agent : trigger detection
-
-M_Agent --> PReg : get(agentId)
-M_Agent --> CB : build context
-W_Agent --> PReg : get provider
-W_Agent --> CB : build context
-W_Agent ..> SIO : emit stream chunks\n(message:stream:chunk)
-
-P_OAI --> E_OAI
-P_Codex --> E_OAI : same API
-P_Codex ..> E_Oauth : OAuth token refresh
-P_Claude --> E_Claude
-P_Kimi --> E_Kimi
-P_OR --> E_OR
-
-W_Compact --> PG : store ConversationSummary
-W_Compact --> PReg : cheap model call\n(gpt-4o-mini / haiku)
-W_File --> S3 : scan attachment
-W_Cron ..> W_Agent : enqueue cron\nagent jobs
-
-Fastify --> PG : reads / writes
-Fastify --> Redis : cache / sessions
-W_Agent --> PG : save agent message
-W_Agent --> Redis : update presence
-
-@enduml
-
-
-' ╔══════════════════════════════════════════════════════════════╗
-' ║  DIAGRAM 2 — Agent Message Pipeline (Sequence)              ║
-' ╚══════════════════════════════════════════════════════════════╝
-
-@startuml AgentMessagePipeline
-
-!theme plain
-skinparam defaultFontName "Arial"
-skinparam defaultFontSize 11
-skinparam backgroundColor #FFFFFF
-skinparam sequenceMessageAlign center
-skinparam responseMessageBelowArrow true
-skinparam maxMessageSize 200
-skinparam roundcorner 6
-
-skinparam participant {
-  BorderColor #2255AA
-  BackgroundColor #EAF2FB
-  FontColor #111111
-}
-skinparam actor {
-  BorderColor #228833
-  BackgroundColor #E8F8E8
-}
-skinparam database {
-  BorderColor #996633
-  BackgroundColor #FFF4E6
-}
-skinparam queue {
-  BorderColor #6633AA
-  BackgroundColor #F4EEF8
-}
-skinparam note {
-  BackgroundColor #FEFEE8
-  BorderColor #CCCC66
-  FontSize 10
-}
-
-title <b>NextGenChat — Agent Message Pipeline</b>\n<size:10>Complete flow from user message → agent streaming response</size>
-
-actor "User" as User
-participant "WebApp\n(Next.js)" as Client
-participant "Socket.io\n/chat namespace" as SIO
-participant "Message\nService" as MsgSvc
-database "PostgreSQL" as PG
-participant "Agent\nTrigger Svc" as Trigger
-queue "BullMQ\n(Redis-backed)" as Queue
-participant "Agent\nProcessor Worker" as Worker
-participant "Context\nBuilder" as CB
-participant "Token\nCounter" as TC
-participant "Compaction\nWorker" as CW
-participant "LLM\nProvider" as LLM
-
-== 1. User Sends Message ==
-
-User -> Client : types message, presses send
-activate Client
-
-Client -> SIO : emit <b>message:send</b>\n{ channelId, content, contentType }
-activate SIO
-
-note over SIO
-  <b>Zod validation on every socket payload.</b>
-  Invalid schema → error emitted back, no processing.
-  Auth token verified once on socket handshake —
-  not re-validated per event (JWT cached in socket state).
-end note
-
-SIO -> MsgSvc : createMessage(channelId, userId, content)
-activate MsgSvc
-
-MsgSvc -> PG : INSERT into messages\n{ senderId, senderType: USER, channelId,\n  content, contentType, createdAt }
-activate PG
-PG --> MsgSvc : message { id, createdAt, ... }
-deactivate PG
-
-MsgSvc --> SIO : message record
-deactivate MsgSvc
-
-SIO -> SIO : broadcast to room\n<b>channel:{channelId}</b>
-SIO --> Client : emit <b>message:new</b>\n(all clients in room receive it)
-deactivate Client
-
-note right of Client
-  Optimistic UI: message was already
-  shown locally when user hit send.
-  Server response replaces tempId
-  with the real persisted message ID.
-end note
-
-== 2. Agent Trigger Detection ==
-
-SIO -> Trigger : checkTriggers(channelId, message)
-activate Trigger
-
-note over Trigger
-  Rules checked in order:
-  1. Is senderType === AGENT? → skip (anti-loop guard)
-  2. Does channel have active agents?
-  3. Per agent: trigger mode?
-     • MENTIONS_ONLY → content includes @agent-name?
-     • ALL_MESSAGES  → always trigger
-     • DISABLED      → skip
-end note
-
-loop for each triggered agent
-
-  Trigger -> Queue : add job <b>agent:process</b>\n{ agentId, channelId, messageId,\n  attempts: 0, timeout: 90000 }
-  activate Queue
-
-  note right of Queue
-    BullMQ persists job to Redis.
-    Config: maxAttempts=3,
-    backoff: { type: exponential, delay: 2000ms }
-    Job visible to admin in audit log.
-  end note
-
-end
-
-deactivate Trigger
-
-== 3. Agent Processor Worker Picks Up Job ==
-
-Queue -> Worker : dequeue <b>agent:process</b>
-deactivate Queue
-activate Worker
-
-Worker -> PG : SELECT Agent + AgentIdentity\n+ ProviderConfig (encrypted credentials)\nWHERE id = agentId
-activate PG
-PG --> Worker : agent config + encrypted creds
-deactivate PG
-
-Worker -> Worker : decrypt credentials\n(AES-256-GCM, key from ENCRYPTION_KEY env)
-
-note over Worker
-  <b>Credentials decrypted IN MEMORY ONLY.</b>
-  Never written to any log line.
-  Never returned in any API response.
-  Decrypted string lives only for the duration
-  of this LLM call, then garbage collected.
-end note
-
-== 4. Build Context Window ==
-
-Worker -> CB : build(agentId, channelId, triggerMessageId)
-activate CB
-
-CB -> PG : SELECT AgentMemory\nWHERE agentId = ? AND scope IN (GLOBAL, CHANNEL)
-activate PG
-PG --> CB : memory key-value pairs
-deactivate PG
-
-CB -> PG : SELECT ConversationSummary\nWHERE channelId = ? AND agentId = ?\nORDER BY createdAt DESC LIMIT 1
-activate PG
-PG --> CB : summary (or null)
-deactivate PG
-
-CB -> PG : SELECT messages FROM channel\nORDER BY createdAt DESC LIMIT 100
-activate PG
-PG --> CB : candidate message array
-deactivate PG
-
-CB -> TC : countTokens(systemPrompt + memory\n+ summary + candidates)
-activate TC
-
-note over TC
-  <b>Token counting is provider-specific:</b>
-  OpenAI / Kimi / OpenRouter:
-    tiktoken, cl100k_base encoding
-    +4 tokens overhead per message role
-  Anthropic:
-    POST /v1/messages/count_tokens (exact count)
-    Result cached in Redis 60s (hash of msgs as key)
-end note
-
-TC --> CB : totalTokenCount
-deactivate TC
-
-CB -> CB : compute available budget:\nbudget = contextLimit[model] - 4096
-
-alt totalTokens > budget (OVER BUDGET)
-
-  note over CB
-    <b>Compaction needed.</b>
-    Current call: use truncated history (most recent messages).
-    Async job: summarize the overflow and save for next call.
-  end note
-
-  CB -> Queue : enqueue <b>compaction:process</b>\n{ agentId, channelId, overflowMessageIds[] }
-
-  ' Async compaction runs in parallel
-  Queue -> CW : dequeue compaction job
-  activate CW #FFE0E0
-
-  CW -> PG : fetch overflow messages (full content)
-  activate PG
-  PG --> CW : messages to summarize
-  deactivate PG
-
-  CW -> LLM : complete() — cheap model\n(gpt-4o-mini or claude-haiku)\nPrompt: "Summarize this conversation\nhistory, preserving key facts..."
-  activate LLM #FFE8E8
-  LLM --> CW : summaryText + tokenCount
-  deactivate LLM
-
-  CW -> PG : INSERT ConversationSummary\n{ channelId, agentId, summary,\n  tokenCount, coversFromMsgId,\n  covesToMsgId, createdAt }
-  activate PG
-  PG --> CW
-  deactivate PG
-  deactivate CW
-
-  note over CW
-    <b>ASYNC — does NOT block current LLM call.</b>
-    Current call uses truncated history.
-    All future calls for this agent+channel
-    will load and use this summary instead.
-  end note
-
-  CB --> Worker : context { messages: truncatedHistory,\n  systemPrompt, memory }
-
-else totalTokens <= budget (WITHIN BUDGET)
-
-  CB --> Worker : context { messages: fullHistory,\n  systemPrompt, memory }
-
-end
-deactivate CB
-
-== 5. Anthropic Prompt Cache Hints (conditional) ==
-
-opt provider === 'anthropic'
-  Worker -> Worker : insert cache_control: { type: "ephemeral" }\nafter last static message\n(system prompt + memory + summary boundary)
-
-  note right of Worker
-    <b>Anthropic Prompt Caching:</b>
-    Static prefix (system + memory) cached by Anthropic 5min.
-    cache_creation_input_tokens = normal price (first call)
-    cache_read_input_tokens = ~10% of normal (cache hits)
-    Both stored in Message.metadata for cost analytics.
-  end note
-end
-
-== 6. LLM Streaming Call ==
-
-Worker -> LLM : stream(messages, tools?, maxTokens, temperature)
-activate LLM
-
-note over LLM
-  <b>Provider-specific streaming:</b>
-  OpenAI / Kimi / OpenRouter: SSE "data: {...}" chunks
-  Anthropic: SSE "event: content_block_delta" + "data: {...}"
-  Tool calls interleaved in stream if agent has approved tools.
-  All errors mapped: 429=RATE_LIMITED, 401=AUTH_FAILED,
-  5xx=PROVIDER_ERROR → retry with backoff up to 2x.
-end note
-
-loop for each streaming token chunk
-
-  LLM --> Worker : StreamChunk { delta: "token...", finishReason: null }
-  Worker -> SIO : emit to room channel:{channelId}\n<b>message:stream:chunk</b>\n{ tempId, delta }
-  SIO --> Client : real-time token\n(user sees agent typing)
-
-end
-
-LLM --> Worker : StreamChunk { finishReason: "stop",\n  usage: { promptTokens, completionTokens,\n  totalTokens, cachedTokens? } }
-deactivate LLM
-
-== 7. Persist Agent Response ==
-
-Worker -> PG : INSERT into messages\n{ senderType: AGENT, channelId,\n  senderId: agentId, content: fullResponse,\n  metadata: { provider, model,\n  promptTokens, completionTokens,\n  cachedTokens, finishReason,\n  toolCalls[] } }
-activate PG
-PG --> Worker : message { id, createdAt }
-deactivate PG
-
-Worker -> SIO : emit to room\n<b>message:stream:end</b>\n{ tempId, finalMessageId, createdAt }
-SIO --> Client : replace streaming placeholder\nwith persisted message
-
-note right of Client
-  Client swaps the streaming UI element
-  (identified by tempId) with the final
-  confirmed message record from the server.
-  Token usage optionally shown in UI.
-end note
-
-== 8. Memory Update ==
-
-opt agent response includes memory operations (via tool calls)
-
-  Worker -> PG : UPSERT into agent_memory\n{ agentId, scope, key, value: JSONB }
-
-  note right of Worker
-    <b>Memory size enforced: 50KB per scope.</b>
-    Scopes: GLOBAL | CHANNEL | USER
-    GLOBAL: persists across all channels
-    CHANNEL: per channel context
-    USER: per individual user interaction
-  end note
-
-end
-deactivate Worker
-
-== Error Path ==
-
-note over Worker, LLM
-  <b>If job times out (90s) or all retries exhausted:</b>
-  1. Emit system message to channel: "⚠ Agent timed out"
-  2. Log full error server-side (never in chat message)
-  3. Mark BullMQ job as FAILED
-  4. Admin can view failed jobs in audit log
-  <b>If AUTH_FAILED (401):</b>
-  Mark ProviderConfig as invalid,
-  emit "🔑 Provider credentials expired" in admin channel.
-end note
-
-@enduml
-
-
-' ╔══════════════════════════════════════════════════════════════╗
-' ║  DIAGRAM 3 — LLM Provider Layer (Class Diagram)            ║
-' ╚══════════════════════════════════════════════════════════════╝
-
-@startuml LLMProviderLayer
-
-!theme plain
-skinparam classAttributeIconSize 0
-skinparam backgroundColor #FFFFFF
-skinparam defaultFontName "Arial"
-skinparam defaultFontSize 11
-skinparam roundcorner 6
-
-skinparam class {
-  BorderColor #2255AA
-  BackgroundColor #EAF2FB
-  HeaderBackgroundColor #C0D8F0
-  FontColor #111111
-}
-skinparam interface {
-  BorderColor #228833
-  BackgroundColor #EAF8EA
-  HeaderBackgroundColor #B0D8B0
-  FontColor #111111
-}
-skinparam note {
-  BackgroundColor #FEFEE8
-  BorderColor #CCCC66
-  FontSize 10
-}
-
-title <b>NextGenChat — LLM Provider Layer</b>\n<size:10>packages/types/src/providers.ts  +  apps/backend/src/modules/providers/</size>
-
-' ── Shared Types (packages/types) ──────────────────────────────
-
-class "LLMMessage" as TMsg {
-  + role: 'system' | 'user' | 'assistant' | 'tool'
-  + content: string | ContentPart[]
-  + toolCallId?: string
-  + name?: string
-  + cache_control?: CacheControl
-}
-
-class "LLMRequestOptions" as TOpts {
-  + messages: LLMMessage[]
-  + tools?: LLMTool[]
-  + maxTokens?: number
-  + temperature?: number
-  + stream?: boolean
-  + systemPrompt?: string
-}
-
-class "LLMResponse" as TResp {
-  + id: string
-  + content: string
-  + finishReason: FinishReason
-  + toolCalls?: ToolCall[]
-  + usage: TokenUsage
-  + providerMetadata?: Record<string, unknown>
-}
-
-note right of TResp
-  <b>TokenUsage contains:</b>
-  promptTokens, completionTokens,
-  totalTokens, cachedTokens?
-  Stored in Message.metadata JSONB.
-  Used for cost analytics per agent.
-end note
-
-class "LLMStreamChunk" as TChunk {
-  + delta: string
-  + finishReason?: FinishReason
-  + toolCallDelta?: ToolCallDelta
-}
-
-class "TokenUsage" as TUsage {
-  + promptTokens: number
-  + completionTokens: number
-  + totalTokens: number
-  + cachedTokens?: number
-}
-
-TResp *-- TUsage
-
-' ── Interface (packages/types) ─────────────────────────────────
-
-interface "<<interface>>\nLLMProvider" as IProvider {
-  + name: ProviderName
-  + supportedModels: string[]
-  + contextLimits: Map<string, number>
-  ..
-  + complete(opts: LLMRequestOptions): Promise<LLMResponse>
-  + stream(opts: LLMRequestOptions): AsyncGenerator<LLMStreamChunk>
-  + countTokens(messages: LLMMessage[]): Promise<number>
-}
-
-note top of IProvider
-  <b>Defined in packages/types — shared across all apps.</b>
-  Callers always use this interface, never concrete classes.
-  ProviderRegistry returns IProvider.
-  Zod schema validates all request/response shapes at runtime.
-end note
-
-' ── Base Implementation ─────────────────────────────────────────
-
-abstract class "BaseProvider" as Base {
-  # name: ProviderName
-  # baseURL: string
-  # apiKey: string
-  # httpClient: AxiosInstance
-  ..
-  + complete(opts): Promise<LLMResponse>
-  + stream(opts): AsyncGenerator<LLMStreamChunk>
-  # buildHeaders(): Record<string, string>
-  # mapError(err: HttpError): LLMError
-  # parseSSEChunk(raw: string): LLMStreamChunk | null
-}
-
-note right of Base
-  <b>Shared error mapping (all providers):</b>
-  HTTP 429 → RATE_LIMITED
-    retry max 3x, exponential backoff
-  HTTP 401 → AUTH_FAILED
-    no retry, alert admin in channel
-  HTTP 500/503 → PROVIDER_ERROR
-    retry max 3x, exponential backoff
-  Job timeout (90s) → LLM_TIMEOUT
-    no retry, emit error to channel
-end note
-
-' ── Concrete Providers ──────────────────────────────────────────
-
-class "OpenAIProvider" as POai {
-  + name = 'openai'
-  + baseURL = 'https://api.openai.com/v1'
-  + supportedModels = ['gpt-4o', 'gpt-4o-mini',\n'gpt-4-turbo', 'o1', 'o3', 'o3-mini']
-  + contextLimits = { 'gpt-4o': 128000, 'o1': 200000, ... }
-  - encoding: Tiktoken
-  ..
-  + countTokens(messages): Promise<number>
-  - buildFunctionDefs(tools): OpenAIFunction[]
-}
-
-note bottom of POai
-  <b>Token counting:</b> tiktoken cl100k_base
-  +4 tokens per message for role overhead.
-  <b>Tool calling:</b> OpenAI function calling format.
-  <b>Streaming:</b> SSE "data: {...}" prefix,
-  parse content_delta from each event.
-end note
-
-class "OpenAICodexOAuthProvider" as POauthCodex {
-  - oauthAccessToken: string
-  - refreshToken: string
-  - tokenExpiresAt: Date
-  - agentId: string
-  ..
-  + complete(opts): Promise<LLMResponse>
-  + stream(opts): AsyncGenerator<LLMStreamChunk>
-  - ensureTokenFresh(): Promise<void>
-  + handleCallback(code, state): Promise<void>
-}
-
-note bottom of POauthCodex
-  <b>OAuth 2.0 Authorization Code flow:</b>
-  1. Admin clicks Connect → backend generates auth URL + state
-  2. User consents on OpenAI OAuth page
-  3. Callback: backend exchanges code → access + refresh tokens
-  4. Tokens encrypted, stored in OAuthToken table
-  ensureTokenFresh(): checks expiresAt - 60s before every call.
-  On refresh failure: invalidate, emit "reconnect" to admin.
-  <b>Same API format as OpenAI</b> — only auth header differs.
-  Required scope: model.request
-end note
-
-class "AnthropicProvider" as PClaude {
-  + name = 'anthropic'
-  + baseURL = 'https://api.anthropic.com/v1'
-  + supportedModels = ['claude-opus-4-6',\n'claude-sonnet-4-6', 'claude-haiku-4-5']
-  + contextLimits = { 'claude-opus-4-6': 200000, ... }
-  ..
-  + countTokens(messages): Promise<number>
-  + addCacheBreakpoints(messages): LLMMessage[]
-  - parseAnthropicStream(stream): AsyncGenerator<LLMStreamChunk>
-  - normalizeToolFormat(tools): AnthropicTool[]
-}
-
-note bottom of PClaude
-  <b>Unique: exact token counting via API</b>
-  POST /v1/messages/count_tokens (not tiktoken).
-  Result cached in Redis 60s (hash of messages as key).
-  <b>Prompt caching:</b>
-  addCacheBreakpoints() inserts cache_control after
-  last static turn (system + memory + summary).
-  Tracks cache_read_input_tokens vs
-  cache_creation_input_tokens per response.
-  Both stored in Message.metadata for analytics.
-  Required headers: x-api-key, anthropic-version.
-end note
-
-class "KimiProvider" as PKimi {
-  + name = 'kimi'
-  + baseURL = 'https://api.moonshot.cn/v1'
-  + supportedModels = ['kimi-k2-5',\n'moonshot-v1-8k',\n'moonshot-v1-32k',\n'moonshot-v1-128k']
-  + contextLimits = { 'kimi-k2-5': 131072, ... }
-}
-
-note bottom of PKimi
-  <b>Extends OpenAIProvider — fully OpenAI-compatible API.</b>
-  Only overrides: name, baseURL, supportedModels, contextLimits.
-  Token counting: tiktoken (approximate — no counting endpoint).
-  Default context 128K — Kimi K2.5 handles long context natively.
-end note
-
-class "OpenRouterProvider" as POR {
-  + name = 'openrouter'
-  + baseURL = 'https://openrouter.ai/api/v1'
-  - modelListCacheKey = 'openrouter:models'
-  ..
-  + discoverModels(): Promise<ModelInfo[]>
-  + getContextLimit(modelId): number
-  # buildHeaders(): Record<string, string>
-}
-
-note bottom of POR
-  <b>Extends OpenAIProvider — OpenAI-compatible.</b>
-  Required extra headers:
-    HTTP-Referer: https://nextgenchat.local
-    X-Title: NextGenChat
-  Model format: "provider/model-name"
-  (e.g. "google/gemini-2.5-pro")
-  discoverModels(): GET /api/v1/models, cached 1h in Redis.
-  Context limit read from model list per-model.
-  usage.cost in response → stored in Message.metadata.
-end note
-
-' ── Registry ───────────────────────────────────────────────────
-
-class "ProviderRegistry" as Reg {
-  - {static} instance: ProviderRegistry
-  - cache: Map<string, IProvider>
-  ..
-  + {static} getInstance(): ProviderRegistry
-  + get(agentId: string): Promise<IProvider>
-  + test(agentId: string): Promise<TestResult>
-  - loadConfig(agentId): Promise<ProviderConfig>
-  - decrypt(ciphertext: string): string
-  - build(config: ProviderConfig): IProvider
-}
-
-note right of Reg
-  <b>Singleton. get(agentId) flow:</b>
-  1. Load ProviderConfig from DB (LRU 5min cache)
-  2. Decrypt credentials using ENCRYPTION_KEY env var
-     (AES-256-GCM, unique IV per record)
-  3. Build provider instance if not in instance cache
-     (keyed by SHA-256 hash of config)
-  4. Return IProvider — caller is unaware of concrete type
-  test() fires a minimal 1-token completion to verify creds work.
-  Returns { success, model, latencyMs } or { success, error }.
-end note
-
-' ── DB Table ───────────────────────────────────────────────────
-
-class "ProviderConfig\n(DB Table)" as DBConfig {
-  + id: uuid
-  + agentId: uuid
-  + providerName: ProviderName
-  + model: string
-  + credentials: string  <<AES-256-GCM encrypted JSONB>>
-  + config: JSONB  <<temperature, maxTokens, etc.>>
-  + createdAt: timestamp
-  + updatedAt: timestamp
-}
-
-class "OAuthToken\n(DB Table)" as DBOAuth {
-  + id: uuid
-  + agentId: uuid
-  + accessToken: string  <<AES-256-GCM encrypted>>
-  + refreshToken: string  <<AES-256-GCM encrypted>>
-  + expiresAt: timestamp
-  + scope: string
-  + createdAt: timestamp
-  + updatedAt: timestamp
-}
-
-' ── Relationships ───────────────────────────────────────────────
-
-IProvider <|.. Base
-Base <|-- POai
-POai <|-- POauthCodex : extends\n(OAuth auth)
-POai <|-- PKimi : extends\n(OpenAI-compat)
-POai <|-- POR : extends\n(OpenAI-compat)
-Base <|-- PClaude
-
-Reg ..> IProvider : returns
-Reg ..> DBConfig : reads
-POauthCodex ..> DBOAuth : reads/writes
-
-IProvider ..> TOpts : consumes
-IProvider ..> TResp : produces
-IProvider ..> TChunk : yields (stream)
-
-@enduml
-
-
-' ╔══════════════════════════════════════════════════════════════╗
-' ║  DIAGRAM 4 — Context Window Management (Activity)          ║
-' ╚══════════════════════════════════════════════════════════════╝
-
-@startuml ContextWindowManagement
-
-!theme plain
-skinparam defaultFontName "Arial"
-skinparam defaultFontSize 11
-skinparam backgroundColor #FFFFFF
-skinparam roundcorner 6
-
-skinparam activity {
-  BorderColor #2255AA
-  BackgroundColor #EAF2FB
-  FontColor #111111
-  StartColor #228833
-  EndColor #AA2222
-  DiamondBorderColor #996633
-  DiamondBackgroundColor #FFF4E6
-  DiamondFontColor #333333
-  ArrowColor #444444
-}
-skinparam swimlane {
-  BorderColor #888888
-  TitleFontStyle bold
-  TitleFontSize 12
-}
-skinparam note {
-  BackgroundColor #FEFEE8
-  BorderColor #CCCC66
-  FontSize 10
-}
-
-title <b>NextGenChat — Context Window Management</b>\n<size:10>3 layers: Token Budgeting → Auto-Compaction → Prompt Caching</size>
-
-|#EAF2FB| **Context Builder** |
-|#FFF4E6| **Token Counter** |
-|#EAF8EA| **Compaction Worker** |
-|#FFF0F8| **LLM Provider** |
-
-|Context Builder|
+@startuml SystemOverview
+title <b>NextGenChat — System Overview</b>\n<size:10>Current local-first runtime and major subsystems</size>
 start
 
-:Load static context from DB:
-- **System prompt** (AgentIdentity.systemPrompt)
-- **Agent memory** (GLOBAL + CHANNEL scopes)
-  — injected as structured text into context;
+partition "Operator" {
+  :Owner / admin uses browser UI;
+}
 
-note right
-  <b>Memory scopes:</b>
-  GLOBAL — persists across all channels
-  CHANNEL — per-channel only
-  USER — per individual human user
-  <b>Size enforced:</b> 50KB max per scope.
-  Exceeding entries: LRU eviction.
-end note
+partition "Frontend" {
+  :Setup and login flow;
+  :Chat interface;
+  :Agent workspace editor;
+}
 
-:Load latest **ConversationSummary** from DB
-(most recent compaction result
-for this agentId + channelId pair);
+partition "Backend" {
+  :Fastify API;
+  :Socket.io /chat;
+  :Auth service;
+  :Chat service;
+  :Agents service;
+  :Workspace service;
+  :Agent processor (local in-process job);
+  :Context builder;
+  :Compaction service;
+  :OpenAI provider;
+}
 
-:Fetch candidate messages from DB
-— newest first, up to MAX_CANDIDATES (100)
-— these may not all fit in budget;
+partition "Storage" {
+  :SQLite database;
+  :Agent workspace docs via WorkspaceFile rows;
+}
 
-|Token Counter|
+partition "External" {
+  :OpenAI API;
+}
 
-:Count tokens in full candidate set:
-systemPrompt + memory + summary + messages;
+partition "Current product scope" {
+  :One local owner;
+  :One seeded workspace;
+  :One seeded channel;
+  :One seeded agent;
+}
 
-note right
-  <b>Per-provider implementation:</b>
-
-  OpenAI / Kimi / OpenRouter:
-    tiktoken, cl100k_base encoding
-    Manual overhead: +4 tokens per message
-    (role name + formatting tokens)
-    Fast — runs locally, no API call.
-
-  Anthropic (exact):
-    POST /v1/messages/count_tokens
-    Returns exact token count from model.
-    Result cached in Redis 60s
-    using SHA-256(messages) as key
-    — prevents redundant API calls.
-end note
-
-|Context Builder|
-
-:Compute **available budget**:
-budget = contextLimit[model] - RESPONSE_BUFFER
-RESPONSE_BUFFER = 4096 tokens (reserved for response);
-
-note right
-  <b>Context limits by model:</b>
-  gpt-4o, gpt-4o-mini  → 128,000
-  gpt-4-turbo          → 128,000
-  o1, o3               → 200,000
-  claude-opus-4-6      → 200,000
-  claude-sonnet-4-6    → 200,000
-  kimi-k2-5            → 131,072
-  openrouter models    → from model list
-                         (cached 1h in Redis)
-end note
-
-if (totalTokens <= budget?) then (YES — fits in budget)
-
-  :Use full candidate message set
-  — no truncation needed;
-
-else (NO — over budget)
-
-  if (ConversationSummary exists?) then (YES — prior compaction)
-
-    :Replace oldest messages with the summary.
-    Add recent messages on top of summary
-    until budget is reached;
-
-    if (summary + recent messages still over budget?) then (STILL TOO LARGE)
-
-      :Use summary only +
-      most recent N messages that fit;
-
-      note right
-        <b>Recursive case:</b>
-        Summaries can accumulate over time.
-        If summaries themselves overflow:
-        summarize-the-summaries.
-        Max depth: 3 levels of summarization.
-      end note
-
-    else (fits)
-      :Use summary + recent messages;
-    endif
-
-  else (NO — no summary yet, first compaction)
-
-    :Truncate oldest candidate messages
-    until total token count fits in budget;
-
-  endif
-
-  ' Trigger async compaction in parallel
-  :Determine overflow message IDs
-  (messages that did not fit in budget);
-
-  |Compaction Worker|
-  fork
-    :Enqueue **compaction:process** BullMQ job
-    { agentId, channelId, overflowMessageIds[] };
-
-    note right
-      <b>ASYNC — current LLM call is NOT blocked.</b>
-      Current call proceeds with truncated context.
-      Compaction runs in background.
-      Future calls benefit from the summary.
-    end note
-
-    :Fetch overflow messages full content from DB;
-
-    :Build summarization prompt:
-    "Summarize this conversation history
-    concisely, preserving: decisions made,
-    key facts, outcomes, unresolved questions.";
-
-    :Call **cheap model** via LLM provider:
-    OpenAI agents → gpt-4o-mini
-    Anthropic agents → claude-haiku-4-5;
-
-    :Receive summaryText + tokenCount;
-
-    :INSERT ConversationSummary into DB:
-    { channelId, agentId,
-      summary: summaryText,
-      tokenCount,
-      coversFromMessageId,
-      covesToMessageId,
-      createdAt: now() };
-
-    note right
-      Next call for this agent+channel
-      will load this summary as compressed history.
-      summary.tokenCount << original message tokens.
-    end note
-
-  fork again
-    ' Current call continues with truncated context
-    |Context Builder|
-    :Continue with truncated context
-    (current call uses partial history);
-  end fork
-
-endif
-
-' Assemble final message array
-|Context Builder|
-
-:Assemble final message array in order:
-1. System prompt
-2. Agent memory (key-value pairs as text block)
-3. ConversationSummary (if used in this call)
-4. Recent messages (within budget)
-5. Trigger message (ALWAYS last);
-
-' Prompt caching branch
-|LLM Provider|
-
-if (provider === 'anthropic'?) then (YES)
-
-  :Insert **cache_control: { type: "ephemeral" }**
-  marker after the last static message
-  (boundary = after memory, before dynamic history);
-
-  note right
-    <b>Anthropic Prompt Caching behavior:</b>
-
-    First call (cache miss):
-      cache_creation_input_tokens charged at full price.
-      Anthropic stores the prefix (5-min TTL).
-
-    Subsequent calls (cache hit):
-      cache_read_input_tokens at ~10% of full price.
-      Savings logged to Message.metadata.
-
-    Cache warmth strategy:
-      If agent is active, re-request every 4 minutes
-      to reset the 5-min TTL (configurable).
-
-    Admin dashboard shows:
-      hit rate, creation cost, read cost, savings.
-  end note
-
-else (OpenAI / Kimi / OpenRouter)
-
-  note right
-    <b>OpenAI implicit prefix caching:</b>
-    No API needed — OpenAI caches matching
-    prompt prefixes automatically.
-    Keep system prompt + memory FIRST and STABLE
-    between requests to maximize cache hits.
-    Track cached_tokens from usage response.
-    Stored in Message.metadata for analytics.
-  end note
-
-endif
-
-:Call **LLMProvider.stream()** or .complete()
-with assembled, budget-validated context;
-
-:Receive response + usage stats:
-{ promptTokens, completionTokens,
-  totalTokens, cachedTokens? };
-
-:Store usage in **Message.metadata JSONB**:
-{ provider, model, promptTokens,
-  completionTokens, cachedTokens,
-  finishReason, toolCalls[] };
-
-note right
-  <b>Analytics available at:</b>
-  GET /agents/:id/context-stats
-  Returns:
-  • Avg tokens/request (prompt + completion)
-  • Cache hit rate (Anthropic)
-  • Compaction count + history
-  • Estimated cost savings from caching
-end note
-
-if (agent signals memory operations via tool?) then (YES)
-
-  :UPSERT AgentMemory rows in DB
-  (scope, key, value: JSONB);
-
-endif
+partition "Planned later" {
+  :Group chats;
+  :Shared workspaces;
+  :Repo and file tools;
+  :Heartbeat execution loop;
+}
 
 stop
+@enduml
+
+
+@startuml ProductMap
+title <b>NextGenChat — Product Map</b>\n<size:10>What the operator sees and how the app is organized today</size>
+top to bottom direction
+
+rectangle "Fresh Install" as Fresh #EAF8EA {
+  component "Health check\nsetupRequired=true" as HealthSetup
+  component "Setup page" as SetupPage
+}
+
+rectangle "Authenticated App" as App #FFF8E8 {
+  component "Login page" as LoginPage
+  component "Home gate" as HomeGate
+  component "Chat page" as ChatPage
+  component "Agent workspace page" as AgentPage
+}
+
+rectangle "Seeded Local Objects" as Seeded #F5F5F5 {
+  component "Owner account" as OwnerAccount
+  component "Default workspace" as DefaultWorkspace
+  component "Default public channel" as DefaultChannel
+  component "Default agent" as DefaultAgent
+  component "Workspace docs" as WorkspaceDocs
+}
+
+HealthSetup --> SetupPage
+SetupPage --> OwnerAccount
+SetupPage --> DefaultWorkspace
+SetupPage --> DefaultChannel
+SetupPage --> DefaultAgent
+DefaultAgent --> WorkspaceDocs
+
+LoginPage --> HomeGate
+HomeGate --> ChatPage
+ChatPage --> AgentPage : manage agent docs
+
+note right of ChatPage
+  Chat is focused on conversation.
+  It no longer acts as the editor for
+  the agent's raw system prompt.
+end note
+
+note right of AgentPage
+  The dedicated admin view is where
+  the operator manages:
+  identity.md
+  agency.md
+  agent.md
+  heartbeat.md
+  memory.md
+end note
+
+note bottom of Seeded
+  Current product scope is intentionally narrow:
+  one local owner, one seeded workspace,
+  one seeded channel, one seeded agent.
+end note
 
 @enduml
 
 
-' ╔══════════════════════════════════════════════════════════════╗
-' ║  DIAGRAM 5 — Deployment Mode Strategy                       ║
-' ╚══════════════════════════════════════════════════════════════╝
+@startuml MessagePipeline
+title <b>NextGenChat — Agent Message Pipeline</b>\n<size:10>Current runtime path from user message to streamed reply</size>
 
-@startuml DeploymentModes
+actor User
+participant "Web UI" as Web
+participant "Socket.io /chat" as SIO
+participant "Chat service" as ChatSvc
+database "SQLite" as DB
+participant "Agents service" as AgentSvc
+queue "Local job dispatch" as Queue
+participant "Agent processor" as Worker
+participant "Context builder" as CB
+participant "Workspace service" as WS
+participant "OpenAI provider" as OAI
 
-!theme plain
-skinparam defaultFontName "Arial"
-skinparam defaultFontSize 11
-skinparam backgroundColor #FFFFFF
-skinparam roundcorner 8
+User -> Web : send message
+Web -> SIO : message:send
+SIO -> ChatSvc : validate + persist
+ChatSvc -> DB : insert user message
+ChatSvc -> SIO : emit message:new
+SIO -> AgentSvc : resolve triggered agents
+AgentSvc -> Queue : queue agent run
+Queue -> Worker : process(agent, channel, message)
 
-skinparam package {
-  BorderColor #555555
-  FontStyle bold
-  FontSize 13
-}
-skinparam component {
-  BorderColor #2255AA
-  BackgroundColor #EAF2FB
-  FontColor #111111
-  FontSize 11
-}
-skinparam note {
-  BackgroundColor #FEFEE8
-  BorderColor #CCCC66
-  FontSize 10
-}
-skinparam arrow {
-  Color #555555
-  FontSize 10
-}
+Worker -> CB : build context
+CB -> WS : ensure agent docs exist
+CB -> DB : load memory, summary, recent messages
+CB -> CB : enforce token budget
+CB -> Queue : schedule compaction if needed
+CB --> Worker : final prompt payload
 
-title <b>NextGenChat — Deployment Mode Strategy</b>\n<size:10>Security and infrastructure requirements scale incrementally. No breaking changes between modes.</size>
+Worker -> OAI : stream(messages)
+loop streaming chunks
+  OAI --> Worker : delta
+  Worker -> SIO : message:stream:chunk
+  SIO --> Web : render live response
+end
 
-' ────────────────── MODE 1: LOCAL ──────────────────
-package "MODE 1: LOCAL  (Current Focus)" #EFF8EF {
-  component "**Runtime**\nDocker Compose\nlocalhost only" as M1a #CCEEBB
-  component "**Users**\nSingle owner\n(setup wizard on first run)" as M1b #CCEEBB
-  component "**Auth**\nJWT + Argon2id\nSetup wizard only\n(no registration)" as M1c #CCEEBB
-  component "**TLS**\nHTTP only\n(localhost — no TLS needed)" as M1d #CCEEBB
-  component "**API Keys**\nStored in .env\n(gitignored)" as M1e #CCEEBB
-  component "**Rate Limiting**\nDisabled / relaxed\n(you = only user)" as M1f #CCEEBB
-  component "**CORS**\nlocalhost origins\nonly" as M1g #CCEEBB
-}
+OAI --> Worker : final usage
+Worker -> DB : insert agent message + metadata
+Worker -> SIO : message:stream:end
+Worker -> SIO : message:new
 
-note bottom of M1a
-  <b>All features available in LOCAL mode:</b>
-  ✓ Full agent system (all 5 providers)
-  ✓ Context management + compaction
-  ✓ MCP integration
-  ✓ File workspace + versioning
-  ✓ Rules engine
-  ✓ Cron / Heartbeat agents
-
-  <b>Simplified in LOCAL mode:</b>
-  • No email/SMTP required
-  • No invite system
-  • No rate limiting
-  • API keys in .env (not encrypted DB)
-  • No TLS configuration needed
-  • Setup wizard replaces registration
-
-  <b>DEPLOYMENT_MODE=local</b>
-  in .env activates relaxed posture.
+note right of CB
+  Build order today:
+  1. identity.md / agency.md / agent.md / heartbeat.md
+  2. structured memory
+  3. latest conversation summary
+  4. recent fitting messages
+  5. trigger message last
 end note
 
-' ────────────────── MODE 2: SHARED ──────────────────
-package "MODE 2: SHARED  (Phase 7 — Friends)" #EEF0FF {
-  component "**Runtime**\nVPS / Home Server\n+ Public Domain" as M2a #CCCCE8
-  component "**Users**\nInvite-only\nregistration" as M2b #CCCCE8
-  component "**Auth**\nJWT + Argon2id\n+ Email verification\n+ Password reset" as M2c #CCCCE8
-  component "**TLS**\nRequired: Caddy\nauto Let's Encrypt\nHSTS preloaded" as M2d #CCCCE8
-  component "**API Keys**\nAES-256-GCM\nencrypted in DB\n(not in .env)" as M2e #CCCCE8
-  component "**Rate Limiting**\n100 req/min/IP\nper-endpoint limits\nFail2ban integration" as M2f #CCCCE8
-  component "**CORS**\nExplicit domain\nallowlist only\n(no wildcard)" as M2g #CCCCE8
+@enduml
+
+
+@startuml ContextModel
+title <b>NextGenChat — Context Model</b>\n<size:10>How prompt assembly, compaction, and cache-sensitive structure work today</size>
+start
+
+:Resolve provider + model limit;
+:Reserve response buffer;
+:Ensure agent docs exist;
+:Load identity.md, agency.md, agent.md, heartbeat.md;
+:Load structured agent memory;
+:Load latest conversation summary;
+:Load recent channel messages;
+:Load trigger message;
+:Assemble stable prefix first;
+:Estimate tokens;
+
+if (Within budget?) then (yes)
+  :Use fitting recent window;
+else (no)
+  :Drop oldest turns until fit;
+  :Schedule async compaction for overflow;
+endif
+
+:Compute static prefix hash;
+:Send prompt to provider;
+:Persist usage metadata with agent message;
+stop
+
+note right
+  Current important behavior:
+  compaction is scheduled before hard overflow,
+  but it does not block the current reply.
+
+  Memory survives compaction because it is stored
+  outside the raw transcript and reloaded each run.
+end note
+
+@enduml
+
+
+@startuml DomainModel
+title <b>NextGenChat — Current Domain Model</b>\n<size:10>Core persisted entities in the running app</size>
+start
+
+partition "Identity and access" {
+  :User\nusername, passwordHash;
+  :Workspace\nname, slug;
 }
 
-note bottom of M2a
-  <b>Additions when switching to SHARED:</b>
-  ✓ TLS mandatory (Caddy + Let's Encrypt)
-  ✓ HSTS: max-age=31536000; preload
-  ✓ Invite system enabled (signed JWT, 48h)
-  ✓ Email/SMTP required (invites + reset)
-  ✓ Rate limiting fully enforced
-  ✓ CORS: explicit domain allowlist
-  ✓ API keys moved to encrypted DB storage
-  ✓ Friend data rights: GET /me/data
-  ✓ Friend account delete: DELETE /me
-  ✓ Owner revoke any session
-
-  <b>Network options:</b>
-  • Tailscale / WireGuard (recommended)
-  • Reverse proxy to VPS
-  • Cloudflare Tunnel
-
-  <b>DEPLOYMENT_MODE=network</b>
-  activates strict security posture.
-end note
-
-' ────────────────── MODE 3: MOBILE ──────────────────
-package "MODE 3: MOBILE  (Phase 8)" #FFF8EF {
-  component "**Runtime**\nExpo (iOS + Android)\nConnects to Mode 2" as M3a #F0D8B0
-  component "**Token Storage**\nExpo SecureStore\n(hardware-backed)\nnever AsyncStorage" as M3b #F0D8B0
-  component "**Network Security**\nCertificate pinning\n(MITM prevention)" as M3c #F0D8B0
-  component "**Auth**\nBiometric unlock\n(FaceID / Fingerprint)\nlocal — not sent to server" as M3d #F0D8B0
-  component "**Notifications**\nFCM + APNs\nNo content in payload\n(only channel name)" as M3e #F0D8B0
-  component "**Sessions**\nDevice-bound tokens\n30-day expiry\nremote revocation" as M3f #F0D8B0
+partition "Conversation model" {
+  :Channel\nworkspaceId, name, type;
+  :Message\nchannelId, senderType, content, metadata;
+  :ConversationSummary\nchannelId, agentId, summary, tokenCount;
 }
 
-note bottom of M3a
-  <b>Backend changes for MOBILE (additive only):</b>
-  + POST /auth/mobile-token
-    (device-bound, 30-day refresh token)
-  + POST /push/register
-    { deviceId, platform, fcmToken }
-  + DELETE /push/unregister
-    (called on logout)
-  + DELETE /sessions/:deviceId
-    (remote revoke — lost phone)
-  + PushToken table in DB
-
-  <b>No API contract changes.</b>
-  Mobile is just another client —
-  same Socket.io events, same REST API.
-  Shared @nextgenchat/types package
-  used by React Native via pnpm workspace.
-end note
-
-' ────────────────── MODE 4: CLOUD ──────────────────
-package "MODE 4: CLOUD  (Phase 9+)" #FFF4F4 {
-  component "**Runtime**\nKubernetes\nAuto-scaling pods" as M4a #EEBBB8
-  component "**Database**\nManaged RDS\n+ PITR\n+ Read replicas" as M4b #EEBBB8
-  component "**Cache / Queue**\nElastiCache\n(Redis managed)" as M4c #EEBBB8
-  component "**File Storage**\nAWS S3\nCross-region replication" as M4d #EEBBB8
-  component "**Secrets**\nHashiCorp Vault\nor AWS Secrets Manager" as M4e #EEBBB8
-  component "**Observability**\nOTEL + Grafana\nLoki + Tempo\nPrometheus" as M4f #EEBBB8
+partition "Agent model" {
+  :Agent\nworkspaceId, name, slug, triggerMode, primaryChannelId;
+  :AgentIdentity\npersona, voiceTone, systemPrompt;
+  :AgentMemory\nscope, key, value;
+  :ProviderConfig\nproviderName, model, encrypted credentials;
 }
 
-note bottom of M4a
-  <b>Cloud additions (no breaking changes):</b>
-  ✓ PostgreSQL → Managed RDS (PITR enabled)
-  ✓ Redis → ElastiCache
-  ✓ MinIO → S3 (cross-region replication)
-  ✓ Docker Compose → Kubernetes (HPA)
-  ✓ PgBouncer connection pooling
-  ✓ WAF + DDoS protection
-  ✓ Audit log export for compliance
-  ✓ Full OpenTelemetry tracing
-  ✓ Grafana dashboards + alerts
-    error rate > 1%, p95 > 2s,
-    queue depth > 1000
+partition "Agent workspace docs" {
+  :WorkspaceFile\ndocType, fileName, content, version;
+  :Current docs = agent.md, identity.md, agency.md, heartbeat.md, memory.md;
+}
 
-  <b>RTO: < 4h | RPO: < 1h</b>
-end note
+partition "Relationship summary" {
+  :Workspace contains channels and agents;
+  :Channels store messages;
+  :Agents own identity, memory, summaries, docs, and provider config;
+  :memory.md is the readable projection of AgentMemory;
+}
 
-' ────────────────── TRANSITIONS ──────────────────
-
-note as NRule
-  <b>Core rule:</b>
-  Each mode transition is <b>additive only</b>.
-  No breaking changes to DB schema or API contracts.
-  DEPLOYMENT_MODE env var switches security posture:
-  'local' = relaxed  |  'network' = strict
-end note
-
-M1a -right-> M2a : **Phase 7**\nAdd TLS + domain\ninvite system\nrate limiting
-M2a -right-> M3a : **Phase 8**\nMobile is another\nclient — same API
-M3a -right-> M4a : **Phase 9+**\nKubernetes +\nmanaged infra
-
+stop
 @enduml

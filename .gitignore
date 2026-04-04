@@ -32,3 +32,8 @@ coverage/
 
 # Logs
 *.log
+
+# Local data
+*.db
+*.db-shm
+*.db-wal

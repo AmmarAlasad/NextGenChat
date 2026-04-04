@@ -3,9 +3,10 @@
  *
  * Phase 1 implementation status:
  * - This file now validates the local-first configuration required for the first
- *   working backend slice: Fastify, Prisma, Redis/BullMQ, auth cookies, and OpenAI.
- * - Future phases will extend this schema with shared-mode email, storage, and
- *   advanced provider credentials without removing this foundation.
+ *   working backend slice: Fastify, Prisma, optional Redis/BullMQ, auth cookies,
+ *   and OpenAI.
+ * - Future phases will extend this schema with shared-mode email, storage,
+ *   managed infra toggles, and advanced provider credentials.
  *
  * Uses Zod to validate ALL required env vars on startup.
  * If any required variable is missing or invalid, the server
@@ -14,13 +15,18 @@
 
 import { z } from 'zod';
 
+const booleanish = z
+  .union([z.boolean(), z.enum(['true', 'false'])])
+  .transform((value) => value === true || value === 'true');
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   DEPLOYMENT_MODE: z.enum(['local', 'network']).default('local'),
   PORT: z.coerce.number().int().positive().default(3001),
   APP_URL: z.string().url().default('http://localhost:3000'),
   DATABASE_URL: z.string().min(1),
-  REDIS_URL: z.string().min(1),
+  REDIS_URL: z.string().default(''),
+  REDIS_ENABLED: booleanish.optional(),
   JWT_SECRET: z.string().min(16),
   JWT_REFRESH_SECRET: z.string().min(16),
   ENCRYPTION_KEY: z.string().min(16),
@@ -52,6 +58,8 @@ export const env = {
   isDevelopment: baseEnv.NODE_ENV === 'development',
   isProduction: baseEnv.NODE_ENV === 'production',
   isLocalMode: baseEnv.DEPLOYMENT_MODE === 'local',
+  redisEnabled:
+    baseEnv.REDIS_ENABLED ?? (baseEnv.DEPLOYMENT_MODE === 'network' && baseEnv.REDIS_URL.length > 0),
   corsOrigins: baseEnv.CORS_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean),
 };
 

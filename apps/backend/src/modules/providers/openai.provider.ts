@@ -56,6 +56,8 @@ export class OpenAIProvider extends BaseProvider {
         promptTokens: usage?.prompt_tokens ?? 0,
         completionTokens: usage?.completion_tokens ?? 0,
         totalTokens: usage?.total_tokens ?? 0,
+        cachedTokens:
+          (usage as { prompt_tokens_details?: { cached_tokens?: number } } | undefined)?.prompt_tokens_details?.cached_tokens ?? 0,
       },
       providerMetadata: {
         model: this.model,

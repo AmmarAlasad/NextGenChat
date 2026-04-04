@@ -43,6 +43,9 @@ export const ChannelSummarySchema = z.object({
   workspaceId: z.string().uuid(),
   name: z.string(),
   type: ChannelType,
+  participantAgentIds: z.array(z.string().uuid()).default([]),
+  participantAgentNames: z.array(z.string()).default([]),
+  lastMessageAt: z.string().nullable().optional(),
 });
 export type ChannelSummary = z.infer<typeof ChannelSummarySchema>;
 
@@ -51,6 +54,7 @@ export const MessageRecordSchema = z.object({
   channelId: z.string().uuid(),
   senderId: z.string().uuid(),
   senderType: SenderType,
+  senderName: z.string().nullable().optional(),
   content: z.string(),
   contentType: ContentType,
   metadata: z.record(z.unknown()).nullable(),
@@ -73,8 +77,19 @@ export type CreateWorkspaceInput = z.infer<typeof CreateWorkspaceSchema>;
 export const CreateChannelSchema = z.object({
   name: z.string().min(1).max(100),
   type: ChannelType.default('PUBLIC'),
+  agentIds: z.array(z.string().uuid()).default([]),
 });
 export type CreateChannelInput = z.infer<typeof CreateChannelSchema>;
+
+export const CreateDirectChannelSchema = z.object({
+  agentId: z.string().uuid(),
+});
+export type CreateDirectChannelInput = z.infer<typeof CreateDirectChannelSchema>;
+
+export const UpdateChannelAgentsSchema = z.object({
+  agentIds: z.array(z.string().uuid()).default([]),
+});
+export type UpdateChannelAgentsInput = z.infer<typeof UpdateChannelAgentsSchema>;
 
 // ── Message ────────────────────────────────────────────
 

@@ -5,7 +5,10 @@
   "description": "Collaborative AI agent chat platform",
   "scripts": {
     "setup": "bash scripts/setup.sh",
-    "dev:phase1": "bash scripts/dev.sh",
+    "setup:local": "bash scripts/setup.sh",
+    "install:local": "bash scripts/install.sh",
+    "dev:local": "bash scripts/dev.sh",
+    "dev:phase1": "pnpm dev:local",
     "stop": "bash scripts/stop.sh",
     "dev": "turbo dev",
     "build": "turbo build",

@@ -3,9 +3,9 @@
  *
  * Phase 1 implementation status:
  * - This file now boots the first functional backend milestone for NextGenChat.
- * - Current scope starts Fastify, validates env, connects Prisma and Redis, registers
- *   the local auth/chat/agent routes, creates Socket.io namespaces, and starts the
- *   BullMQ agent worker.
+ * - Current scope starts Fastify, validates env, connects Prisma and optional Redis,
+ *   registers the local auth/chat/agent routes, creates Socket.io namespaces, and
+ *   starts the agent processor in either worker or in-process mode.
  * - Future phases will add more modules, richer workers, and production hardening.
  */
 
@@ -22,6 +22,7 @@ import { authRoutes } from '@/modules/auth/auth.routes.js';
 import { authService } from '@/modules/auth/auth.service.js';
 import { agentsRoutes } from '@/modules/agents/agents.routes.js';
 import { chatRoutes } from '@/modules/chat/chat.routes.js';
+import { workspaceRoutes } from '@/modules/workspace/workspace.routes.js';
 import { createAgentProcessorWorker } from '@/queues/agent.processor.js';
 import { createSocketServer } from '@/sockets/socket-server.js';
 
@@ -43,6 +44,13 @@ export async function buildServer() {
   await fastify.register(cors, {
     origin: env.corsOrigins,
     credentials: true,
+    // Explicitly declare allowed methods and headers so that the preflight
+    // response is unambiguous for PUT and PATCH requests (which require
+    // non-simple CORS handling and send Authorization + Content-Type headers).
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    exposedHeaders: ['Content-Type'],
+    maxAge: 86_400, // cache preflight for 24 h to reduce OPTIONS round-trips
   });
 
   await fastify.register(cookie);
@@ -62,7 +70,7 @@ export async function buildServer() {
 
   fastify.get('/health', async () => {
     let db: 'ok' | 'error' = 'ok';
-    let redisStatus: 'ok' | 'error' = 'ok';
+    let redisStatus: 'ok' | 'error' | 'disabled' = env.redisEnabled ? 'ok' : 'disabled';
 
     try {
       await prisma.$queryRaw`SELECT 1`;
@@ -70,10 +78,12 @@ export async function buildServer() {
       db = 'error';
     }
 
-    try {
-      await redis.ping();
-    } catch {
-      redisStatus = 'error';
+    if (env.redisEnabled) {
+      try {
+        await redis.ping();
+      } catch {
+        redisStatus = 'error';
+      }
     }
 
     return {
@@ -88,13 +98,17 @@ export async function buildServer() {
   await fastify.register(authRoutes, { prefix: '/auth' });
   await fastify.register(chatRoutes);
   await fastify.register(agentsRoutes);
+  await fastify.register(workspaceRoutes);
 
   return fastify;
 }
 
 async function start() {
   await prisma.$connect();
-  await redis.ping();
+
+  if (env.redisEnabled) {
+    await redis.ping();
+  }
 
   const fastify = await buildServer();
   createSocketServer(fastify.server);
@@ -104,7 +118,11 @@ async function start() {
     await agentWorker.close();
     await fastify.close();
     await prisma.$disconnect();
-    await Promise.all([redis.quit(), redisPublisher.quit(), redisSubscriber.quit()]);
+
+    if (env.redisEnabled) {
+      await Promise.all([redis.quit(), redisPublisher.quit(), redisSubscriber.quit()]);
+    }
+
     process.exit(0);
   };
 

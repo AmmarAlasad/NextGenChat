@@ -10,7 +10,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -63,6 +63,7 @@ enum AgentStatus {
 }
 
 enum AgentTriggerMode {
+  AUTO
   MENTIONS_ONLY
   ALL_MESSAGES
   DISABLED
@@ -126,12 +127,13 @@ enum InviteStatus {
 enum AgentDocType {
   AGENT_MD
   IDENTITY_MD
+  AGENCY_MD
   MEMORY_MD
   HEARTBEAT_MD
 }
 
 model SystemSetting {
-  id        String   @id @default(uuid()) @db.Uuid
+  id        String   @id @default(uuid())
   key       String   @unique
   value     Json
   createdAt DateTime @default(now())
@@ -139,7 +141,7 @@ model SystemSetting {
 }
 
 model User {
-  id                    String                @id @default(uuid()) @db.Uuid
+  id                    String                @id @default(uuid())
   username              String                @unique
   email                 String?               @unique
   passwordHash          String
@@ -170,8 +172,8 @@ model User {
 }
 
 model RefreshToken {
-  id         String   @id @default(uuid()) @db.Uuid
-  userId     String   @db.Uuid
+  id         String   @id @default(uuid())
+  userId     String
   tokenHash  String   @unique
   expiresAt  DateTime
   revokedAt  DateTime?
@@ -183,8 +185,8 @@ model RefreshToken {
 }
 
 model PasswordResetToken {
-  id          String   @id @default(uuid()) @db.Uuid
-  userId      String   @db.Uuid
+  id          String   @id @default(uuid())
+  userId      String
   tokenHash   String   @unique
   expiresAt   DateTime
   usedAt      DateTime?
@@ -195,8 +197,8 @@ model PasswordResetToken {
 }
 
 model Workspace {
-  id                 String                @id @default(uuid()) @db.Uuid
-  ownerId            String                @db.Uuid
+  id                 String                @id @default(uuid())
+  ownerId            String
   name               String
   slug               String                @unique
   deploymentMode     DeploymentMode        @default(LOCAL)
@@ -214,9 +216,9 @@ model Workspace {
 }
 
 model WorkspaceMembership {
-  id          String        @id @default(uuid()) @db.Uuid
-  workspaceId String        @db.Uuid
-  userId      String        @db.Uuid
+  id          String        @id @default(uuid())
+  workspaceId String
+  userId      String
   role        WorkspaceRole
   joinedAt    DateTime      @default(now())
   workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -227,10 +229,10 @@ model WorkspaceMembership {
 }
 
 model Invite {
-  id            String       @id @default(uuid()) @db.Uuid
-  workspaceId    String       @db.Uuid
-  createdBy      String       @db.Uuid
-  acceptedBy     String?      @db.Uuid
+  id            String       @id @default(uuid())
+  workspaceId    String
+  createdBy      String
+  acceptedBy     String?
   tokenHash      String       @unique
   email          String?
   status         InviteStatus @default(PENDING)
@@ -246,8 +248,8 @@ model Invite {
 }
 
 model Channel {
-  id                String                  @id @default(uuid()) @db.Uuid
-  workspaceId       String                  @db.Uuid
+  id                String                  @id @default(uuid())
+  workspaceId       String
   name              String
   type              ChannelType
   archivedAt        DateTime?
@@ -263,9 +265,9 @@ model Channel {
 }
 
 model ChannelMembership {
-  id          String      @id @default(uuid()) @db.Uuid
-  channelId    String      @db.Uuid
-  userId       String      @db.Uuid
+  id          String      @id @default(uuid())
+  channelId    String
+  userId       String
   role         ChannelRole @default(MEMBER)
   joinedAt     DateTime    @default(now())
   lastReadAt   DateTime?
@@ -277,9 +279,9 @@ model ChannelMembership {
 }
 
 model Message {
-  id              String           @id @default(uuid()) @db.Uuid
-  channelId        String           @db.Uuid
-  senderId         String           @db.Uuid
+  id              String           @id @default(uuid())
+  channelId        String
+  senderId         String
   senderType       SenderType
   content          String
   contentType      ContentType      @default(TEXT)
@@ -298,9 +300,9 @@ model Message {
 }
 
 model MessageReaction {
-  id          String   @id @default(uuid()) @db.Uuid
-  messageId    String   @db.Uuid
-  userId       String   @db.Uuid
+  id          String   @id @default(uuid())
+  messageId    String
+  userId       String
   emoji        String
   createdAt    DateTime @default(now())
   message      Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
@@ -311,9 +313,9 @@ model MessageReaction {
 }
 
 model Attachment {
-  id                String               @id @default(uuid()) @db.Uuid
-  messageId          String               @db.Uuid
-  uploadedBy         String?              @db.Uuid
+  id                String               @id @default(uuid())
+  messageId          String
+  uploadedBy         String?
   fileKey            String               @unique
   fileName           String
   fileSize           Int
@@ -327,14 +329,14 @@ model Attachment {
 }
 
 model Agent {
-  id                 String                  @id @default(uuid()) @db.Uuid
-  workspaceId        String                  @db.Uuid
-  createdBy          String                  @db.Uuid
+  id                 String                  @id @default(uuid())
+  workspaceId        String
+  createdBy          String
   name               String
   slug               String
   status             AgentStatus             @default(ACTIVE)
   triggerMode        AgentTriggerMode        @default(MENTIONS_ONLY)
-  primaryChannelId   String?                 @db.Uuid
+  primaryChannelId   String?
   createdAt          DateTime                @default(now())
   updatedAt          DateTime                @updatedAt
   workspace          Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -355,8 +357,8 @@ model Agent {
 }
 
 model AgentIdentity {
-  id           String   @id @default(uuid()) @db.Uuid
-  agentId       String   @unique @db.Uuid
+  id           String   @id @default(uuid())
+  agentId       String   @unique
   avatarUrl     String?
   persona       String?
   voiceTone     String?
@@ -367,10 +369,10 @@ model AgentIdentity {
 }
 
 model AgentMemory {
-  id           String      @id @default(uuid()) @db.Uuid
-  agentId       String      @db.Uuid
-  channelId     String?     @db.Uuid
-  userId        String?     @db.Uuid
+  id           String      @id @default(uuid())
+  agentId       String
+  channelId     String?
+  userId        String?
   scope         MemoryScope
   key           String
   value         Json
@@ -382,13 +384,13 @@ model AgentMemory {
 }
 
 model AgentTool {
-  id               String         @id @default(uuid()) @db.Uuid
-  agentId           String         @db.Uuid
-  mcpServerToolId   String?        @db.Uuid
+  id               String         @id @default(uuid())
+  agentId           String
+  mcpServerToolId   String?
   toolName          String
   config            Json?
   requiresApproval  Boolean        @default(false)
-  approvedBy        String?        @db.Uuid
+  approvedBy        String?
   approvedAt        DateTime?
   createdAt         DateTime       @default(now())
   agent             Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
@@ -399,8 +401,8 @@ model AgentTool {
 }
 
 model AgentCronJob {
-  id          String      @id @default(uuid()) @db.Uuid
-  agentId      String      @db.Uuid
+  id          String      @id @default(uuid())
+  agentId      String
   schedule     String
   task         String
   lastRunAt    DateTime?
@@ -414,10 +416,10 @@ model AgentCronJob {
 }
 
 model AgentChannelMembership {
-  id          String   @id @default(uuid()) @db.Uuid
-  agentId      String   @db.Uuid
-  channelId    String   @db.Uuid
-  addedBy      String?  @db.Uuid
+  id          String   @id @default(uuid())
+  agentId      String
+  channelId    String
+  addedBy      String?
   addedAt      DateTime @default(now())
   agent        Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
   channel      Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
@@ -427,9 +429,9 @@ model AgentChannelMembership {
 }
 
 model AgentToolCall {
-  id           String    @id @default(uuid()) @db.Uuid
-  agentId       String    @db.Uuid
-  messageId     String?   @db.Uuid
+  id           String    @id @default(uuid())
+  agentId       String
+  messageId     String?
   toolName      String
   input         Json?
   output        Json?
@@ -444,8 +446,8 @@ model AgentToolCall {
 }
 
 model ProviderConfig {
-  id           String   @id @default(uuid()) @db.Uuid
-  agentId       String   @unique @db.Uuid
+  id           String   @id @default(uuid())
+  agentId       String   @unique
   providerName  String
   model         String
   credentials   String
@@ -456,8 +458,8 @@ model ProviderConfig {
 }
 
 model OAuthToken {
-  id            String   @id @default(uuid()) @db.Uuid
-  agentId        String   @unique @db.Uuid
+  id            String   @id @default(uuid())
+  agentId        String   @unique
   accessToken    String
   refreshToken   String
   expiresAt      DateTime
@@ -468,9 +470,9 @@ model OAuthToken {
 }
 
 model ConversationSummary {
-  id                  String   @id @default(uuid()) @db.Uuid
-  channelId            String   @db.Uuid
-  agentId              String   @db.Uuid
+  id                  String   @id @default(uuid())
+  channelId            String
+  agentId              String
   summary              String
   tokenCount           Int
   coversFromMessageId  String
@@ -483,15 +485,16 @@ model ConversationSummary {
 }
 
 model WorkspaceFile {
-  id             String               @id @default(uuid()) @db.Uuid
-  workspaceId     String?              @db.Uuid
-  agentId         String?              @db.Uuid
-  uploadedBy      String?              @db.Uuid
+  id             String               @id @default(uuid())
+  workspaceId     String?
+  agentId         String?
+  uploadedBy      String?
   docType         AgentDocType?
   key             String               @unique
   fileName        String
   fileSize        Int
   mimeType        String
+  content         String?
   version         Int                  @default(1)
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
@@ -505,11 +508,12 @@ model WorkspaceFile {
 }
 
 model WorkspaceFileVersion {
-  id           String        @id @default(uuid()) @db.Uuid
-  fileId        String        @db.Uuid
+  id           String        @id @default(uuid())
+  fileId        String
   key           String        @unique
   fileSize      Int
   mimeType      String
+  content       String?
   version       Int
   createdAt     DateTime      @default(now())
   file          WorkspaceFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
@@ -518,9 +522,9 @@ model WorkspaceFileVersion {
 }
 
 model Rule {
-  id            String          @id @default(uuid()) @db.Uuid
-  workspaceId    String          @db.Uuid
-  createdBy      String          @db.Uuid
+  id            String          @id @default(uuid())
+  workspaceId    String
+  createdBy      String
   name           String
   description    String?
   priority       Int             @default(100)
@@ -538,10 +542,10 @@ model Rule {
 }
 
 model RuleViolation {
-  id            String    @id @default(uuid()) @db.Uuid
-  ruleId         String    @db.Uuid
-  agentId        String?   @db.Uuid
-  reportedBy     String?   @db.Uuid
+  id            String    @id @default(uuid())
+  ruleId         String
+  agentId        String?
+  reportedBy     String?
   context        Json?
   resolvedAt     DateTime?
   createdAt      DateTime  @default(now())
@@ -553,9 +557,9 @@ model RuleViolation {
 }
 
 model PendingApproval {
-  id                String         @id @default(uuid()) @db.Uuid
-  agentToolCallId    String         @unique @db.Uuid
-  resolverId         String?        @db.Uuid
+  id                String         @id @default(uuid())
+  agentToolCallId    String         @unique
+  resolverId         String?
   status             ApprovalStatus @default(PENDING)
   expiresAt          DateTime
   resolvedAt         DateTime?
@@ -565,9 +569,9 @@ model PendingApproval {
 }
 
 model AuditLog {
-  id            String   @id @default(uuid()) @db.Uuid
-  workspaceId    String?  @db.Uuid
-  actorId        String?  @db.Uuid
+  id            String   @id @default(uuid())
+  workspaceId    String?
+  actorId        String?
   action         String
   targetType     String
   targetId       String?
@@ -578,9 +582,9 @@ model AuditLog {
 }
 
 model McpServer {
-  id             String          @id @default(uuid()) @db.Uuid
-  workspaceId     String          @db.Uuid
-  createdBy       String          @db.Uuid
+  id             String          @id @default(uuid())
+  workspaceId     String
+  createdBy       String
   name            String
   command         String
   args            Json?
@@ -594,8 +598,8 @@ model McpServer {
 }
 
 model McpServerTool {
-  id             String      @id @default(uuid()) @db.Uuid
-  serverId        String      @db.Uuid
+  id             String      @id @default(uuid())
+  serverId        String
   name            String
   description     String?
   inputSchema     Json?
@@ -609,8 +613,8 @@ model McpServerTool {
 }
 
 model PushToken {
-  id           String       @id @default(uuid()) @db.Uuid
-  userId        String       @db.Uuid
+  id           String       @id @default(uuid())
+  userId        String
   deviceId      String
   platform      PushPlatform
   token         String

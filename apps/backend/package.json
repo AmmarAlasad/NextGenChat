@@ -13,6 +13,7 @@
     "test:watch": "vitest --passWithNoTests",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
+    "prisma:push": "prisma db push --skip-generate",
     "prisma:studio": "prisma studio",
     "prisma:validate": "prisma validate"
   },

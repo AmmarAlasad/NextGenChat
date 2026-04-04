@@ -14,6 +14,7 @@
 
 'use client';
 
+import Image from 'next/image';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -72,8 +73,15 @@ export default function SetupPage() {
       <div className="w-full max-w-xl">
         {/* Page header — outside the card */}
         <header className="mb-10 text-center">
-          <div className="mb-6 inline-flex items-center justify-center rounded-xl bg-surface-container-high p-3">
-            <span className="font-mono text-2xl font-bold leading-none text-primary">&gt;_</span>
+          <div className="mb-6 inline-flex h-24 w-24 items-center justify-center overflow-hidden rounded-2xl border border-outline-variant/20 bg-surface-container-high shadow-sm">
+            <Image
+              alt="NextGenChat logo"
+              className="h-full w-full object-cover"
+              height={96}
+              priority
+              src="/nextgenchat-brand-mark.png"
+              width={96}
+            />
           </div>
           <h1 className="font-headline mb-3 text-3xl font-extrabold tracking-tight text-on-surface">
             NextGenChat

@@ -4,9 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-**Phase 1 is implemented and running.** The full architecture and roadmap live in `plan.md`. Read it before starting any significant work — it contains phase-by-phase task breakdowns, data models, security requirements, and the rationale behind tech choices.
+**Phases 1 through early 4 are implemented and running.** The full architecture and roadmap live in `plan.md`. Read it before starting any significant work — it contains phase-by-phase task breakdowns, data models, security requirements, and the rationale behind tech choices.
 
-Phase 1 includes: owner setup wizard, JWT auth (access token in memory, refresh in httpOnly cookie), one workspace + channel + agent, message persistence, BullMQ agent job pipeline, Socket.io streaming, and the full frontend (setup → login → chat).
+What is currently running:
+- **Phase 1:** owner setup wizard, JWT auth (access token in memory, refresh in httpOnly cookie), one workspace + channel + agent, message persistence, BullMQ agent job pipeline, Socket.io streaming, full frontend (setup → login → chat)
+- **Phase 2/3B (partial):** direct chats, group chats, speaker-aware group context assembly
+- **Phase 3C (partial):** agent creation + profile editing, group membership management for agents, selective agent routing before full prompt construction
+- **Phase 4 (partial):** dedicated agent workspace pages (profile + markdown docs), default agent workspace tools (`workspace.read_file`, `workspace.apply_patch`)
 
 ## Monorepo Layout
 
@@ -55,23 +59,26 @@ Use this format for TypeScript/TSX files:
 
 ```bash
 # ── First-time setup (run once after cloning) ────────────────────────────────
-# Enables PostgreSQL + Redis on boot, sets DB password, creates database,
-# installs deps, and runs migrations. Requires sudo (asked interactively).
-pnpm setup
+# Creates a local SQLite-backed .env, installs deps, and syncs Prisma.
+pnpm setup:local
+
+# One-line bootstrap from a cloned repo
+pnpm install:local
 
 # ── Daily dev workflow ────────────────────────────────────────────────────────
-# Auto-starts PostgreSQL/Redis if needed, applies any new migrations, then
-# launches backend (http://localhost:3001) + frontend (http://localhost:3000).
+# Syncs Prisma and launches backend (http://localhost:3001)
+# + frontend (http://localhost:3000).
+pnpm dev:local
 pnpm dev:phase1
 
-# Stop all dev servers (leaves PostgreSQL and Redis running)
+# Stop all dev servers
 pnpm stop
 
 # ── Other ─────────────────────────────────────────────────────────────────────
 # Install all workspace dependencies
 pnpm install
 
-# Start full stack via Docker (PostgreSQL, Redis, MinIO, backend, frontend)
+# Start full stack via Docker (legacy/shared-mode infra)
 docker compose -f docker/docker-compose.yml up
 
 # Run all apps in dev mode without the infra/migration pre-check
@@ -98,7 +105,8 @@ pnpm --filter @nextgenchat/backend exec vitest run -t "test name"          # sin
 
 # Prisma (note the colon-separated script names)
 pnpm --filter @nextgenchat/backend prisma:generate   # after schema changes
-pnpm --filter @nextgenchat/backend prisma:migrate    # run migrations (uses --env-file ../../.env)
+pnpm --filter @nextgenchat/backend prisma:push       # sync the local SQLite schema
+pnpm --filter @nextgenchat/backend prisma:migrate    # network/shared-mode migration workflow
 pnpm --filter @nextgenchat/backend prisma:studio     # GUI browser
 ```
 
@@ -107,9 +115,9 @@ pnpm --filter @nextgenchat/backend prisma:studio     # GUI browser
 These are locked decisions from `plan.md`:
 
 - **Fastify** (not Express) for the backend — schema validation, TypeScript-first, performance
-- **Socket.io** (not raw WebSockets) — for rooms, namespaces, Redis adapter, and mobile SDK compatibility
-- **Redis Pub/Sub via `@socket.io/redis-adapter`** — required for horizontal scaling; all Socket.io rooms must broadcast through this, never directly
-- **BullMQ** for all agent job execution — LLM calls and agent actions are **never** synchronous in the request cycle
+- **Socket.io** (not raw WebSockets) — for rooms, namespaces, optional Redis adapter, and mobile SDK compatibility
+- **SQLite is the default local data store** — no external database is required for one-line local installs
+- **Redis and BullMQ are optional in local mode** and become required again for shared/cloud scale
 - **Prisma** ORM — no raw SQL except for full-text search queries using `$queryRaw` when necessary
 - **Argon2id** for password hashing — not bcrypt, not SHA
 - **Refresh tokens in `httpOnly; Secure; SameSite=Strict` cookies** — access tokens in memory, never `localStorage`
@@ -163,10 +171,16 @@ modules/
     auth.schema.ts      # Re-exports from @nextgenchat/types (do not redefine)
   chat/
   agents/
+    agent-routing.service.ts   # Pre-LLM routing decision — which agents respond
   workspace/
+    agent-workspace-tools.service.ts  # Default read_file / apply_patch tools
   rules/
   mcp/
+  context/
+  providers/
 ```
+
+Sockets live in `apps/backend/src/sockets/`: `chat.socket.ts` handles `/chat` namespace events, `presence.socket.ts` handles `/presence`.
 
 Route handlers stay thin — call service methods, return results. All business logic lives in `*.service.ts`.
 
@@ -197,6 +211,52 @@ When implementing anything that involves an agent responding:
 3. Worker builds context: system prompt + injected memory + recent message history
 4. LLM response saved as message (`senderType: AGENT`) and broadcast via Socket.io
 5. Memory update (if any) happens after broadcast — do not block the response
+
+### BullMQ Queue Processors
+
+Four processors live under `apps/backend/src/queues/`:
+
+| File | Queue | Purpose |
+|---|---|---|
+| `agent.processor.ts` | `agent:process` | Runs the LLM call, streams response, saves message |
+| `compaction.processor.ts` | `context:compact` | Summarizes old history when token budget is exceeded |
+| `file-scanner.processor.ts` | `file:scan` | Virus-scans uploaded attachments |
+| `cron.processor.ts` | `agent:cron` | Triggers scheduled agent tasks (AgentCronJob) |
+
+## Agent Routing
+
+Before building full context for any agent, `agent-routing.service.ts` runs a three-stage filter:
+
+1. **Deterministic gates** — immediate pass/fail: `triggerMode` (DISABLED, MENTIONS_ONLY, ALL_MESSAGES, AUTO), cooldown window (last N messages), agent-chain depth guard
+2. **Shortlist** — explicit `@slug` mentions, name mentions (user messages only), fan-out keywords (`both`, `all`, `everyone`, etc.), and group-wide identity questions
+3. **Router model** — for AUTO-mode agents not caught by stage 2, a cheap OpenAI call reads compact agent profiles and decides who should respond
+
+`ROUTING_MAX_RESPONDERS` caps simultaneous responders; `ROUTING_MAX_AGENT_CHAIN` prevents infinite agent-to-agent loops. Both are constants in `apps/backend/src/config/constants.ts`.
+
+## Agent Workspace & Docs
+
+Every agent has an isolated workspace in the `WorkspaceFile` table (rows where `agentId` is set). The `AgentDocType` enum categorises the markdown documents that live there:
+
+| DocType | Purpose |
+|---|---|
+| `AGENT_MD` | Core identity + capabilities document |
+| `IDENTITY_MD` | Persona and voice details |
+| `AGENCY_MD` | What the agent is allowed to do |
+| `MEMORY_MD` | Long-term persistent notes written by the agent |
+| `HEARTBEAT_MD` | Cron-driven status log |
+
+All agents receive two workspace tools by default (implemented in `agent-workspace-tools.service.ts`):
+- `workspace.read_file` — reads a file from the agent's workspace by `fileName`
+- `workspace.apply_patch` — applies a SEARCH/REPLACE diff using the format:
+
+```
+=== SEARCH ===
+<old text>
+=== REPLACE ===
+<new text>
+```
+
+File access is isolated per agent — always filter by `agentId` in workspace file queries.
 
 ## TypeScript Conventions
 
@@ -246,6 +306,10 @@ The `frontend-design` skill is installed at `~/.claude/skills/frontend-design/SK
 ### Chat Screen Layout
 
 `apps/web/src/components/chat-screen.tsx` is a fixed-height layout (`h-screen overflow-hidden`). The messages canvas (`<section ref={scrollContainerRef}>`) is the **only** scrollable element. Auto-scroll only fires when the user is within 120 px of the bottom (`isNearBottomRef`). Do not reintroduce `scrollIntoView` or `min-h-screen` on the outer containers — both were bugs that caused whole-page scroll jitter.
+
+### Agent Admin Page
+
+`apps/web/src/app/agents/[id]/page.tsx` renders `agent-admin-screen.tsx` — the per-agent workspace view (profile, markdown docs, tool config). This is a separate route from the main chat shell.
 
 ## Environment & Secrets
 

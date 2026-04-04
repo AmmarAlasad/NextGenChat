@@ -30,37 +30,51 @@
 
 ## 1. Architecture Overview
 
+### Current Implementation Snapshot
+
+The codebase has moved beyond the earliest single-agent slice. The current local-first app now includes:
+
+- owner setup, login, and refresh-token auth
+- direct chats and group chats
+- agent creation and profile editing
+- group membership management for agents
+- dedicated agent workspace pages for profile + markdown docs
+- selective agent routing before full prompt construction
+- speaker-aware group context assembly
+- default agent workspace tools scaffolded as `workspace.read_file` and `workspace.apply_patch`
+
+The roadmap below remains the long-term plan, but several Phase 2, 3B, 3C, and Phase 4 items are already partially or fully implemented in the running local app.
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                          CLIENTS                                │
 │  ┌──────────────┐   ┌───────────────┐   ┌──────────────────┐   │
-│  │  Next.js     │   │ React Native  │   │  Third-party /   │   │
-│  │  Web App     │   │ Mobile (Ph.8) │   │  Future APIs     │   │
+│  │  Local Web   │   │ React Native  │   │  Third-party /   │   │
+│  │  UI / Shell  │   │ Mobile (Ph.8) │   │  Future APIs     │   │
 │  └──────┬───────┘   └──────┬────────┘   └────────┬─────────┘   │
 └─────────┼─────────────────┼────────────────────── ┼────────────┘
           │                 │                        │
           │        REST + WebSocket (Socket.io)       │
           ▼                 ▼                        ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│              REVERSE PROXY  (Caddy / Nginx)                     │
-│         [LOCAL: localhost only]  [SHARED: TLS + domain]         │
+│            LOCAL LAUNCHER / DESKTOP WRAPPER (Phase 0)           │
+│        [LOCAL: embedded runtime] [SHARED: proxy + domain]       │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────────┐
-│                BACKEND  (TypeScript / Node.js / Fastify)        │
+│              LOCAL RUNTIME  (TypeScript / Node.js / Fastify)    │
 │                                                                 │
 │  ┌───────────────┐  ┌──────────────┐  ┌──────────────────────┐ │
 │  │   REST API    │  │  Socket.io   │  │    Agent Runner      │ │
-│  │   (Fastify)   │  │  Server      │  │  (BullMQ workers)    │ │
+│  │   (Fastify)   │  │  Server      │  │ (in-process locally) │ │
 │  └───────┬───────┘  └──────┬───────┘  └──────────┬───────────┘ │
 │          └─────────────────┴─────────────────────┘             │
 │                             │                                   │
-│  ┌──────────┐  ┌────────────┴─┐  ┌──────────┐  ┌───────────┐  │
-│  │PostgreSQL│  │    Redis     │  │  BullMQ  │  │  MinIO /  │  │
-│  │(primary) │  │(pub-sub,     │  │  (jobs,  │  │  S3       │  │
-│  │          │  │ sessions,    │  │  cron)   │  │  (files)  │  │
-│  │          │  │ cache, ratelim)│ │          │  │           │  │
-│  └──────────┘  └──────────────┘  └──────────┘  └───────────┘  │
+│  ┌──────────┐  ┌────────────┴─┐  ┌───────────┐  ┌───────────┐  │
+│  │ SQLite   │  │ Optional      │  │ Local FS  │  │  Shared / │  │
+│  │(embedded)│  │ Redis/BullMQ  │  │ + app data│  │  Cloud    │  │
+│  │          │  │(shared mode)  │  │           │  │  later     │  │
+│  └──────────┘  └──────────────┘  └───────────┘  └───────────┘  │
 │                                                                 │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │             LLM PROVIDER LAYER                           │  │
@@ -71,9 +85,10 @@
 
 **Core decisions (locked):**
 - Single backend serves all clients: web, mobile, future integrations — same REST + WebSocket API
-- Socket.io over raw WebSockets — rooms, namespaces, Redis adapter for horizontal scaling, React Native SDK exists
-- Redis Pub/Sub via `@socket.io/redis-adapter` — required for multi-instance broadcasting
-- BullMQ for all async work — LLM calls, agent jobs, cron, file scanning. Never block the request cycle
+- Local installs must run without requiring Postgres or Redis
+- SQLite is the default local datastore for the packaged single-user experience
+- Socket.io over raw WebSockets — rooms, namespaces, optional Redis adapter for horizontal scaling, React Native SDK exists
+- Redis Pub/Sub and BullMQ return in shared/cloud modes; local mode uses in-process execution where needed
 - `@nextgenchat/types` package — Zod schemas + TypeScript types shared across backend, web, and mobile
 
 ---
@@ -88,15 +103,17 @@ MODE 1: LOCAL       MODE 2: SHARED       MODE 3: MOBILE        MODE 4: CLOUD
 Your machine only   Friends can join     iOS / Android app     Multi-tenant SaaS
 Single user         Invite-only          Connects to Mode 2    Kubernetes
 localhost           Network exposed      backend               Auto-scaling
-Docker Compose      TLS required         Push notifications    Full observability
+One-line bootstrap  TLS required         Push notifications    Full observability
 No TLS needed       Rate limits critical Certificate pinning   Backup/DR
 API keys in .env    Email invites        Biometric auth        Compliance
-Simple auth setup   Full RBAC            SecureStore tokens
+SQLite local data   Full RBAC            SecureStore tokens
 ```
 
 ### What changes at each mode transition
 
 **Local → Shared (Phase 7):**
+- Replace embedded SQLite with PostgreSQL
+- Turn on Redis + BullMQ for scale-out queues and socket fan-out
 - TLS certificate required (Caddy auto-TLS or Let's Encrypt)
 - Registration system moves from "owner setup wizard" to invite-only registration
 - Rate limiting becomes critical (network-exposed endpoints)
@@ -129,11 +146,11 @@ Simple auth setup   Full RBAC            SecureStore tokens
 |---|---|---|
 | Runtime | Node.js 22 LTS + TypeScript 5 | Stable LTS, great ecosystem, type safety |
 | Framework | Fastify | Faster than Express, built-in schema validation, TypeScript-native |
-| Real-time | Socket.io 4 | Rooms, namespaces, Redis adapter, React Native SDK exists |
+| Real-time | Socket.io 4 | Rooms, namespaces, local-only by default, Redis adapter when scaling |
 | ORM | Prisma | Type-safe queries, migrations, no raw SQL drift |
-| Database | PostgreSQL 16 | ACID, JSONB columns for agent memory/config, full-text search |
-| Cache / PubSub | Redis 7 | Socket.io scaling, session store, rate-limit counters, context cache |
-| Job Queue | BullMQ | Agent cron jobs, async LLM calls, retries, delayed jobs |
+| Database | SQLite (local), PostgreSQL (shared/cloud) | One-line local install now, scalable relational store later |
+| Cache / PubSub | Optional Redis | Disabled in local packaged mode, enabled for shared/cloud scale |
+| Job Queue | In-process locally, BullMQ later | Local simplicity now, durable background jobs when shared |
 | Auth | JWT (access) + refresh tokens in httpOnly cookies | Stateless scale + secure rotation |
 | File Storage | MinIO (local/self-hosted), AWS S3 (cloud) | Unified S3-compatible API |
 | Validation | Zod | Runtime + compile-time, shared with frontend and mobile |
@@ -164,8 +181,8 @@ Simple auth setup   Full RBAC            SecureStore tokens
 ### DevOps / Infrastructure
 | Layer | Local Mode | Shared/Cloud Mode |
 |---|---|---|
-| Containers | Docker Compose | Kubernetes |
-| Proxy | Caddy (auto-TLS) | Nginx or Caddy |
+| Packaging | One-line bootstrap / desktop wrapper | Containers + orchestrator |
+| Proxy | None required | Nginx or Caddy |
 | CI/CD | GitHub Actions | GitHub Actions |
 | Secrets | `.env` (local) | Doppler / AWS Secrets Manager |
 | Monitoring | Pino logs to stdout | OpenTelemetry + Grafana stack |
@@ -200,7 +217,7 @@ nextgenchat/
 │   │   │   │   ├── rules/
 │   │   │   │   └── mcp/
 │   │   │   ├── sockets/          # Socket.io event handlers + rooms
-│   │   │   ├── queues/           # BullMQ workers and producers
+│   │   │   ├── queues/           # Local job processors; BullMQ workers later
 │   │   │   └── middleware/       # Auth, rate-limit, logging
 │   │   ├── prisma/
 │   │   │   └── schema.prisma
@@ -247,7 +264,7 @@ nextgenchat/
 
 ## 5. Phase 0 — Foundation & Local Dev
 
-**Goal:** Clone the repo, run `docker compose up`, have the full stack running. No configuration required except adding API keys.
+**Goal:** User runs one command, gets a local working app with no Postgres or Redis install. Local mode must be self-contained.
 
 ### Tasks
 
@@ -258,20 +275,20 @@ nextgenchat/
 - Shared ESLint + Prettier config in `packages/config`
 - `.nvmrc` pinned to Node 22
 
-#### P0-02 — Docker Compose (Local Mode)
-- PostgreSQL 16 with health check + persistent volume
-- Redis 7 with persistent volume
-- MinIO with persistent volume + auto-creates `nextgenchat` bucket on first start
+#### P0-02 — One-Line Local Bootstrap
+- Raw GitHub installer script users can paste into a shell
+- Creates `.env` automatically with generated local secrets
+- Uses SQLite database file for local persistence
+- No required Postgres, Redis, or Docker install
 - Backend with hot reload (`tsx --watch`)
 - Frontend with `next dev`
-- All services networked together, no ports exposed beyond `localhost`
-- Single `docker compose up` brings everything up
+- Single bootstrap command brings everything up on `localhost`
 
 #### P0-03 — Backend Bootstrap
 - Fastify server with TypeScript
 - Zod env validation on startup — server refuses to start if required env vars missing
 - Prisma client setup with `schema.prisma`
-- Health check: `GET /health` returns `{ status, version, db: "ok"|"error", redis: "ok"|"error" }`
+- Health check: `GET /health` returns `{ status, version, db: "ok"|"error", redis: "ok"|"error"|"disabled" }`
 - Graceful shutdown: SIGTERM/SIGINT drain active connections before exit
 - Pino logger configured from start (JSON in prod, pretty in dev)
 
@@ -313,7 +330,7 @@ nextgenchat/
 | TLS | Not required (localhost) | Required |
 | Rate limiting | Disabled or very relaxed | Strict (network-exposed) |
 | Email/SMTP | Not required | Required for invites |
-| Session storage | Local Redis | Same |
+| Session / queue infra | In-process + SQLite | Redis + BullMQ |
 
 ### Tasks
 
@@ -330,7 +347,7 @@ nextgenchat/
 - On success: **short-lived JWT access token** (15 min) + **refresh token** (7 days)
 - Access token: returned in response body, stored in memory on client (not `localStorage`)
 - Refresh token: stored in `httpOnly; Secure; SameSite=Strict` cookie
-- Failed login: generic "invalid credentials" message, increment counter in Redis
+- Failed login: generic "invalid credentials" message, increment counter in local memory or Redis depending on mode
 - Account lockout after 10 failures: 15-minute lock (not permanent)
 
 #### P1-03 — Token Refresh & Logout
@@ -374,7 +391,7 @@ nextgenchat/
 
 ## 7. Phase 2 — Core Real-Time Chat & Persistence
 
-**Goal:** Users create workspaces and channels, send messages in real time, and all messages are persisted to PostgreSQL. Chat history survives restarts.
+**Goal:** Users create workspaces and channels, send messages in real time, and all messages are persisted to the local database. Chat history survives restarts.
 
 ### Data Model
 
@@ -420,6 +437,8 @@ This is deliberate. LLM responses carry provider-specific metadata (model used, 
 #### P2-02 — Channel Management
 - `POST /workspaces/:id/channels` — create channel
 - `GET /workspaces/:id/channels` — list accessible channels
+- `POST /agents/:id/direct-channel` — create or open direct chat with a specific agent
+- `PUT /channels/:id/agents` — manage which agents belong to a group chat
 - `POST /channels/:id/invite` — invite user (admin)
 - `DELETE /channels/:id` — archive (soft delete)
 
@@ -450,9 +469,13 @@ This is deliberate. LLM responses carry provider-specific metadata (model used, 
   - `message:stream:end` — stream complete
 - All socket payloads validated with Zod before processing
 
+**Current implementation note:**
+- Real-time message send, stream chunk, and stream end are already working in local mode.
+- Group chat and direct chat both use the same persisted message pipeline.
+
 #### P2-05 — Redis Adapter (Horizontal Scaling)
-- `@socket.io/redis-adapter` installed and configured from Phase 0
-- All room broadcasts go through Redis — works even with 1 instance, ready for N instances
+- `@socket.io/redis-adapter` remains optional in local mode and is enabled in shared/cloud mode
+- When enabled, all room broadcasts go through Redis for multi-instance fan-out
 
 #### P2-06 — Presence System
 - On connect: `SET user:{userId}:status ONLINE EX 60` in Redis
@@ -731,9 +754,13 @@ ContextCacheEntry             ← track Anthropic cache usage
   1. System prompt (from `AgentIdentity`) — marked as cacheable (Anthropic)
   2. Agent memory (GLOBAL + CHANNEL scope) — marked as cacheable
   3. Latest `ConversationSummary` if one exists (marked as cacheable)
-  4. Recent messages from DB (newest first, fill remaining budget)
+  4. Recent messages from DB (speaker-labeled, fill remaining budget)
   5. Trigger message (always included, last)
 - If step 4 would exceed budget: trigger auto-compaction (P3B-03) first
+
+**Current implementation note:**
+- The current builder already injects runtime identity and participant context.
+- In group chats, colleague-agent messages are framed separately from the responder's own assistant turns.
 
 #### P3B-03 — Auto-Compaction Service
 - Triggered when: `tokenCount(systemPrompt + memory + fullHistory) > contextLimit - RESPONSE_BUFFER`
@@ -749,6 +776,10 @@ ContextCacheEntry             ← track Anthropic cache usage
 - Compaction is async (BullMQ job) — it does not block the current LLM call
   - Current call uses truncated history; compacted context used from next call onward
 - Summary itself is also subject to budget — if summaries accumulate, summarize the summaries (recursive, max 3 levels)
+
+**Current implementation note:**
+- Async compaction scheduling is already wired in local mode.
+- The current implementation still needs deeper summary quality controls and recursive summary management.
 
 #### P3B-04 — Prompt Caching (Anthropic)
 - Implemented within `AnthropicProvider.complete()`:
@@ -786,6 +817,12 @@ ContextCacheEntry             ← track Anthropic cache usage
 ## 10. Phase 3C — AI Agent System
 
 **Goal:** Admins create agents, assign them to channels, give them identities, memory, tools, and cron schedules. Agents use the LLM Provider Layer (Phase 3A) and Context Management (Phase 3B).
+
+**Current implementation note:**
+- Agent CRUD exists in the local app.
+- Agents can be assigned to direct chats and group chats.
+- Triggering now includes `AUTO`, `MENTIONS_ONLY`, `ALL_MESSAGES`, and `DISABLED`.
+- Group chats can select multiple responders when the user clearly addresses the room.
 
 ### Data Model
 
@@ -844,15 +881,15 @@ AgentToolCall                 ← audit log of all tool invocations
 #### P3C-04 — Agent Message Pipeline
 1. Message arrives in channel (via socket or REST)
 2. Message saved to DB
-3. Check: does this channel have active agents? Are they triggered?
-4. For each triggered agent: enqueue BullMQ job `agent:process { agentId, channelId, messageId }`
+3. Cheap routing stage decides which agents should engage
+4. For each selected agent: enqueue BullMQ job `agent:process { agentId, channelId, messageId }`
 5. Worker executes:
    a. Load agent config + provider config (decrypted)
    b. `ContextBuilder.build()` → context window managed, compacted if needed
    c. Streaming LLM call via provider: emit `message:stream:chunk` events via Socket.io
    d. On stream complete: save full response as `Message { senderType: AGENT }`
    e. Update agent memory if LLM signals memory operations via tool calls
-6. Agents do NOT respond to other agents by default (`senderType === AGENT` → skip)
+6. In direct chats, only the assigned agent responds. In group chats, agents can observe other agents and may respond selectively based on routing rules.
 7. Job timeout: 90 seconds. On timeout: save error message, mark job failed
 
 #### P3C-05 — Streaming Responses
@@ -869,6 +906,10 @@ AgentToolCall                 ← audit log of all tool invocations
 - All tool calls logged to `AgentToolCall` table
 - Tool execution sandboxed in separate BullMQ worker (no shared state with main process)
 
+**Current implementation note:**
+- Every newly created agent already gets default workspace tool definitions for `workspace.read_file` and `workspace.apply_patch`.
+- Backend routes for those workspace tools exist as foundations, but fully autonomous tool execution inside agent runs is still a later step.
+
 #### P3C-07 — Agent Cron / Heartbeat System
 - `POST /agents/:id/cron` — create schedule `{ schedule: "0 9 * * 1-5", task: "..." }`
 - BullMQ repeatable jobs handle cron
@@ -877,8 +918,15 @@ AgentToolCall                 ← audit log of all tool invocations
 
 #### P3C-08 — Agent Triggers
 - `@agent-name` mention: triggers that specific agent
-- Trigger modes (per agent): `MENTIONS_ONLY` | `ALL_MESSAGES` | `DISABLED`
-- Anti-loop guard: agents never trigger agents (configurable exception for orchestration)
+- Trigger modes (per agent): `AUTO` | `MENTIONS_ONLY` | `ALL_MESSAGES` | `DISABLED`
+- Anti-loop guard: direct chats stay single-agent; group chats allow selective agent-to-agent visibility and limited follow-up
+
+**Current implementation note:**
+- The running app already uses a hybrid routing path:
+  1. deterministic filters
+  2. compact agent routing profiles
+  3. cheap router model
+  4. full prompt construction only for selected responders
 
 **Security actions in Phase 3C:**
 - Agent cannot read channels it is not a member of
@@ -892,6 +940,10 @@ AgentToolCall                 ← audit log of all tool invocations
 
 **Goal:** Each agent has a private workspace. There is a shared group workspace. Files are versioned.
 
+**Current implementation note:**
+- The private agent workspace already exists for profile docs and agent-owned markdown files.
+- Shared group workspace storage is still future work.
+
 ### Tasks
 
 #### P4-01 — Private Agent Workspaces
@@ -900,6 +952,10 @@ AgentToolCall                 ← audit log of all tool invocations
 - `POST /agents/:id/workspace/files` — upload (admin)
 - `DELETE /agents/:id/workspace/files/:key` — delete
 - Agent reads/writes own workspace via approved tools only
+
+**Current implementation note:**
+- The current local app stores agent docs inside the workspace persistence layer.
+- Read and apply-patch workspace tool endpoints exist for agent-owned workspace files.
 
 #### P4-02 — Shared Group Workspace
 - S3 prefix: `workspaces/shared/{workspaceId}/`
@@ -914,9 +970,12 @@ AgentToolCall                 ← audit log of all tool invocations
 - `POST /workspaces/:id/files/:key/restore/:versionId` — restore
 
 #### P4-04 — Agent Doc Files UI
-- Dedicated Markdown editor with preview for `Agent.md`, `identity.md`, `memory.md`, `Heartbeat.md`
+- Dedicated Markdown editor with preview for `Agent.md`, `identity.md`, `agency.md`, `memory.md`, `Heartbeat.md`
 - Auto-save with debounce (2s after last keystroke)
 - `memory.md` auto-synced when `AgentMemory` is updated
+
+**Current implementation note:**
+- The current agent workspace UI already provides profile editing, markdown editing, preview, and a helper AI bubble for rewriting docs.
 
 **Security actions in Phase 4:**
 - All file access via backend auth check — never direct S3 URLs to clients

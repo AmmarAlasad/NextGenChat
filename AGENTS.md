@@ -6,7 +6,7 @@ This file is the operating guide for coding agents working in `NextGenChat`.
 
 - Monorepo managed with `pnpm` workspaces and `turbo`.
 - Apps live in `apps/`; shared packages live in `packages/`.
-- Backend: Fastify + Socket.io + BullMQ + Prisma + TypeScript.
+- Backend: Fastify + Socket.io + Prisma + TypeScript, with local in-process jobs and BullMQ reserved for shared mode.
 - Web: Next.js App Router + React + TypeScript.
 - Shared contracts: `packages/types` with Zod schemas and inferred types.
 - Current status: active planning / early development; read `plan.md` before major work.
@@ -15,7 +15,7 @@ This file is the operating guide for coding agents working in `NextGenChat`.
 
 - Use Fastify, not Express.
 - Use Socket.io, not raw WebSockets.
-- Use BullMQ for agent / LLM work; do not call LLMs inline in request handlers.
+- Local mode may dispatch agent / LLM work in-process after persistence; shared mode uses BullMQ.
 - Use Prisma for DB access; avoid raw SQL except approved full-text cases.
 - Use Argon2id for password hashing.
 - Keep refresh tokens in secure `httpOnly` cookies; never use `localStorage`.
@@ -27,6 +27,7 @@ This file is the operating guide for coding agents working in `NextGenChat`.
 ### Workspace commands
 
 - Install deps: `pnpm install`
+- Local setup: `pnpm setup:local`
 - Run all dev tasks: `pnpm dev`
 - Build all packages: `pnpm build`
 - Lint all packages: `pnpm lint`
@@ -60,6 +61,7 @@ This file is the operating guide for coding agents working in `NextGenChat`.
 ### Database / Prisma
 
 - Generate Prisma client: `pnpm --filter @nextgenchat/backend prisma:generate`
+- Sync local SQLite schema: `pnpm --filter @nextgenchat/backend prisma:push`
 - Run Prisma migrations: `pnpm --filter @nextgenchat/backend prisma:migrate`
 - Open Prisma Studio: `pnpm --filter @nextgenchat/backend prisma:studio`
 
@@ -115,7 +117,7 @@ This file is the operating guide for coding agents working in `NextGenChat`.
 - Never emit ad-hoc socket event names; use the shared contracts in `packages/types/src/socket-events.ts`.
 - Rooms are named `channel:{channelId}`; namespaces are `/chat` and `/presence`.
 - Agent responses must go through the normal message pipeline with `senderType: 'AGENT'`.
-- For agent-triggered work: save message, enqueue BullMQ job, build context, save response, broadcast, then update memory.
+- For agent-triggered work: save message, dispatch the local job or BullMQ job, build context, save response, broadcast, then update memory.
 
 ## Frontend Rules
 

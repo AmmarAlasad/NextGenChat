@@ -8,6 +8,8 @@
 export {
   CreateWorkspaceSchema,
   CreateChannelSchema,
+  CreateDirectChannelSchema,
+  UpdateChannelAgentsSchema,
   SendMessageSchema,
   EditMessageSchema,
   MessagePaginationSchema,
@@ -17,6 +19,8 @@ export {
   ContentType,
   type CreateWorkspaceInput,
   type CreateChannelInput,
+  type CreateDirectChannelInput,
+  type UpdateChannelAgentsInput,
   type SendMessageInput,
   type EditMessageInput,
   type MessagePaginationInput,

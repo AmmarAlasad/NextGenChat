@@ -26,7 +26,7 @@ import { z } from 'zod';
 export const AgentStatus = z.enum(['ACTIVE', 'PAUSED', 'ARCHIVED']);
 export type AgentStatus = z.infer<typeof AgentStatus>;
 
-export const AgentTriggerMode = z.enum(['MENTIONS_ONLY', 'ALL_MESSAGES', 'DISABLED']);
+export const AgentTriggerMode = z.enum(['AUTO', 'MENTIONS_ONLY', 'ALL_MESSAGES', 'DISABLED']);
 export type AgentTriggerMode = z.infer<typeof AgentTriggerMode>;
 
 export const MemoryScope = z.enum(['GLOBAL', 'CHANNEL', 'USER']);
@@ -44,6 +44,13 @@ export const AgentSummarySchema = z.object({
 });
 export type AgentSummary = z.infer<typeof AgentSummarySchema>;
 
+export const AgentDetailSchema = AgentSummarySchema.extend({
+  primaryChannelId: z.string().uuid().nullable(),
+  voiceTone: z.string().nullable(),
+  activeChannelIds: z.array(z.string().uuid()).default([]),
+});
+export type AgentDetail = z.infer<typeof AgentDetailSchema>;
+
 // ── Agent CRUD ─────────────────────────────────────────
 
 export const CreateAgentSchema = z.object({
@@ -51,7 +58,7 @@ export const CreateAgentSchema = z.object({
   systemPrompt: z.string().max(10_000).optional(),
   persona: z.string().max(2_000).optional(),
   voiceTone: z.string().max(200).optional(),
-  triggerMode: AgentTriggerMode.default('MENTIONS_ONLY'),
+  triggerMode: AgentTriggerMode.default('AUTO'),
 });
 export type CreateAgentInput = z.infer<typeof CreateAgentSchema>;
 
@@ -59,6 +66,14 @@ export const UpdateAgentSchema = CreateAgentSchema.partial().extend({
   status: AgentStatus.optional(),
 });
 export type UpdateAgentInput = z.infer<typeof UpdateAgentSchema>;
+
+export const AgentRoutingReasonSchema = z.object({
+  agentId: z.string().uuid(),
+  score: z.number(),
+  decision: z.enum(['IGNORE', 'OPTIONAL', 'RESPOND']),
+  reason: z.string(),
+});
+export type AgentRoutingReason = z.infer<typeof AgentRoutingReasonSchema>;
 
 // ── Agent Memory ───────────────────────────────────────
 

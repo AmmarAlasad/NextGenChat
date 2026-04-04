@@ -1,29 +1,78 @@
 /**
- * Workspace & File Routes — Fastify Route Registration
+ * Workspace & Agent Doc Routes
  *
- * Manages agent private workspaces + shared group workspace:
- *
- * Agent Private Workspace (S3: workspaces/agents/{agentId}/):
- * - GET    /agents/:id/workspace/files        — List files
- * - POST   /agents/:id/workspace/files        — Upload file (admin)
- * - DELETE /agents/:id/workspace/files/:key   — Delete file
- *
- * Shared Group Workspace (S3: workspaces/shared/{workspaceId}/):
- * - GET    /workspaces/:id/files              — List shared files (all members)
- * - POST   /workspaces/:id/files              — Upload to shared workspace
- * - DELETE /workspaces/:id/files/:key         — Delete (admin or file owner)
- *
- * File Versioning:
- * - GET    /workspaces/:id/files/:key/versions — List previous versions
- * - POST   /workspaces/:id/files/:key/restore/:versionId — Restore old version
- *
- * Agent Doc Files (Agent.md, identity.md, memory.md, Heartbeat.md):
- * - GET    /agents/:id/docs/:docType          — Read doc file
- * - PUT    /agents/:id/docs/:docType          — Update doc file
- *
- * All file access goes through backend with auth check.
- * Never serve direct S3/MinIO URLs to clients.
+ * Current scope exposes agent-private markdown docs through backend-authenticated
+ * APIs. Arbitrary workspace file operations will be added later via tools.
  */
 
-// TODO: Implement route registrations
-export {};
+import type { FastifyPluginAsync } from 'fastify';
+
+import { AgentDocAssistSchema, UpdateAgentDocSchema } from '@nextgenchat/types';
+import { z } from 'zod';
+
+import { authenticateRequest, requireAuthUser } from '@/middleware/auth.js';
+import { agentWorkspaceToolsService } from '@/modules/workspace/agent-workspace-tools.service.js';
+import { workspaceService } from '@/modules/workspace/workspace.service.js';
+
+const ReadWorkspaceFileSchema = z.object({
+  fileName: z.string().min(1),
+});
+
+const ApplyWorkspacePatchSchema = z.object({
+  fileName: z.string().min(1),
+  patchText: z.string().min(1),
+});
+
+export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get('/agents/:id/docs', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+
+    return workspaceService.listAgentDocs(authUser.id, params.id);
+  });
+
+  fastify.get('/agents/:id/docs/:docType', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string; docType: string };
+
+    return workspaceService.getAgentDoc(authUser.id, params.id, params.docType);
+  });
+
+  fastify.put('/agents/:id/docs/:docType', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string; docType: string };
+    const input = UpdateAgentDocSchema.parse(request.body);
+
+    return workspaceService.updateAgentDoc(authUser.id, params.id, params.docType, input);
+  });
+
+  fastify.post('/agents/:id/docs/:docType/assist', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string; docType: string };
+    const input = AgentDocAssistSchema.parse(request.body);
+
+    return workspaceService.assistAgentDoc(authUser.id, params.id, params.docType, input);
+  });
+
+  fastify.post('/agents/:id/tools/read-file', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+    const input = ReadWorkspaceFileSchema.parse(request.body);
+
+    await workspaceService.assertAgentWorkspaceAccess(authUser.id, params.id);
+    return agentWorkspaceToolsService.readFile({ agentId: params.id, fileName: input.fileName });
+  });
+
+  fastify.post('/agents/:id/tools/apply-patch', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+    const input = ApplyWorkspacePatchSchema.parse(request.body);
+
+    await workspaceService.assertAgentWorkspaceAccess(authUser.id, params.id);
+    return agentWorkspaceToolsService.applyPatch({
+      agentId: params.id,
+      fileName: input.fileName,
+      patchText: input.patchText,
+    });
+  });
+};

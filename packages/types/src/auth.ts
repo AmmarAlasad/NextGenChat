@@ -88,7 +88,7 @@ export const HealthStatusSchema = z.object({
   status: z.literal('ok'),
   version: z.string(),
   db: z.enum(['ok', 'error']),
-  redis: z.enum(['ok', 'error']),
+  redis: z.enum(['ok', 'error', 'disabled']),
   setupRequired: z.boolean(),
 });
 export type HealthStatus = z.infer<typeof HealthStatusSchema>;

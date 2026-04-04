@@ -31,6 +31,7 @@ import { env } from '@/config/env.js';
 import { prisma } from '@/db/client.js';
 import { encryptJson, hashToken } from '@/lib/crypto.js';
 import { redis } from '@/lib/redis.js';
+import { workspaceService } from '@/modules/workspace/workspace.service.js';
 
 const FAILED_LOGIN_PREFIX = 'auth:failed-login:';
 
@@ -131,13 +132,13 @@ export class AuthService {
       },
     });
 
-    await prisma.agent.create({
+    const agent = await prisma.agent.create({
       data: {
         workspaceId: workspace.id,
         createdBy: user.id,
         name: input.agentName,
         slug: sanitizeAgentSlug(input.agentName),
-        triggerMode: 'ALL_MESSAGES',
+        triggerMode: 'AUTO',
         primaryChannelId: channel.id,
         identity: {
           create: {
@@ -159,8 +160,30 @@ export class AuthService {
             config: { temperature: 0.4, maxTokens: 1024 },
           },
         },
+        tools: {
+          create: [
+            {
+              toolName: 'workspace.read_file',
+              config: {
+                description: 'Read a file from the agent workspace.',
+                access: 'workspace-only',
+              },
+              requiresApproval: false,
+            },
+            {
+              toolName: 'workspace.apply_patch',
+              config: {
+                description: 'Apply a structured patch to files inside the agent workspace.',
+                access: 'workspace-only',
+              },
+              requiresApproval: true,
+            },
+          ],
+        },
       },
     });
+
+    await workspaceService.ensureAgentDocs(agent.id);
 
     await prisma.systemSetting.upsert({
       where: { key: SETUP_COMPLETE_KEY },

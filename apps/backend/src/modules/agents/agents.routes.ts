@@ -9,6 +9,7 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 
+import { CreateAgentSchema, UpdateAgentSchema } from '@/modules/agents/agents.schema.js';
 import { authenticateRequest, requireAuthUser } from '@/middleware/auth.js';
 import { agentsService } from '@/modules/agents/agents.service.js';
 
@@ -18,5 +19,28 @@ export const agentsRoutes: FastifyPluginAsync = async (fastify) => {
     const params = request.params as { id: string };
 
     return agentsService.listWorkspaceAgents(authUser.id, params.id);
+  });
+
+  fastify.get('/agents/:id', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+
+    return agentsService.getAgentDetail(authUser.id, params.id);
+  });
+
+  fastify.post('/workspaces/:id/agents', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+    const input = CreateAgentSchema.parse(request.body);
+
+    return agentsService.createAgent(authUser.id, params.id, input);
+  });
+
+  fastify.patch('/agents/:id', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+    const input = UpdateAgentSchema.parse(request.body);
+
+    return agentsService.updateAgent(authUser.id, params.id, input);
   });
 };

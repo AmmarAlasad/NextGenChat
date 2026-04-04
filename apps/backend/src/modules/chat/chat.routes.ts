@@ -11,7 +11,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { authenticateRequest, requireAuthUser } from '@/middleware/auth.js';
-import { MessagePaginationSchema, SendMessageSchema } from '@/modules/chat/chat.schema.js';
+import { CreateChannelSchema, CreateDirectChannelSchema, MessagePaginationSchema, SendMessageSchema, UpdateChannelAgentsSchema } from '@/modules/chat/chat.schema.js';
 import { chatService } from '@/modules/chat/chat.service.js';
 
 export const chatRoutes: FastifyPluginAsync = async (fastify) => {
@@ -25,6 +25,30 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
     const params = request.params as { id: string };
 
     return chatService.listChannels(authUser.id, params.id);
+  });
+
+  fastify.post('/workspaces/:id/channels', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+    const input = CreateChannelSchema.parse(request.body);
+
+    return chatService.createChannel(authUser.id, params.id, input);
+  });
+
+  fastify.post('/agents/:id/direct-channel', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+    const input = CreateDirectChannelSchema.parse({ agentId: params.id });
+
+    return chatService.createDirectChannel(authUser.id, input);
+  });
+
+  fastify.put('/channels/:id/agents', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+    const input = UpdateChannelAgentsSchema.parse(request.body);
+
+    return chatService.updateChannelAgents(authUser.id, params.id, input);
   });
 
   fastify.get('/channels/:id/messages', { preHandler: authenticateRequest }, async (request) => {

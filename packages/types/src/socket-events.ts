@@ -73,6 +73,7 @@ export interface ServerToClientEvents {
     channelId: string;
     senderId: string;
     senderType: 'USER' | 'AGENT';
+    senderName?: string | null;
     content: string;
     contentType: 'TEXT' | 'MARKDOWN' | 'FILE' | 'SYSTEM';
     metadata: Record<string, unknown> | null;

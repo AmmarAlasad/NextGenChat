@@ -30,3 +30,8 @@ export const DEFAULT_CHANNEL_NAME = 'general';
 export const SETUP_COMPLETE_KEY = 'SETUP_COMPLETE';
 export const DEFAULT_AGENT_MODEL = 'gpt-4o-mini';
 export const AGENT_RESPONSE_CHUNK_DELAY_MS = 16;
+
+// Pickup agent: each AUTO-mode agent runs its own cheap pickup LLM in parallel.
+// The pickup model only returns a yes/no decision — it never produces a visible response.
+export const PICKUP_MODEL = 'gpt-4o-mini';
+export const PICKUP_CONTEXT_MESSAGES = 5;

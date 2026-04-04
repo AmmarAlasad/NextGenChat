@@ -3,7 +3,7 @@
 #
 # Stop all running NextGenChat dev server processes.
 # Called by: pnpm stop
-# Does not stop PostgreSQL or Redis (they can stay running between sessions).
+# Local packaged mode has no external services to stop.
 
 GREEN="\033[32m"
 RESET="\033[0m"

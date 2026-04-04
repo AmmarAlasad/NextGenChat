@@ -15,10 +15,12 @@ export function getApiBaseUrl() {
 }
 
 export async function apiRequest(path: string, init?: RequestInit) {
+  const hasBody = typeof init?.body !== 'undefined';
+
   return fetch(`${apiBaseUrl}${path}`, {
     ...init,
     headers: {
-      'Content-Type': 'application/json',
+      ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       ...(init?.headers ?? {}),
     },
     credentials: 'include',
