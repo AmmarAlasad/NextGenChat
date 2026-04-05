@@ -14,6 +14,7 @@ import { DEFAULT_AGENT_MODEL } from '@/config/constants.js';
 import { prisma } from '@/db/client.js';
 import { encryptJson } from '@/lib/crypto.js';
 import { env } from '@/config/env.js';
+import { buildDefaultAgentTools, ensureDefaultAgentTools } from '@/modules/agents/default-agent-tools.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
 
 function serializeAgent(agent: {
@@ -64,27 +65,6 @@ function sanitizeAgentSlug(name: string) {
     .slice(0, 40) || 'agent';
 }
 
-function buildDefaultAgentTools() {
-  return [
-    {
-      toolName: 'workspace.read_file',
-      config: {
-        description: 'Read a file from the agent workspace.',
-        access: 'workspace-only',
-      },
-      requiresApproval: false,
-    },
-    {
-      toolName: 'workspace.apply_patch',
-      config: {
-        description: 'Apply a structured patch to files inside the agent workspace.',
-        access: 'workspace-only',
-      },
-      requiresApproval: true,
-    },
-  ];
-}
-
 async function requireWorkspaceAccess(userId: string, workspaceId: string) {
   const membership = await prisma.workspaceMembership.findFirst({
     where: { userId, workspaceId },
@@ -133,6 +113,8 @@ export class AgentsService {
   }
 
   async getAgentDetail(userId: string, agentId: string) {
+    await ensureDefaultAgentTools(agentId);
+
     const agent = await prisma.agent.findUnique({
       where: { id: agentId },
       include: {

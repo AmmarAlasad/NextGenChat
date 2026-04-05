@@ -41,6 +41,7 @@ export type WorkspaceSummary = z.infer<typeof WorkspaceSummarySchema>;
 export const ChannelSummarySchema = z.object({
   id: z.string().uuid(),
   workspaceId: z.string().uuid(),
+  projectId: z.string().uuid().nullable().optional(),
   name: z.string(),
   type: ChannelType,
   participantAgentIds: z.array(z.string().uuid()).default([]),
@@ -63,6 +64,23 @@ export const MessageRecordSchema = z.object({
   deletedAt: z.string().nullable().optional(),
 });
 export type MessageRecord = z.infer<typeof MessageRecordSchema>;
+
+export const ChannelSessionSummarySchema = z.object({
+  sessionId: z.string().uuid(),
+  channelId: z.string().uuid(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  assistantTurns: z.number().int().nonnegative(),
+  totalPromptTokens: z.number().int().nonnegative(),
+  totalCompletionTokens: z.number().int().nonnegative(),
+  totalCachedTokens: z.number().int().nonnegative(),
+  latestContextUsed: z.number().int().nonnegative().nullable(),
+  latestContextLimit: z.number().int().positive().nullable(),
+  latestContextUsagePercent: z.number().min(0).max(100).nullable(),
+  summaryCount: z.number().int().nonnegative(),
+  lastActiveAt: z.string().nullable(),
+});
+export type ChannelSessionSummary = z.infer<typeof ChannelSessionSummarySchema>;
 
 // ── Workspace ──────────────────────────────────────────
 
@@ -99,6 +117,20 @@ export const SendMessageSchema = z.object({
   contentType: ContentType.default('TEXT'),
 });
 export type SendMessageInput = z.infer<typeof SendMessageSchema>;
+
+export const CompactChannelSessionSchema = z.object({
+  agentSlug: z.string().min(1).max(100).optional(),
+  all: z.boolean().optional(),
+});
+export type CompactChannelSessionInput = z.infer<typeof CompactChannelSessionSchema>;
+
+export const CompactChannelSessionResultSchema = z.object({
+  compactedAgentIds: z.array(z.string().uuid()),
+  compactedAgentNames: z.array(z.string()),
+  skippedAgentNames: z.array(z.string()),
+  message: z.string(),
+});
+export type CompactChannelSessionResult = z.infer<typeof CompactChannelSessionResultSchema>;
 
 export const EditMessageSchema = z.object({
   content: z.string().min(1).max(32_000),

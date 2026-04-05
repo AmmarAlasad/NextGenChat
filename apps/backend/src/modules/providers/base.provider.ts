@@ -1,10 +1,11 @@
 /**
  * Base LLM Provider — Abstract Class
  *
- * Phase 1 implementation status:
- * - This file now provides the shared provider surface used by the first OpenAI-backed flow.
- * - Current scope handles normalized completion responses and a fallback chunked stream helper.
- * - Future phases should add native SSE parsing, retries, and richer tool-call support here.
+ * Phase 4 implementation status:
+ * - Provides the shared provider surface for all LLM integrations.
+ * - stream() default falls back to complete() as a single chunk; subclasses override with real SSE.
+ * - OpenAIProvider overrides stream() with native SSE (stream: true).
+ * - Future providers (Anthropic, Kimi) should also override stream().
  */
 
 import type { FinishReason, LLMProvider, LLMRequestOptions, LLMResponse, LLMStreamChunk } from '@nextgenchat/types';
@@ -18,15 +19,12 @@ export abstract class BaseProvider implements LLMProvider {
   abstract complete(options: LLMRequestOptions): Promise<LLMResponse>;
 
   async *stream(options: LLMRequestOptions): AsyncGenerator<LLMStreamChunk> {
+    // Default fallback: providers that support native SSE override this method.
+    // Yields the full response as a single chunk so callers always get a terminal
+    // chunk with finishReason + usage regardless of whether real streaming is used.
     const response = await this.complete(options);
-    const chunks = response.content.match(/.{1,40}(\s|$)/g) ?? [response.content];
-
-    for (const chunk of chunks) {
-      yield { delta: chunk };
-    }
-
     yield {
-      delta: '',
+      delta: response.content,
       finishReason: response.finishReason as FinishReason,
       responseId: response.id,
       usage: response.usage,

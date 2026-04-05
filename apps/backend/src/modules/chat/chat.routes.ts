@@ -11,7 +11,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { authenticateRequest, requireAuthUser } from '@/middleware/auth.js';
-import { CreateChannelSchema, CreateDirectChannelSchema, MessagePaginationSchema, SendMessageSchema, UpdateChannelAgentsSchema } from '@/modules/chat/chat.schema.js';
+import { CompactChannelSessionSchema, CreateChannelSchema, CreateDirectChannelSchema, MessagePaginationSchema, SendMessageSchema, UpdateChannelAgentsSchema } from '@/modules/chat/chat.schema.js';
 import { chatService } from '@/modules/chat/chat.service.js';
 
 export const chatRoutes: FastifyPluginAsync = async (fastify) => {
@@ -57,6 +57,21 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
     const pagination = MessagePaginationSchema.parse(request.query ?? {});
 
     return chatService.listMessages(authUser.id, params.id, pagination);
+  });
+
+  fastify.get('/channels/:id/session', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+
+    return chatService.getChannelSession(authUser.id, params.id);
+  });
+
+  fastify.post('/channels/:id/session/compact', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+    const input = CompactChannelSessionSchema.parse(request.body ?? {});
+
+    return chatService.compactChannelSession(authUser.id, params.id, input);
   });
 
   fastify.post('/channels/:id/messages', { preHandler: authenticateRequest }, async (request) => {

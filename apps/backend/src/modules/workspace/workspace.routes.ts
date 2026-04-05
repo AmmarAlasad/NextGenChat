@@ -75,4 +75,17 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
       patchText: input.patchText,
     });
   });
+
+  // ── Workspace-level shared agency doc ──────────────────────────────────────
+
+  fastify.get('/workspace/agency', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    return workspaceService.getWorkspaceAgencyDoc(authUser.id);
+  });
+
+  fastify.put('/workspace/agency', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const { content } = UpdateAgentDocSchema.parse(request.body);
+    return workspaceService.updateWorkspaceAgencyDoc(authUser.id, content);
+  });
 };

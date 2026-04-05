@@ -30,6 +30,8 @@ import {
 import { env } from '@/config/env.js';
 import { prisma } from '@/db/client.js';
 import { encryptJson, hashToken } from '@/lib/crypto.js';
+import { agentCreatorService } from '@/modules/agents/agent-creator.service.js';
+import { buildDefaultAgentTools } from '@/modules/agents/default-agent-tools.js';
 import { redis } from '@/lib/redis.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
 
@@ -142,9 +144,9 @@ export class AuthService {
         primaryChannelId: channel.id,
         identity: {
           create: {
-            systemPrompt: input.agentSystemPrompt,
-            persona: 'Local-first collaborative AI agent',
-            voiceTone: 'calm and technical',
+            systemPrompt: input.agentDescription,
+            persona: input.agentDescription.slice(0, 500),
+            voiceTone: null,
           },
         },
         channelMemberships: {
@@ -161,29 +163,15 @@ export class AuthService {
           },
         },
         tools: {
-          create: [
-            {
-              toolName: 'workspace.read_file',
-              config: {
-                description: 'Read a file from the agent workspace.',
-                access: 'workspace-only',
-              },
-              requiresApproval: false,
-            },
-            {
-              toolName: 'workspace.apply_patch',
-              config: {
-                description: 'Apply a structured patch to files inside the agent workspace.',
-                access: 'workspace-only',
-              },
-              requiresApproval: true,
-            },
-          ],
+          create: buildDefaultAgentTools(),
         },
       },
     });
 
+    // Create default doc files on disk first, then let AgentCreatorAgent
+    // overwrite them with content tailored to the agent's description.
     await workspaceService.ensureAgentDocs(agent.id);
+    void agentCreatorService.generateAndWriteAgentDocs(agent.id, input.agentName, input.agentDescription);
 
     await prisma.systemSetting.upsert({
       where: { key: SETUP_COMPLETE_KEY },

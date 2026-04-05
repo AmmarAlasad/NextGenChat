@@ -33,7 +33,7 @@ export const SetupSchema = z
     password: z.string().min(8).max(128),
     confirmPassword: z.string().min(8).max(128),
     agentName: z.string().min(1).max(100),
-    agentSystemPrompt: z.string().min(1).max(10_000),
+    agentDescription: z.string().min(1).max(2_000),
   })
   .refine((value) => value.password === value.confirmPassword, {
     message: 'Passwords do not match',

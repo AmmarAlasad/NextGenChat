@@ -23,6 +23,7 @@ import { authService } from '@/modules/auth/auth.service.js';
 import { agentsRoutes } from '@/modules/agents/agents.routes.js';
 import { chatRoutes } from '@/modules/chat/chat.routes.js';
 import { workspaceRoutes } from '@/modules/workspace/workspace.routes.js';
+import { projectRoutes } from '@/modules/project/project.routes.js';
 import { createAgentProcessorWorker } from '@/queues/agent.processor.js';
 import { createSocketServer } from '@/sockets/socket-server.js';
 
@@ -99,6 +100,7 @@ export async function buildServer() {
   await fastify.register(chatRoutes);
   await fastify.register(agentsRoutes);
   await fastify.register(workspaceRoutes);
+  await fastify.register(projectRoutes);
 
   return fastify;
 }

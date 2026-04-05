@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
 # scripts/stop.sh
 #
-# Stop all running NextGenChat dev server processes.
+# Stop the installed NextGenChat user service and any running dev server processes.
 # Called by: pnpm stop
-# Local packaged mode has no external services to stop.
 
 GREEN="\033[32m"
 RESET="\033[0m"
 
 stopped=0
+
+if command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files 2>/dev/null | grep -q '^nextgenchat.service'; then
+  if systemctl --user is-active --quiet nextgenchat.service; then
+    systemctl --user stop nextgenchat.service
+    echo -e "  ${GREEN}✓ NextGenChat service stopped${RESET}"
+    stopped=$((stopped+1))
+  fi
+fi
 
 fuser -k 3001/tcp 2>/dev/null && echo -e "  ${GREEN}✓ Backend stopped (port 3001)${RESET}" && stopped=$((stopped+1)) || true
 fuser -k 3000/tcp 2>/dev/null && echo -e "  ${GREEN}✓ Frontend stopped (port 3000)${RESET}" && stopped=$((stopped+1)) || true

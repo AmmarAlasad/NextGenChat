@@ -1,0 +1,408 @@
+/**
+ * Agent Creator Service
+ *
+ * LLM-powered service that acts as "AgentCreatorAgent" — a specialist that
+ * knows the agent doc architecture and can:
+ *   1. Generate the agent docs from a plain-language description (setup wizard)
+ *   2. Edit docs interactively through a chat interface (agent admin page)
+ *
+ * SAFETY DESIGN: Every file update passes through a structural validator before
+ * it is written to disk. If the generated content fails validation the update is
+ * rejected and the existing file is left untouched. This prevents AgentCreatorAgent
+ * from corrupting the system files that the runtime depends on.
+ *
+ * Protected invariants enforced by validators:
+ *   Agent.md   — must contain send_reply, memory.md, user.md, workspace_write_file rules
+ *   soul.md    — must be substantive markdown, not a JSON blob
+ *   identity.md — must have meaningful content
+ *
+ * Phase 4 implementation status:
+ * - generateAndWriteAgentDocs: used during setup and agent creation
+ * - chatWithCreator: used by the agent admin chat panel
+ * - Falls back to default workspace docs silently if no OpenAI key is configured
+ */
+
+import type { AgentCreatorChatMessage, AgentCreatorChatResponse, AgentDocType } from '@nextgenchat/types';
+
+import { env } from '@/config/env.js';
+import { OpenAIProvider } from '@/modules/providers/openai.provider.js';
+import { workspaceService } from '@/modules/workspace/workspace.service.js';
+
+const CREATOR_MODEL = 'gpt-5.4';
+
+// ── System prompt ────────────────────────────────────────────────────────────
+
+const AGENT_CREATOR_SYSTEM_PROMPT = `You are AgentCreatorAgent, an expert AI agent designer for NextGenChat. Your job is to create and maintain the configuration markdown files that define an AI agent's personality, values, and operating behaviour.
+
+════════════════════════════════════════
+CRITICAL INVARIANTS — READ FIRST
+════════════════════════════════════════
+
+These rules are non-negotiable. Violating any of them will break the running system and your output will be rejected.
+
+### Agent.md — REQUIRED SECTIONS
+
+Agent.md MUST contain ALL of the following. Do not remove or rename these:
+- A section on when to update memory.md (using workspace_write_file)
+- A section on when to update user.md (using workspace_write_file)
+- A section on tool usage rules that mentions workspace_write_file
+
+### soul.md — MUST BE SUBSTANTIVE
+
+soul.md must be a real markdown document with at least 3 sections covering values, behavioural principles, and ethical constraints. Never replace it with a short stub or JSON.
+
+### identity.md — MUST CONTAIN THE AGENT NAME
+
+identity.md must clearly state the agent's name in the Role and Name section.
+
+════════════════════════════════════════
+THE SEVEN FILES
+════════════════════════════════════════
+
+### soul.md — Immutable Ethics & Values
+The agent's moral foundation. Injected first — overrides everything else. Make values specific to the agent's domain. "Honesty" means something different for a UX designer vs. a security engineer.
+
+### identity.md — Public Persona & Voice
+Name, role, expertise areas, voice and tone. System Prompt section: 2–3 sentences of core character. Make this feel like a real professional, not a generic AI.
+
+### Agent.md — Operating Manual
+Memory update rules, tool usage rules, heartbeat instructions. Tailor to the agent's domain.
+
+### user.md — Model of the User
+Blank template the agent fills over time. Keep it clean and scannable.
+
+### memory.md — Long-term Learnings
+Blank template the agent fills over time. Keep it clean and structured.
+
+### Heartbeat.md — Status Log
+Blank template for resumable long-running work. Keep it minimal.
+
+### agency.md — Shared Agency Constitution
+Shared operating standards and organizational context for all agents in the workspace. Keep it concise and durable.
+
+════════════════════════════════════════
+YOUR RESPONSE FORMAT
+════════════════════════════════════════
+
+Always respond with valid JSON only. No markdown fences, no preamble:
+
+{
+  "reply": "A friendly, concise explanation of what you generated or changed",
+  "fileUpdates": [
+    {"docType": "soul.md", "content": "# soul.md — full markdown content..."},
+    {"docType": "identity.md", "content": "# identity.md — full markdown content..."}
+  ]
+}
+
+When CREATING a new agent: include all required files.
+When EDITING via chat: only include files you are actually changing. Never include unchanged files.
+Never truncate content. Always write complete markdown.`;
+
+// ── Structural validators ────────────────────────────────────────────────────
+
+type ValidationResult = { valid: true } | { valid: false; reason: string };
+
+function isJsonBlob(content: string): boolean {
+  const trimmed = content.trim();
+  return /^\{[\s\S]*\}$/.test(trimmed) || /^\[[\s\S]*\]$/.test(trimmed);
+}
+
+function validateAgentMd(content: string): ValidationResult {
+  const trimmed = content.trim();
+
+  if (isJsonBlob(trimmed)) {
+    return { valid: false, reason: 'Agent.md must be a markdown document, not a JSON object.' };
+  }
+
+  if (trimmed.length < 300) {
+    return {
+      valid: false,
+      reason: 'Agent.md is too short. It must contain the full operating manual with memory update rules and tool usage rules.',
+    };
+  }
+
+  if (!trimmed.includes('memory.md')) {
+    return { valid: false, reason: 'Agent.md must include rules for when to update memory.md.' };
+  }
+
+  if (!trimmed.includes('user.md')) {
+    return { valid: false, reason: 'Agent.md must include rules for when to update user.md.' };
+  }
+
+  if (!trimmed.includes('workspace_write_file')) {
+    return { valid: false, reason: 'Agent.md must reference workspace_write_file for writing memory files.' };
+  }
+
+  return { valid: true };
+}
+
+function validateSoulMd(content: string): ValidationResult {
+  const trimmed = content.trim();
+
+  if (isJsonBlob(trimmed)) {
+    return { valid: false, reason: 'soul.md must be a markdown document, not a JSON object.' };
+  }
+
+  if (trimmed.length < 150) {
+    return {
+      valid: false,
+      reason: 'soul.md is too short. It must contain detailed core values, behavioural principles, and ethical constraints.',
+    };
+  }
+
+  return { valid: true };
+}
+
+function validateIdentityMd(content: string, agentName: string): ValidationResult {
+  const trimmed = content.trim();
+
+  if (isJsonBlob(trimmed)) {
+    return { valid: false, reason: 'identity.md must be a markdown document, not a JSON object.' };
+  }
+
+  if (trimmed.length < 100) {
+    return { valid: false, reason: 'identity.md is too short. It must contain the agent\'s persona, tone, and communication style.' };
+  }
+
+  // The agent name should appear somewhere in the file
+  if (!trimmed.toLowerCase().includes(agentName.toLowerCase())) {
+    return { valid: false, reason: `identity.md must reference the agent's name (${agentName}).` };
+  }
+
+  return { valid: true };
+}
+
+function validateGenericDoc(content: string, docType: string): ValidationResult {
+  if (isJsonBlob(content.trim())) {
+    return { valid: false, reason: `${docType} must be a markdown document, not a JSON object.` };
+  }
+
+  if (content.trim().length < 20) {
+    return { valid: false, reason: `${docType} content is too short to be valid.` };
+  }
+
+  return { valid: true };
+}
+
+function validateFileUpdate(docType: AgentDocType, content: string, agentName: string): ValidationResult {
+  switch (docType) {
+    case 'Agent.md':
+      return validateAgentMd(content);
+    case 'soul.md':
+      return validateSoulMd(content);
+    case 'identity.md':
+      return validateIdentityMd(content, agentName);
+    default:
+      return validateGenericDoc(content, docType);
+  }
+}
+
+// ── Provider ─────────────────────────────────────────────────────────────────
+
+function getProvider(): OpenAIProvider | null {
+  if (!env.OPENAI_API_KEY || env.OPENAI_API_KEY === 'disabled-local-key') {
+    return null;
+  }
+
+  return new OpenAIProvider(env.OPENAI_API_KEY, CREATOR_MODEL);
+}
+
+function safeParseCreatorResponse(raw: string): AgentCreatorChatResponse | null {
+  const text = raw.trim();
+
+  // Strip markdown code fences if the model wrapped the JSON anyway.
+  const stripped = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '');
+
+  try {
+    const parsed = JSON.parse(stripped) as unknown;
+
+    if (
+      typeof parsed === 'object'
+      && parsed !== null
+      && typeof (parsed as Record<string, unknown>).reply === 'string'
+      && Array.isArray((parsed as Record<string, unknown>).fileUpdates)
+    ) {
+      return parsed as AgentCreatorChatResponse;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Service ───────────────────────────────────────────────────────────────────
+
+export class AgentCreatorService {
+  /**
+   * Generates the agent docs from a plain-language description and writes
+   * them to the agent's workspace. Called during setup and agent creation.
+   * Falls back silently to the default docs if no OpenAI key is available.
+   * Each generated file is validated before writing — invalid files are skipped
+   * and the safe default remains on disk.
+   */
+  async generateAndWriteAgentDocs(agentId: string, name: string, description: string): Promise<void> {
+    const provider = getProvider();
+
+    if (!provider) {
+      return;
+    }
+
+    try {
+      const response = await provider.complete({
+        messages: [
+          { role: 'system', content: AGENT_CREATOR_SYSTEM_PROMPT },
+          {
+            role: 'user',
+            content: `Create a complete agent configuration for a new agent.\n\nAgent name: ${name}\nDescription: ${description}\n\nGenerate all required files tailored specifically to this agent's role and personality.`,
+          },
+        ],
+        maxTokens: 4_000,
+        temperature: 0.3,
+      });
+
+      const parsed = safeParseCreatorResponse(response.content);
+
+      if (!parsed || parsed.fileUpdates.length === 0) {
+        console.warn('[agent-creator] Failed to parse LLM response — using default docs');
+        return;
+      }
+
+      for (const update of parsed.fileUpdates) {
+        const validation = validateFileUpdate(update.docType, update.content, name);
+
+        if (!validation.valid) {
+          console.warn(`[agent-creator] Rejected ${update.docType} for agent "${name}": ${validation.reason}`);
+          // Leave the safe default on disk — do not write the bad content.
+          continue;
+        }
+
+        await workspaceService.writeAgentWorkspaceFile(
+          agentId,
+          this.docTypeToFileName(update.docType),
+          update.content,
+        );
+      }
+    } catch (error) {
+      // Non-fatal — default docs remain on disk.
+      console.warn('[agent-creator] Generation failed, using defaults:', error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * Runs a chat turn with AgentCreatorAgent. Loads the agent's current files
+   * as context, processes the user message, validates each proposed update,
+   * writes safe updates to disk, and returns the reply + list of what changed.
+   * Rejected updates are excluded from fileUpdates and the reply notes any rejections.
+   */
+  async chatWithCreator(
+    agentId: string,
+    message: string,
+    history: AgentCreatorChatMessage[],
+  ): Promise<AgentCreatorChatResponse> {
+    const provider = getProvider();
+
+    if (!provider) {
+      return {
+        reply: 'AgentCreatorAgent is not available because no OpenAI API key is configured. Add your key to .env and restart.',
+        fileUpdates: [],
+      };
+    }
+
+    await workspaceService.ensureAgentDocs(agentId);
+
+    const currentDocs = await workspaceService.getAgentContextDocs(agentId, [
+      'soul.md',
+      'identity.md',
+      'Agent.md',
+      'user.md',
+      'memory.md',
+      'Heartbeat.md',
+    ]);
+
+    // Look up agent name for identity validation
+    const { prisma } = await import('@/db/client.js');
+    const agent = await prisma.agent.findUnique({ where: { id: agentId }, select: { name: true } });
+    const agentName = agent?.name ?? 'Agent';
+
+    const currentFilesSection = currentDocs
+      .map((doc) => `### Current ${doc.docType}\n\`\`\`markdown\n${doc.content ?? ''}\n\`\`\``)
+      .join('\n\n');
+
+    const systemWithContext = `${AGENT_CREATOR_SYSTEM_PROMPT}\n\n## Current Agent Files\n\nHere are the agent's current file contents. When editing, only return files you are actually changing.\n\n${currentFilesSection}`;
+
+    const messages = [
+      { role: 'system' as const, content: systemWithContext },
+      ...history.map((msg) => ({ role: msg.role as 'user' | 'assistant', content: msg.content })),
+      { role: 'user' as const, content: message },
+    ];
+
+    const response = await provider.complete({
+      messages,
+      maxTokens: 4_000,
+      temperature: 0.3,
+    });
+
+    const parsed = safeParseCreatorResponse(response.content);
+
+    if (!parsed) {
+      return {
+        reply: 'I had trouble generating a structured response. Please try rephrasing your request.',
+        fileUpdates: [],
+      };
+    }
+
+    const writtenUpdates: typeof parsed.fileUpdates = [];
+    const rejections: string[] = [];
+
+    for (const update of parsed.fileUpdates) {
+      const validation = validateFileUpdate(update.docType, update.content, agentName);
+
+      if (!validation.valid) {
+        console.warn(`[agent-creator] Rejected ${update.docType} update for agent "${agentName}": ${validation.reason}`);
+        rejections.push(`${update.docType}: ${validation.reason}`);
+        // Existing file on disk is untouched.
+        continue;
+      }
+
+      try {
+        await workspaceService.writeAgentWorkspaceFile(
+          agentId,
+          this.docTypeToFileName(update.docType),
+          update.content,
+        );
+        writtenUpdates.push(update);
+      } catch (writeError) {
+        console.warn(`[agent-creator] Failed to write ${update.docType}:`, writeError);
+        rejections.push(`${update.docType}: write failed`);
+      }
+    }
+
+    // Append rejection notes to the reply so the user knows something was blocked.
+    let finalReply = parsed.reply;
+    if (rejections.length > 0) {
+      finalReply += `\n\n⚠️ The following files were NOT updated because the generated content failed safety validation:\n${rejections.map((r) => `- ${r}`).join('\n')}`;
+    }
+
+    return {
+      reply: finalReply,
+      fileUpdates: writtenUpdates,
+    };
+  }
+
+  private docTypeToFileName(docType: AgentDocType): string {
+    const map: Record<AgentDocType, string> = {
+      'soul.md': 'soul.md',
+      'identity.md': 'identity.md',
+      'Agent.md': 'agent.md',
+      'user.md': 'user.md',
+      'memory.md': 'memory.md',
+      'Heartbeat.md': 'heartbeat.md',
+      'agency.md': 'agency.md',
+    };
+
+    return map[docType] ?? docType.toLowerCase();
+  }
+}
+
+export const agentCreatorService = new AgentCreatorService();

@@ -15,14 +15,30 @@ import { redis } from '@/lib/redis.js';
 import { processAgentJob } from '@/queues/agent.processor.js';
 
 interface LocalAgentQueue {
-  add(name: string, data: { agentId: string; channelId: string; messageId: string }): Promise<void>;
+  add(name: string, data: { agentId: string; channelId: string; messageId: string }, options?: { jobId?: string }): Promise<void>;
 }
 
+const localAgentJobIds = new Set<string>();
+
 const localAgentQueue: LocalAgentQueue = {
-  async add(_name, data) {
+  async add(_name, data, options) {
+    const jobId = options?.jobId;
+
+    if (jobId && localAgentJobIds.has(jobId)) {
+      return;
+    }
+
+    if (jobId) {
+      localAgentJobIds.add(jobId);
+    }
+
     queueMicrotask(() => {
       void processAgentJob(data).catch((error) => {
         console.error('Local agent job failed', error);
+      }).finally(() => {
+        if (jobId) {
+          localAgentJobIds.delete(jobId);
+        }
       });
     });
   },

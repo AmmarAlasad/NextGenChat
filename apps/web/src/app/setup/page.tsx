@@ -28,8 +28,7 @@ export default function SetupPage() {
     password: '',
     confirmPassword: '',
     agentName: 'Atelier',
-    agentSystemPrompt:
-      'You are Atelier, a calm and technically precise AI collaborator inside NextGenChat. Help the user reason clearly, answer directly, and keep responses useful and grounded.',
+    agentDescription: 'A calm and technically precise AI collaborator. Helps reason clearly, answers directly, and keeps responses useful and grounded.',
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -143,15 +142,19 @@ export default function SetupPage() {
               {field('agentName', 'Primary Agent Name')}
 
               <div className="grid gap-1.5">
-                <label className="px-1 text-xs font-semibold text-on-surface-variant" htmlFor="agentSystemPrompt">
-                  System Prompt
+                <label className="px-1 text-xs font-semibold text-on-surface-variant" htmlFor="agentDescription">
+                  Description
                 </label>
+                <p className="px-1 text-[11px] text-on-surface-variant/60">
+                  Describe who this agent is — their role, personality, and expertise. AgentCreatorAgent will use this to generate their full configuration automatically.
+                </p>
                 <textarea
-                  className="min-h-[120px] w-full resize-none rounded-lg border border-outline-variant/30 bg-surface-container-low px-4 py-3 text-sm font-medium text-on-surface placeholder:text-outline transition-all focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-                  id="agentSystemPrompt"
-                  onChange={(e) => setForm((c) => ({ ...c, agentSystemPrompt: e.target.value }))}
+                  className="min-h-[100px] w-full resize-none rounded-lg border border-outline-variant/30 bg-surface-container-low px-4 py-3 text-sm font-medium text-on-surface placeholder:text-outline transition-all focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                  id="agentDescription"
+                  onChange={(e) => setForm((c) => ({ ...c, agentDescription: e.target.value }))}
+                  placeholder="e.g. Ivy is a UX/UI designer with a sharp eye for interaction patterns and a warm, direct communication style."
                   required
-                  value={form.agentSystemPrompt}
+                  value={form.agentDescription}
                 />
               </div>
             </section>
@@ -168,7 +171,7 @@ export default function SetupPage() {
                 disabled={submitting}
                 type="submit"
               >
-                {submitting ? 'Creating workspace…' : 'Create Workspace'}
+                {submitting ? 'Creating workspace & agent files…' : 'Create Workspace'}
                 {!submitting && <span className="text-lg leading-none">→</span>}
               </button>
               <p className="mt-4 text-center text-[11px] font-semibold uppercase tracking-widest text-on-surface-variant/70">

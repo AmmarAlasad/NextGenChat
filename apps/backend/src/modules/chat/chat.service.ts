@@ -11,6 +11,9 @@
 
 import type {
   AgentRoutingReason,
+  CompactChannelSessionInput,
+  CompactChannelSessionResult,
+  ChannelSessionSummary,
   ChannelSummary,
   ContentType,
   CreateChannelInput,
@@ -27,6 +30,7 @@ import type { Prisma } from '@prisma/client';
 
 import { prisma } from '@/db/client.js';
 import { agentRoutingService } from '@/modules/agents/agent-routing.service.js';
+import { compactionService } from '@/modules/context/compaction.service.js';
 import { getChatNamespace, getChannelRoom } from '@/sockets/socket-server.js';
 
 function serializeWorkspace(workspace: { id: string; name: string; slug: string }): WorkspaceSummary {
@@ -40,6 +44,7 @@ function serializeWorkspace(workspace: { id: string; name: string; slug: string 
 function serializeChannel(channel: {
   id: string;
   workspaceId: string;
+  projectId?: string | null;
   name: string;
   type: 'PUBLIC' | 'PRIVATE' | 'DIRECT';
   agentMemberships?: Array<{ agentId: string; agent: { name: string } }>;
@@ -48,6 +53,7 @@ function serializeChannel(channel: {
   return {
     id: channel.id,
     workspaceId: channel.workspaceId,
+    projectId: channel.projectId ?? null,
     name: channel.name,
     type: channel.type,
     participantAgentIds: channel.agentMemberships?.map((membership) => membership.agentId) ?? [],
@@ -121,20 +127,34 @@ async function scheduleTriggeredAgents(input: {
   senderType: 'USER' | 'AGENT';
   content: string;
   messageId: string;
+  isRelay?: boolean;
 }) {
   const routing = await agentRoutingService.selectAgentsForMessage(input);
+  const selectedAgentIds = Array.from(new Set(routing.selectedAgentIds));
 
   await Promise.all(
-    routing.selectedAgentIds.map((agentId) =>
+    selectedAgentIds.map((agentId) =>
       agentProcessQueue.add('agent:process', {
         agentId,
         channelId: input.channelId,
         messageId: input.messageId,
+      }, {
+        jobId: `${input.messageId}:${agentId}`,
       }),
     ),
   );
 
-  return routing;
+  // Always notify the client that routing is done.  When 0 agents are selected
+  // the client would otherwise stay stuck in the "Routing…" state forever.
+  getChatNamespace().to(getChannelRoom(input.channelId)).emit('message:routing:complete', {
+      channelId: input.channelId,
+      selectedCount: selectedAgentIds.length,
+    });
+
+  return {
+    ...routing,
+    selectedAgentIds,
+  };
 }
 
 async function createSystemChannelEvent(input: {
@@ -222,6 +242,7 @@ export class ChatService {
       select: {
         id: true,
         workspaceId: true,
+        projectId: true,
         name: true,
         type: true,
         agentMemberships: {
@@ -511,6 +532,15 @@ export class ChatService {
       messageId: message.id,
     });
 
+    await prisma.message.update({
+      where: { id: message.id },
+      data: {
+        metadata: {
+          routing,
+        },
+      },
+    });
+
     const serialized = {
       ...serializedBase,
       metadata: {
@@ -530,6 +560,9 @@ export class ChatService {
     senderType: 'USER' | 'AGENT';
     content: string;
     messageId: string;
+    /** Set to true for tool-relay messages — allows AUTO pickup agents to evaluate
+     *  the message even though the sender is an agent. */
+    isRelay?: boolean;
   }): Promise<{ selectedAgentIds: string[]; diagnostics: AgentRoutingReason[] }> {
     return scheduleTriggeredAgents(input);
   }
@@ -559,6 +592,152 @@ export class ChatService {
 
   async ensureSocketChannelAccess(userId: string, channelId: string) {
     await ensureChannelMembership(userId, channelId);
+  }
+
+  async getChannelSession(userId: string, channelId: string): Promise<ChannelSessionSummary> {
+    await ensureChannelMembership(userId, channelId);
+
+    const [messages, summaryCount] = await Promise.all([
+      prisma.message.findMany({
+        where: {
+          channelId,
+          senderType: 'AGENT',
+          contentType: { not: 'SYSTEM' },
+        },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          createdAt: true,
+          metadata: true,
+        },
+      }),
+      prisma.conversationSummary.count({
+        where: { channelId },
+      }),
+    ]);
+
+    let totalPromptTokens = 0;
+    let totalCompletionTokens = 0;
+    let totalCachedTokens = 0;
+    let provider: string | null = null;
+    let model: string | null = null;
+    let latestContextUsed: number | null = null;
+    let latestContextLimit: number | null = null;
+    let lastActiveAt: string | null = null;
+
+    for (const message of messages) {
+      const metadata = (message.metadata as Record<string, unknown> | null) ?? null;
+      const usage = (metadata?.usage as Record<string, unknown> | undefined) ?? undefined;
+      const context = (metadata?.context as Record<string, unknown> | undefined) ?? undefined;
+
+      totalPromptTokens += typeof usage?.promptTokens === 'number' ? usage.promptTokens : 0;
+      totalCompletionTokens += typeof usage?.completionTokens === 'number' ? usage.completionTokens : 0;
+      totalCachedTokens += typeof usage?.cachedTokens === 'number' ? usage.cachedTokens : 0;
+
+      if (typeof metadata?.provider === 'string') {
+        provider = metadata.provider;
+      }
+
+      if (typeof metadata?.model === 'string') {
+        model = metadata.model;
+      }
+
+      if (typeof context?.budgetUsed === 'number') {
+        latestContextUsed = context.budgetUsed;
+      }
+
+      if (typeof context?.budgetLimit === 'number') {
+        latestContextLimit = context.budgetLimit;
+      }
+
+      lastActiveAt = message.createdAt.toISOString();
+    }
+
+    return {
+      sessionId: channelId,
+      channelId,
+      provider,
+      model,
+      assistantTurns: messages.length,
+      totalPromptTokens,
+      totalCompletionTokens,
+      totalCachedTokens,
+      latestContextUsed,
+      latestContextLimit,
+      latestContextUsagePercent:
+        latestContextUsed !== null && latestContextLimit !== null && latestContextLimit > 0
+          ? Math.round((latestContextUsed / latestContextLimit) * 1000) / 10
+          : null,
+      summaryCount,
+      lastActiveAt,
+    };
+  }
+
+  async compactChannelSession(userId: string, channelId: string, input: CompactChannelSessionInput): Promise<CompactChannelSessionResult> {
+    await ensureChannelMembership(userId, channelId);
+
+    const channel = await prisma.channel.findUnique({
+      where: { id: channelId },
+      include: {
+        agentMemberships: {
+          include: {
+            agent: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+                status: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!channel) {
+      throw new Error('Channel not found.');
+    }
+
+    const activeAgents = channel.agentMemberships
+      .map((membership) => membership.agent)
+      .filter((agent) => agent.status === 'ACTIVE');
+
+    if (activeAgents.length === 0) {
+      throw new Error('No active agents are available to compact this session.');
+    }
+
+    let targets = activeAgents;
+
+    if (input.all !== true && input.agentSlug) {
+      const matched = activeAgents.find((agent) => agent.slug.toLowerCase() === input.agentSlug?.toLowerCase());
+
+      if (!matched) {
+        throw new Error(`Agent '${input.agentSlug}' is not in this channel.`);
+      }
+
+      targets = [matched];
+    }
+
+    const results = await Promise.all(
+      targets.map((agent) => compactionService.compactNow({
+        agentId: agent.id,
+        channelId,
+        origin: 'manual',
+      })),
+    );
+
+    const compactedAgentNames = results.filter((result) => result.compacted).map((result) => result.agentName);
+    const compactedAgentIds = results.filter((result) => result.compacted).map((result) => result.agentId);
+    const skippedAgentNames = results.filter((result) => !result.compacted).map((result) => result.agentName);
+
+    return {
+      compactedAgentIds,
+      compactedAgentNames,
+      skippedAgentNames,
+      message:
+        compactedAgentNames.length > 0
+          ? `Compacted session for ${compactedAgentNames.join(', ')}.`
+          : `No compaction was needed for ${skippedAgentNames.join(', ')}.`,
+    };
   }
 }
 

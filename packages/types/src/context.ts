@@ -51,6 +51,7 @@ export const RESPONSE_BUFFER = 4096;
 
 /** Known context limits per model (tokens) */
 export const CONTEXT_LIMITS: Record<string, number> = {
+  'gpt-5.4': 128_000,
   'gpt-4o': 128_000,
   'gpt-4o-mini': 128_000,
   'gpt-4-turbo': 128_000,

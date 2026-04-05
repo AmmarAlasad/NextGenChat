@@ -25,6 +25,21 @@ sync_backend_env() {
   cp .env apps/backend/.env
 }
 
+get_env_value() {
+  local key="$1"
+
+  if [ ! -f .env ]; then
+    return 0
+  fi
+
+  local line
+  line=$(grep "^${key}=" .env | tail -n 1 || true)
+  line="${line#${key}=}"
+  line="${line%\"}"
+  line="${line#\"}"
+  printf '%s' "$line"
+}
+
 set_env_value() {
   local key="$1"
   local value="$2"
@@ -34,6 +49,35 @@ set_env_value() {
   else
     printf '%s=%s\n' "$key" "$value" >> .env
   fi
+}
+
+choose_agent_workspaces_dir() {
+  local configured_value="${NEXTGENCHAT_AGENT_WORKSPACES_DIR:-}"
+  local existing_value
+  existing_value="$(get_env_value "AGENT_WORKSPACES_DIR")"
+  local default_value="${existing_value:-$HOME/.nextgenchat/agent-workspaces}"
+
+  if [ -n "$configured_value" ]; then
+    printf '%s' "$configured_value"
+    return 0
+  fi
+
+  if [ -t 0 ]; then
+    printf '\n%sChoose agent workspace directory%s\n' "$BOLD" "$RESET" >&2
+    printf '  This folder stores each agent workspace outside the repo so reinstalling\n' >&2
+    printf '  or updating the project does not wipe the agent files.\n\n' >&2
+    printf '  Path [%s]: ' "$default_value" >&2
+
+    local response
+    IFS= read -r response
+
+    if [ -n "$response" ]; then
+      printf '%s' "$response"
+      return 0
+    fi
+  fi
+
+  printf '%s' "$default_value"
 }
 
 echo -e "\n${BOLD}NextGenChat — Local setup${RESET}"
@@ -73,6 +117,11 @@ set_env_value "DEPLOYMENT_MODE" "local"
 set_env_value "DATABASE_URL" "file:./dev.db"
 set_env_value "REDIS_ENABLED" "false"
 set_env_value "REDIS_URL" ""
+
+AGENT_WORKSPACES_DIR_VALUE="$(choose_agent_workspaces_dir)"
+mkdir -p "$AGENT_WORKSPACES_DIR_VALUE"
+set_env_value "AGENT_WORKSPACES_DIR" "$AGENT_WORKSPACES_DIR_VALUE"
+ok "Agent workspaces will be stored in $AGENT_WORKSPACES_DIR_VALUE"
 
 sync_backend_env
 ok "Synced backend Prisma env"

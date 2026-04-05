@@ -87,10 +87,26 @@ This local bootstrap:
 
 - clones or updates the repo
 - creates a local `.env`
+- asks where agent workspaces should live and stores that path in `.env`
 - generates local secrets
 - uses SQLite for persistence
 - syncs Prisma
-- starts frontend and backend
+- installs a user-level `systemd` service
+- starts the frontend and backend through that service
+
+Running the install script again will:
+
+- pull updates when using the managed install directory
+- detect repo changes in the install target
+- refresh the `systemd` unit
+- restart the service when the repo state changed
+
+For unattended installs, preconfigure the workspace location:
+
+```bash
+NEXTGENCHAT_AGENT_WORKSPACES_DIR="$HOME/.nextgenchat/agent-workspaces" \
+curl -fsSL https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install.sh | bash
+```
 
 ### Development install
 
@@ -100,6 +116,28 @@ cd NextGenChat
 pnpm setup:local
 pnpm dev:local
 ```
+
+`pnpm setup:local` will prompt for an agent workspace directory the first time it runs.
+
+Tool-call budget can be configured in `.env`:
+
+```bash
+AGENT_MAX_TOOL_ROUNDS=24
+```
+
+Set `AGENT_MAX_TOOL_ROUNDS=0` for no explicit tool-round cap. The backend still keeps a smaller retry guard for cases where the model repeatedly refuses a required tool.
+
+For a local repo checkout, install/update the service with:
+
+```bash
+pnpm install:local
+```
+
+Useful service commands:
+
+- `systemctl --user status nextgenchat.service`
+- `journalctl --user -u nextgenchat.service -f`
+- `pnpm stop`
 
 Open:
 

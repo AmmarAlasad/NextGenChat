@@ -127,9 +127,12 @@ enum InviteStatus {
 enum AgentDocType {
   AGENT_MD
   IDENTITY_MD
+  SOUL_MD
   AGENCY_MD
   MEMORY_MD
   HEARTBEAT_MD
+  USER_MD
+  PICKUP_MD
 }
 
 model SystemSetting {
@@ -208,6 +211,7 @@ model Workspace {
   owner              User                  @relation("WorkspaceOwner", fields: [ownerId], references: [id])
   memberships        WorkspaceMembership[]
   channels           Channel[]
+  projects           Project[]
   agents             Agent[]
   rules              Rule[]
   invites            Invite[]
@@ -247,21 +251,37 @@ model Invite {
   @@index([workspaceId])
 }
 
+model Project {
+  id           String        @id @default(uuid())
+  workspaceId   String
+  name          String
+  description   String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channels      Channel[]
+
+  @@index([workspaceId])
+}
+
 model Channel {
   id                String                  @id @default(uuid())
   workspaceId       String
+  projectId         String?
   name              String
   type              ChannelType
   archivedAt        DateTime?
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
   workspace         Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project           Project?                @relation(fields: [projectId], references: [id], onDelete: SetNull)
   memberships       ChannelMembership[]
   messages          Message[]
   summaries         ConversationSummary[]
   agentMemberships  AgentChannelMembership[]
 
   @@index([workspaceId])
+  @@index([projectId])
 }
 
 model ChannelMembership {

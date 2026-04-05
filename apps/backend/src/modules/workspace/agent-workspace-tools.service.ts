@@ -2,12 +2,11 @@
  * Agent Workspace Tools Service
  *
  * Implements the first workspace-native file tools that every agent gets by
- * default: read_file and apply_patch. These tools currently operate on files
- * stored in the agent workspace layer and are kept separate from the lightweight
- * doc-writing assistant bubble used by the admin UI.
+ * default: read_file and apply_patch. These tools now operate directly on the
+ * per-agent workspace folder on disk and stay separate from the admin UI.
  */
 
-import { prisma } from '@/db/client.js';
+import { workspaceService } from '@/modules/workspace/workspace.service.js';
 
 interface ReadFileInput {
   agentId: string;
@@ -35,53 +34,12 @@ function parsePatchText(patchText: string) {
 
 export class AgentWorkspaceToolsService {
   async readFile(input: ReadFileInput) {
-    const file = await prisma.workspaceFile.findFirst({
-      where: {
-        agentId: input.agentId,
-        fileName: input.fileName,
-      },
-      select: {
-        fileName: true,
-        content: true,
-        version: true,
-        updatedAt: true,
-      },
-    });
-
-    if (!file) {
-      throw new Error('Workspace file not found.');
-    }
-
-    return {
-      fileName: file.fileName,
-      content: file.content ?? '',
-      version: file.version,
-      updatedAt: file.updatedAt.toISOString(),
-    };
+    return workspaceService.readAgentWorkspaceFile(input.agentId, input.fileName);
   }
 
   async applyPatch(input: ApplyPatchInput) {
-    const file = await prisma.workspaceFile.findFirst({
-      where: {
-        agentId: input.agentId,
-        fileName: input.fileName,
-      },
-      select: {
-        id: true,
-        key: true,
-        fileName: true,
-        fileSize: true,
-        mimeType: true,
-        content: true,
-        version: true,
-      },
-    });
-
-    if (!file) {
-      throw new Error('Workspace file not found.');
-    }
-
-    const currentContent = String(file.content ?? '');
+    const file = await workspaceService.readAgentWorkspaceFile(input.agentId, input.fileName);
+    const currentContent = file.content;
     const { search, replace } = parsePatchText(input.patchText);
 
     if (!currentContent.includes(search)) {
@@ -90,33 +48,7 @@ export class AgentWorkspaceToolsService {
 
     const nextContent = currentContent.replace(search, replace);
 
-    await prisma.$transaction(async (tx) => {
-      await tx.workspaceFileVersion.create({
-        data: {
-          fileId: file.id,
-          key: `${file.key}.v${file.version}`,
-          fileSize: file.fileSize,
-          mimeType: file.mimeType,
-          content: file.content,
-          version: file.version,
-        },
-      });
-
-      await tx.workspaceFile.update({
-        where: { id: file.id },
-        data: {
-          content: nextContent,
-          fileSize: Buffer.byteLength(nextContent, 'utf8'),
-          version: file.version + 1,
-        },
-      });
-    });
-
-    return {
-      fileName: file.fileName,
-      content: nextContent,
-      version: file.version + 1,
-    };
+    return workspaceService.writeAgentWorkspaceFile(input.agentId, input.fileName, nextContent);
   }
 }
 

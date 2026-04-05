@@ -128,6 +128,32 @@ export interface ServerToClientEvents {
     lastReadAt: string;
   }) => void;
 
+  // Emitted after the routing pass completes so the client can reset the
+  // "Routing…" indicator immediately when no agents were selected.
+  'message:routing:complete': (data: {
+    channelId: string;
+    selectedCount: number;
+  }) => void;
+
+  // Emitted when an agent starts executing a tool mid-turn.
+  // turnId matches the tempId of the in-progress streaming bubble.
+  'agent:tool:start': (data: {
+    agentId: string;
+    channelId: string;
+    toolName: string;
+    turnId: string;
+  }) => void;
+
+  // Emitted when an agent finishes executing a tool mid-turn.
+  'agent:tool:end': (data: {
+    agentId: string;
+    channelId: string;
+    toolName: string;
+    turnId: string;
+    success: boolean;
+    durationMs: number;
+  }) => void;
+
   'error': (data: {
     code: string;
     message: string;

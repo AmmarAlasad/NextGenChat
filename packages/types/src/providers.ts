@@ -45,6 +45,7 @@ export interface LLMMessage {
   content: string;
   toolCallId?: string;
   name?: string;
+  toolCalls?: ToolCall[];
 }
 
 // ── LLM Request ────────────────────────────────────────
@@ -52,6 +53,7 @@ export interface LLMMessage {
 export interface LLMRequestOptions {
   messages: LLMMessage[];
   tools?: LLMTool[];
+  toolChoice?: LLMToolChoice;
   maxTokens?: number;
   temperature?: number;
   stream?: boolean;
@@ -63,6 +65,11 @@ export interface LLMTool {
   description: string;
   parameters: Record<string, unknown>; // JSON Schema
 }
+
+export type LLMToolChoice =
+  | { type: 'auto' }
+  | { type: 'required' }
+  | { type: 'function'; name: string };
 
 // ── LLM Response ───────────────────────────────────────
 
