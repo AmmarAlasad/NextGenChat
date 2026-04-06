@@ -141,7 +141,9 @@ export interface ServerToClientEvents {
     agentId: string;
     channelId: string;
     toolName: string;
+    toolCallId: string;
     turnId: string;
+    arguments?: unknown;
   }) => void;
 
   // Emitted when an agent finishes executing a tool mid-turn.
@@ -149,9 +151,13 @@ export interface ServerToClientEvents {
     agentId: string;
     channelId: string;
     toolName: string;
+    toolCallId: string;
     turnId: string;
     success: boolean;
     durationMs: number;
+    arguments?: unknown;
+    output?: string;
+    structuredOutput?: Record<string, unknown>;
   }) => void;
 
   'error': (data: {

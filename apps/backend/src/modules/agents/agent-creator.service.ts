@@ -12,7 +12,10 @@
  * from corrupting the system files that the runtime depends on.
  *
  * Protected invariants enforced by validators:
- *   Agent.md   — must contain send_reply, memory.md, user.md, workspace_write_file rules
+ *   Agent.md   — must contain memory/user rules plus explicit guidance for
+ *                send_reply, workspace_read_file, workspace_write_file,
+ *                workspace_glob, workspace_grep, workspace_bash, todowrite,
+ *                and todoread
  *   soul.md    — must be substantive markdown, not a JSON blob
  *   identity.md — must have meaningful content
  *
@@ -46,7 +49,7 @@ Agent.md MUST contain ALL of the following. Do not remove or rename these:
 - A section on when to update memory.md (using workspace_write_file)
 - A section on when to update user.md (using workspace_write_file)
 - A section titled "Explicit Memory Requests" with rules for handling user memory requests
-- A section on tool usage rules that mentions workspace_write_file
+- A section on tool usage rules that mentions workspace_read_file, workspace_write_file, workspace_glob, workspace_grep, workspace_bash, send_reply, todowrite, and todoread
 - A section titled "Group Chat Participation" explaining when to output [[NO_REPLY]]
 
 ### wakeup.md — REQUIRED (for WAKEUP routing mode)
@@ -90,6 +93,17 @@ The "Group Chat Participation" section MUST include these exact rules (adapt the
 - Respond normally when addressed by name, when the message is a general group question relevant to your expertise, or when explicitly @mentioned
 - When in doubt, stay silent rather than interrupt
 
+The "Tool Usage Rules" section MUST teach the following behaviors clearly:
+- For substantial work, follow an inspect -> plan -> execute -> verify -> report loop instead of answering in one shot
+- Use workspace_glob to discover files by name pattern when the exact path is unknown
+- Use workspace_grep to search file contents across the workspace when looking for text, keys, errors, or code patterns
+- Use workspace_read_file for exact file contents and directory listings
+- Use workspace_write_file only after deciding on the final file content, and never claim a file changed unless the tool succeeded
+- Use workspace_bash only when a shell command is genuinely needed
+- Use send_reply only for intermediate progress updates in the current channel; the final reply is still returned normally at the end of the turn
+- Use todowrite and todoread for multi-step work so progress is tracked instead of held only in short-term reasoning
+- After changing files or running commands, verify the result. If verification fails, keep working and retry before giving the final answer
+
 ### user.md — Model of the User
 Blank template the agent fills over time. Keep it clean and scannable.
 
@@ -131,6 +145,16 @@ function isJsonBlob(content: string): boolean {
 
 function validateAgentMd(content: string): ValidationResult {
   const trimmed = content.trim();
+  const requiredToolMentions = [
+    'workspace_read_file',
+    'workspace_write_file',
+    'workspace_glob',
+    'workspace_grep',
+    'workspace_bash',
+    'send_reply',
+    'todowrite',
+    'todoread',
+  ];
 
   if (isJsonBlob(trimmed)) {
     return { valid: false, reason: 'Agent.md must be a markdown document, not a JSON object.' };
@@ -151,8 +175,10 @@ function validateAgentMd(content: string): ValidationResult {
     return { valid: false, reason: 'Agent.md must include rules for when to update user.md.' };
   }
 
-  if (!trimmed.includes('workspace_write_file')) {
-    return { valid: false, reason: 'Agent.md must reference workspace_write_file for writing memory files.' };
+  for (const toolName of requiredToolMentions) {
+    if (!trimmed.includes(toolName)) {
+      return { valid: false, reason: `Agent.md must reference ${toolName} in its tool usage rules.` };
+    }
   }
 
   if (!trimmed.includes('[[NO_REPLY]]')) {
@@ -161,6 +187,10 @@ function validateAgentMd(content: string): ValidationResult {
 
   if (!trimmed.toLowerCase().includes('explicit memory') && !trimmed.toLowerCase().includes('remember')) {
     return { valid: false, reason: 'Agent.md must include an Explicit Memory Requests section explaining how to handle user memory requests.' };
+  }
+
+  if (!trimmed.toLowerCase().includes('verify')) {
+    return { valid: false, reason: 'Agent.md must explain how the agent verifies work before giving a final answer.' };
   }
 
   return { valid: true };

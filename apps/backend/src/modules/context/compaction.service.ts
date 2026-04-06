@@ -473,7 +473,7 @@ class CompactionService {
    * Returns all messages unchanged when under budget (no compaction needed).
    */
   async compactBeforeTurn(params: CompactBeforeTurnParams): Promise<CompactBeforeTurnResult> {
-    const { agentId, channelId, agentName, agentSlug, contextWindow, previousSummary } = params;
+    const { agentId, channelId, agentName, contextWindow, previousSummary } = params;
 
     // Apply history turn limit first (OpenClaw: limitHistoryTurns)
     const limitedMessages = limitHistoryTurns(params.visibleMessages, MAX_HISTORY_TURNS);

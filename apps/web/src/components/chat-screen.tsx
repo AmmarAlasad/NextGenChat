@@ -5,12 +5,13 @@
  * Projects sections; a main content area that renders either a chat thread or
  * a project detail panel; and streaming agent responses with per-agent bubbles.
  *
- * Phase 4 implementation status:
+ * Phase 6 implementation status:
  * - Direct Messages: one item per agent, clicking opens or creates a DM channel
  * - Groups: standalone group channels (not in a project), show only group name
  * - Projects: expandable containers with sub-channels and an editable project.md
  * - Project detail panel: edit project name, description, and project.md inline
  * - New-agent and new-group modals remain in place
+ * - Live tool-call timeline now renders inside streaming agent bubbles with expandable details
  */
 
 'use client';
@@ -48,13 +49,22 @@ interface SlashSuggestion {
 
 interface AgentStream { agentId: string; text: string }
 
+type ToolCallStatus = 'running' | 'success' | 'failed';
+
 interface ToolCallDetail {
+  toolCallId?: string;
   toolName?: string;
   success?: boolean;
   durationMs?: number;
   arguments?: unknown;
   output?: string;
   structuredOutput?: unknown;
+  status?: ToolCallStatus;
+}
+
+interface LiveToolCall extends ToolCallDetail {
+  toolCallId: string;
+  status: ToolCallStatus;
 }
 
 const emptyAgentForm: CreateAgentInput = {
@@ -95,47 +105,150 @@ function formatToolData(value: unknown) {
   }
 }
 
-function ToolCallPanel({ toolCalls }: { toolCalls: ToolCallDetail[] }) {
+function getToolCallStatus(toolCall: ToolCallDetail): ToolCallStatus {
+  if (toolCall.status) {
+    return toolCall.status;
+  }
+
+  return toolCall.success ? 'success' : 'failed';
+}
+
+function humanizeToolName(toolName?: string) {
+  if (!toolName) {
+    return 'Tool';
+  }
+
+  return toolName.replace(/^workspace_/, '').replace(/_/g, ' ');
+}
+
+function describeToolCall(toolCall: ToolCallDetail) {
+  const args = (toolCall.arguments && typeof toolCall.arguments === 'object') ? toolCall.arguments as Record<string, unknown> : {};
+  const toolName = toolCall.toolName ?? 'tool';
+
+  switch (toolName) {
+    case 'workspace_read_file':
+      return {
+        title: `Reading ${typeof args.filePath === 'string' ? args.filePath : 'workspace file'}`,
+        subtitle: typeof args.offset === 'number' ? `Starting at line ${args.offset}` : 'Inspecting workspace contents',
+      };
+    case 'workspace_write_file':
+      return {
+        title: `Writing ${typeof args.filePath === 'string' ? args.filePath : 'workspace file'}`,
+        subtitle: 'Saving updated file contents',
+      };
+    case 'workspace_glob':
+      return {
+        title: `Finding files${typeof args.pattern === 'string' ? ` matching ${args.pattern}` : ''}`,
+        subtitle: typeof args.path === 'string' ? `Inside ${args.path}` : 'Searching the workspace',
+      };
+    case 'workspace_grep':
+      return {
+        title: `Searching${typeof args.pattern === 'string' ? ` for ${args.pattern}` : ' workspace contents'}`,
+        subtitle: typeof args.include === 'string' ? `Within ${args.include}` : 'Scanning matching files',
+      };
+    case 'workspace_bash':
+      return {
+        title: typeof args.description === 'string' ? args.description : 'Running command',
+        subtitle: typeof args.command === 'string' ? args.command : 'Shell execution',
+      };
+    case 'send_reply':
+      return {
+        title: 'Sending progress update',
+        subtitle: 'Posting an intermediate reply in this chat',
+      };
+    case 'todowrite':
+      return {
+        title: 'Updating task checklist',
+        subtitle: Array.isArray(args.todos) ? `${args.todos.length} checklist item${args.todos.length === 1 ? '' : 's'}` : 'Saving task progress',
+      };
+    case 'todoread':
+      return {
+        title: 'Reading task checklist',
+        subtitle: 'Loading saved task progress',
+      };
+    case 'channel_send_message':
+      return {
+        title: `Sending message${typeof args.channelName === 'string' ? ` to #${args.channelName}` : ''}`,
+        subtitle: 'Relaying to another channel',
+      };
+    default:
+      return {
+        title: `Using ${humanizeToolName(toolName)}`,
+        subtitle: 'Tool execution in progress',
+      };
+  }
+}
+
+function getToolStatusClasses(status: ToolCallStatus) {
+  if (status === 'running') {
+    return 'border-amber-200/70 bg-amber-50 text-amber-700';
+  }
+
+  if (status === 'success') {
+    return 'border-emerald-200/70 bg-emerald-50 text-emerald-700';
+  }
+
+  return 'border-rose-200/70 bg-rose-50 text-rose-700';
+}
+
+function ToolCallTimeline({ toolCalls, live = false }: { toolCalls: ToolCallDetail[]; live?: boolean }) {
   if (toolCalls.length === 0) {
     return null;
   }
 
   return (
-    <details className="mt-3 overflow-hidden rounded-2xl border border-outline/10 bg-surface-container">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs font-semibold text-on-surface-variant">
-        <svg className="h-3.5 w-3.5 text-primary" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
-          <path d="M8 9l4-4 4 4M16 15l-4 4-4-4" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-        {toolCalls.length} tool call{toolCalls.length === 1 ? '' : 's'}
-      </summary>
-      <div className="space-y-3 border-t border-outline/10 px-3 py-3">
-        {toolCalls.map((toolCall, index) => (
-          <div className="rounded-xl bg-surface-container-lowest px-3 py-3" key={`${toolCall.toolName ?? 'tool'}-${index}`}>
-            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-              <span className="font-semibold text-on-surface">{toolCall.toolName ?? 'tool'}</span>
-              <span className={`rounded px-1.5 py-0.5 font-bold uppercase tracking-tight ${toolCall.success ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
-                {toolCall.success ? 'success' : 'failed'}
+    <div className={`mt-3 space-y-2 ${live ? '' : ''}`}>
+      {toolCalls.map((toolCall, index) => {
+        const status = getToolCallStatus(toolCall);
+        const description = describeToolCall(toolCall);
+
+        return (
+          <details className={`overflow-hidden rounded-2xl border ${getToolStatusClasses(status)}`} key={toolCall.toolCallId ?? `${toolCall.toolName ?? 'tool'}-${index}`}>
+            <summary className="flex cursor-pointer list-none items-center gap-3 px-3 py-2.5">
+              <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border ${status === 'running' ? 'border-amber-200 bg-amber-100/80' : status === 'success' ? 'border-emerald-200 bg-emerald-100/80' : 'border-rose-200 bg-rose-100/80'}`}>
+                {status === 'running' ? (
+                  <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-amber-500" />
+                ) : status === 'success' ? (
+                  <svg className="h-3.5 w-3.5 text-emerald-600" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                ) : (
+                  <svg className="h-3.5 w-3.5 text-rose-600" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path d="M6 18L18 6M6 6l12 12" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
               </span>
-              <span className="text-on-surface-variant">{typeof toolCall.durationMs === 'number' ? `${toolCall.durationMs} ms` : null}</span>
-            </div>
-            <div className="space-y-2 text-xs text-on-surface-variant">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold">{description.title}</div>
+                <div className="truncate text-[11px] opacity-80">{description.subtitle}</div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-wide opacity-80">
+                <span>{status === 'running' ? 'running' : status}</span>
+                {typeof toolCall.durationMs === 'number' ? <span className="normal-case tracking-normal">{toolCall.durationMs} ms</span> : null}
+              </div>
+            </summary>
+            <div className="space-y-2 border-t border-current/10 bg-white/50 px-3 py-3 text-xs text-on-surface-variant dark:bg-black/10">
+              <div>
+                <div className="mb-1 font-semibold text-on-surface/80">Tool</div>
+                <div className="rounded-lg bg-black/5 px-2 py-2 text-[11px] leading-5 dark:bg-white/5">{toolCall.toolName ?? 'tool'}</div>
+              </div>
               <div>
                 <div className="mb-1 font-semibold text-on-surface/80">Arguments</div>
-                <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-black/5 px-2 py-2 text-[11px] leading-5">{formatToolData(toolCall.arguments ?? {})}</pre>
+                <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-black/5 px-2 py-2 text-[11px] leading-5 dark:bg-white/5">{formatToolData(toolCall.arguments ?? {})}</pre>
               </div>
               <div>
                 <div className="mb-1 font-semibold text-on-surface/80">Output</div>
-                <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-black/5 px-2 py-2 text-[11px] leading-5">{formatToolData(toolCall.output ?? '')}</pre>
+                <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-black/5 px-2 py-2 text-[11px] leading-5 dark:bg-white/5">{formatToolData(toolCall.output ?? (status === 'running' ? 'Still running…' : ''))}</pre>
               </div>
               <div>
                 <div className="mb-1 font-semibold text-on-surface/80">Structured result</div>
-                <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-black/5 px-2 py-2 text-[11px] leading-5">{formatToolData(toolCall.structuredOutput ?? {})}</pre>
+                <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-black/5 px-2 py-2 text-[11px] leading-5 dark:bg-white/5">{formatToolData(toolCall.structuredOutput ?? {})}</pre>
               </div>
             </div>
-          </div>
-        ))}
-      </div>
-    </details>
+          </details>
+        );
+      })}
+    </div>
   );
 }
 
@@ -380,7 +493,7 @@ function ProjectDetailPanel({
       setFileDoc(doc);
       setFileDraft(doc.content);
     }).catch(() => undefined);
-  }, [project.id, accessToken]);
+  }, [accessToken, project.description, project.id, project.name]);
 
   async function saveInfo() {
     setSaving(true);
@@ -501,7 +614,7 @@ export function ChatScreen() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [navView, setNavView] = useState<NavView>('chat');
   const [agentStreams, setAgentStreams] = useState<Map<string, AgentStream>>(new Map());
-  const [toolActivity, setToolActivity] = useState<Map<string, string>>(new Map()); // tempId → toolName
+  const [liveToolCalls, setLiveToolCalls] = useState<Map<string, LiveToolCall[]>>(new Map());
   const [agentState, setAgentState] = useState<AgentState>('idle');
 
   // Modals
@@ -626,7 +739,7 @@ export function ChatScreen() {
     // Switching channels must always reset streaming state so the new channel
     // is never locked by a previous channel's in-flight routing or stream.
     setAgentStreams(new Map());
-    setToolActivity(new Map());
+    setLiveToolCalls(new Map());
     setAgentState('idle');
     setChannelSession(null);
     clearRoutingTimeout();
@@ -681,30 +794,67 @@ export function ChatScreen() {
       setAgentStreams((cur) => {
         const next = new Map(cur);
         next.delete(payload.tempId);
-        if (next.size === 0) setAgentState('idle');
         return next;
       });
-      setToolActivity((cur) => {
+      setLiveToolCalls((cur) => {
         const next = new Map(cur);
         next.delete(payload.tempId);
         return next;
       });
     };
 
-    const handleToolStart = (payload: { channelId: string; toolName: string; turnId: string }) => {
+    const handleToolStart = (payload: { channelId: string; toolName: string; toolCallId: string; turnId: string; agentId: string; arguments?: unknown }) => {
       if (payload.channelId !== selectedChannelId) return;
-      setToolActivity((cur) => {
+      clearRoutingTimeout();
+      setAgentState('streaming');
+      setAgentStreams((cur) => {
         const next = new Map(cur);
-        next.set(payload.turnId, payload.toolName);
+        if (!next.has(payload.turnId)) {
+          next.set(payload.turnId, { agentId: payload.agentId, text: '' });
+        }
+        return next;
+      });
+      setLiveToolCalls((cur) => {
+        const next = new Map(cur);
+        const calls = next.get(payload.turnId) ?? [];
+        const existingIndex = calls.findIndex((call) => call.toolCallId === payload.toolCallId);
+        const nextCall: LiveToolCall = {
+          toolCallId: payload.toolCallId,
+          toolName: payload.toolName,
+          arguments: payload.arguments,
+          status: 'running',
+        };
+
+        if (existingIndex >= 0) {
+          const updated = [...calls];
+          updated[existingIndex] = { ...updated[existingIndex], ...nextCall };
+          next.set(payload.turnId, updated);
+        } else {
+          next.set(payload.turnId, [...calls, nextCall]);
+        }
         return next;
       });
     };
 
-    const handleToolEnd = (payload: { channelId: string; turnId: string }) => {
+    const handleToolEnd = (payload: { channelId: string; turnId: string; toolCallId: string; toolName: string; success: boolean; durationMs: number; arguments?: unknown; output?: string; structuredOutput?: Record<string, unknown> }) => {
       if (payload.channelId !== selectedChannelId) return;
-      setToolActivity((cur) => {
+      clearRoutingTimeout();
+      setLiveToolCalls((cur) => {
         const next = new Map(cur);
-        next.delete(payload.turnId);
+        const calls = next.get(payload.turnId) ?? [];
+        next.set(
+          payload.turnId,
+          calls.map((call) => call.toolCallId === payload.toolCallId ? {
+            ...call,
+            toolName: payload.toolName,
+            arguments: payload.arguments ?? call.arguments,
+            output: payload.output,
+            structuredOutput: payload.structuredOutput,
+            durationMs: payload.durationMs,
+            success: payload.success,
+            status: payload.success ? 'success' : 'failed',
+          } : call),
+        );
         return next;
       });
     };
@@ -715,7 +865,7 @@ export function ChatScreen() {
       clearRoutingTimeout();
       setAgentState('idle');
       setAgentStreams(new Map());
-      setToolActivity(new Map());
+      setLiveToolCalls(new Map());
     };
 
     const handleRoutingComplete = (payload: { channelId: string; selectedCount: number }) => {
@@ -725,7 +875,7 @@ export function ChatScreen() {
         clearRoutingTimeout();
         setAgentState('idle');
         setAgentStreams(new Map());
-        setToolActivity(new Map());
+        setLiveToolCalls(new Map());
       }
     };
 
@@ -762,7 +912,7 @@ export function ChatScreen() {
     if (!isNearBottomRef.current) return;
     const c = scrollContainerRef.current;
     if (c) c.scrollTop = c.scrollHeight;
-  }, [messages, agentStreams, agentState]);
+  }, [messages, agentStreams, liveToolCalls, agentState]);
 
   // Never lock the input on agent state — the user can always send a follow-up.
   // The only hard requirements are: text exists, authenticated, and channel selected.
@@ -802,7 +952,7 @@ export function ChatScreen() {
     clearRoutingTimeout();
     setAgentState('queued');
     setAgentStreams(new Map());
-    setToolActivity(new Map());
+    setLiveToolCalls(new Map());
     setError(null);
 
     // Safety net: if no stream event arrives within 20 s (server error, network
@@ -811,7 +961,7 @@ export function ChatScreen() {
     routingTimeoutRef.current = setTimeout(() => {
       setAgentState('idle');
       setAgentStreams(new Map());
-      setToolActivity(new Map());
+      setLiveToolCalls(new Map());
     }, 20_000);
 
     if (!socket.connected) { socket.connect(); socket.emit('channel:join', { channelId: selectedChannelId }); }
@@ -947,13 +1097,23 @@ export function ChatScreen() {
     }
   }, [accessToken, selectedChannel, selectedChannelAgentIds, selectedChannelIsGroup]);
 
-  const activeStreamCount = agentStreams.size;
+  const activeTurnIds = useMemo(
+    () => new Set([...agentStreams.keys(), ...liveToolCalls.keys()]),
+    [agentStreams, liveToolCalls],
+  );
+  const activeStreamCount = activeTurnIds.size;
   const agentStateLabel =
     activeStreamCount > 1 ? `${activeStreamCount} agents replying`
       : agentState === 'streaming' ? 'Replying'
       : agentState === 'queued' ? 'Routing'
       : agentState === 'error' ? 'Error'
       : 'Ready';
+
+  useEffect(() => {
+    if (agentState === 'streaming' && activeStreamCount === 0) {
+      setAgentState('idle');
+    }
+  }, [activeStreamCount, agentState]);
 
   if (loading || !ready) {
     return <main className="flex min-h-screen items-center justify-center text-on-surface-variant">Loading…</main>;
@@ -1123,17 +1283,21 @@ export function ChatScreen() {
                           </div>
                           <div className={`rounded-2xl px-4 py-3 shadow-sm ring-1 ${isAgent ? (failure ? 'bg-rose-50 ring-rose-200/80' : 'bg-surface-container-lowest ring-primary/12') : 'bg-surface-container-lowest ring-outline/8'}`}>
                             <p className="whitespace-pre-wrap text-[14px] leading-7 text-on-surface/90">{message.content}</p>
-                            {isAgent ? <ToolCallPanel toolCalls={toolCalls} /> : null}
+                            {isAgent ? <ToolCallTimeline toolCalls={toolCalls} /> : null}
                           </div>
                         </div>
                       </article>
                     );
                   })}
 
-                  {Array.from(agentStreams.entries()).map(([tempId, stream]) => {
+                  {Array.from(activeTurnIds).map((tempId) => {
+                    const stream = agentStreams.get(tempId);
+                    const liveCalls = liveToolCalls.get(tempId) ?? [];
+                    if (!stream) {
+                      return null;
+                    }
                     const streamingAgent = agents.find((a) => a.id === stream.agentId);
                     const label = streamingAgent?.name ?? 'Agent';
-                    const activeToolName = toolActivity.get(tempId);
                     return (
                       <article className="flex gap-3" key={tempId}>
                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/90 text-xs font-bold text-on-primary">{label.slice(0, 1).toUpperCase()}</div>
@@ -1141,11 +1305,12 @@ export function ChatScreen() {
                           <div className="mb-1.5 flex items-center gap-2">
                             <span className="text-sm font-semibold text-on-surface">{label}</span>
                             <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-tight text-primary">Agent</span>
-                            {activeToolName
-                              ? <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-amber-600">Using {activeToolName.replace(/_/g, ' ')}…</span>
+                            {liveCalls.length > 0
+                              ? <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-amber-600">Using tools…</span>
                               : <span className="text-[10px] text-on-surface-variant/40">Replying…</span>}
                           </div>
                           <div className="rounded-2xl bg-surface-container-lowest px-4 py-3 shadow-sm ring-1 ring-primary/12">
+                            <ToolCallTimeline live toolCalls={liveCalls} />
                             {stream.text ? <p className="whitespace-pre-wrap text-[14px] leading-7 text-on-surface/90">{stream.text}</p> : <p className="text-[18px] leading-7 text-on-surface/60">...</p>}
                           </div>
                         </div>

@@ -34,10 +34,50 @@ export function buildDefaultAgentTools() {
       requiresApproval: false,
     },
     {
+      toolName: 'workspace_glob',
+      config: {
+        description: 'Find files by glob pattern inside the agent workspace.',
+        access: 'workspace-only',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'workspace_grep',
+      config: {
+        description: 'Search file contents by pattern inside the agent workspace.',
+        access: 'workspace-only',
+      },
+      requiresApproval: false,
+    },
+    {
       toolName: 'channel_send_message',
       config: {
         description: 'Send a message to another non-direct channel the agent already belongs to.',
         access: 'membership-only',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'send_reply',
+      config: {
+        description: 'Send an intermediate progress update to the current channel.',
+        access: 'current-channel',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'todowrite',
+      config: {
+        description: 'Create or update a structured todo list for multi-step work.',
+        access: 'workspace-state',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'todoread',
+      config: {
+        description: 'Read the current structured todo list.',
+        access: 'workspace-state',
       },
       requiresApproval: false,
     },

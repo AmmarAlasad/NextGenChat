@@ -25,6 +25,16 @@ import { randomUUID } from 'node:crypto';
 
 import { prisma } from '@/db/client.js';
 import { NO_REPLY_TOKEN, sanitizeAgentVisibleContent } from '@/modules/agents/agent-output.js';
+import {
+  buildTaskModeInstruction,
+  evaluateTaskContinuation,
+  evaluateTaskVerification,
+  readPersistedTaskState,
+  requestLikelyNeedsTaskMode,
+  requestLikelyResumesTask,
+  type TaskToolExecutionSummary,
+  type TaskVerificationDecision,
+} from '@/modules/agents/task-state.js';
 import { ensureDefaultAgentTools } from '@/modules/agents/default-agent-tools.js';
 import { chatService, serializeMessage } from '@/modules/chat/chat.service.js';
 import { contextBuilder } from '@/modules/context/context-builder.js';
@@ -38,6 +48,8 @@ import { getChannelRoom, getChatNamespace } from '@/sockets/socket-server.js';
 const WRITE_TOOL_NAME = 'workspace_write_file';
 const BASH_TOOL_NAME = 'workspace_bash';
 const SEND_CHANNEL_MESSAGE_TOOL_NAME = 'channel_send_message';
+const TODO_WRITE_TOOL_NAME = 'todowrite';
+const SEND_REPLY_TOOL_NAME = 'send_reply';
 const MAX_REQUIRED_TOOL_RETRIES = 8;
 
 const RELAY_TAG_RE = /<<send:([^>]+)>>([\s\S]*?)<<\/send>>/gi;
@@ -52,6 +64,18 @@ const MESSAGE_WRAPPER_CLOSE_RE = /\s*<\/message>\s*$/i;
 interface RelayCommand {
   channelName: string;
   content: string;
+}
+
+function safeParseToolArguments(raw: string) {
+  if (!raw.trim()) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return { rawArguments: raw };
+  }
 }
 
 function stripMessageWrapper(text: string): string {
@@ -203,18 +227,37 @@ export class AgentSessionGateway {
       const context = await contextBuilder.build(agentId, channelId, messageId);
       const providerTools = await toolRegistryService.getProviderTools(agentId);
       const messages = [...context.messages];
-      const toolExecutionSummaries: Array<Record<string, unknown>> = [];
+      const toolExecutionSummaries: TaskToolExecutionSummary[] = [];
+      const triggerContent = triggeringMessage?.content ?? '';
+      const initialTaskState = await readPersistedTaskState(agentId);
 
-      const writeToolRequired = requestLikelyNeedsWriteTool(triggeringMessage?.content ?? '');
-      const bashToolRequired = requestLikelyNeedsBashTool(triggeringMessage?.content ?? '');
+      const writeToolRequired = requestLikelyNeedsWriteTool(triggerContent);
+      const bashToolRequired = requestLikelyNeedsBashTool(triggerContent);
+      let taskMode = requestLikelyNeedsTaskMode(triggerContent)
+        || (initialTaskState.totalTodos > 0 && requestLikelyResumesTask(triggerContent));
+      const taskModeReason = taskMode
+        ? (initialTaskState.totalTodos > 0 && requestLikelyResumesTask(triggerContent) ? 'resume-existing-task' : 'heuristic')
+        : 'none';
       const maxToolRounds = (await import('@/config/env.js')).env.agentMaxToolRounds;
 
       let successfulWriteToolCalls = 0;
       let successfulBashToolCalls = 0;
       let requiredToolRetryCount = 0;
+      let taskState = initialTaskState;
+      let continuedTaskRounds = 0;
+      let taskBlocked = false;
+      let verificationDecision: TaskVerificationDecision = {
+        shouldContinue: false,
+        blocked: false,
+        status: 'not_needed',
+      };
       let finalResponse:
         | { id: string; content: string; usage: { promptTokens: number; completionTokens: number; totalTokens: number; cachedTokens?: number }; providerMetadata?: Record<string, unknown> }
         | undefined;
+
+      if (taskMode) {
+        messages.push({ role: 'system', content: buildTaskModeInstruction() });
+      }
 
       // ── Tool loop (non-streaming) ──────────────────────────────────────────
       for (let round = 0; maxToolRounds === 0 || round < maxToolRounds; round += 1) {
@@ -252,6 +295,35 @@ export class AgentSessionGateway {
             continue;
           }
 
+          taskState = await readPersistedTaskState(agentId);
+          const taskDecision = evaluateTaskContinuation({
+            taskMode,
+            state: taskState,
+            finalContent: response.content,
+          });
+
+          if (taskDecision.shouldContinue && taskDecision.reminder) {
+            continuedTaskRounds += 1;
+            messages.push({ role: 'system', content: taskDecision.reminder });
+            continue;
+          }
+
+          taskBlocked = taskDecision.blocked;
+
+          verificationDecision = evaluateTaskVerification({
+            taskMode,
+            requestContent: triggerContent,
+            state: taskState,
+            toolCalls: toolExecutionSummaries,
+            finalContent: response.content,
+          });
+
+          if (verificationDecision.shouldContinue && verificationDecision.reminder) {
+            continuedTaskRounds += 1;
+            messages.push({ role: 'system', content: verificationDecision.reminder });
+            continue;
+          }
+
           finalResponse = response;
           break;
         }
@@ -269,18 +341,19 @@ export class AgentSessionGateway {
           let success = true;
           let output = '';
           let structuredOutput: Record<string, unknown> = {};
-          let parsedArguments: unknown = null;
+          const parsedArguments: unknown = safeParseToolArguments(toolCall.arguments);
 
           // Notify frontend that a tool is starting.
           chatNamespace.to(getChannelRoom(channelId)).emit('agent:tool:start', {
             agentId,
             channelId,
             toolName: toolCall.name,
+            toolCallId: toolCall.id,
             turnId: tempId,
+            arguments: parsedArguments,
           });
 
           try {
-            parsedArguments = toolCall.arguments.trim() ? JSON.parse(toolCall.arguments) : {};
             const result = await toolRegistryService.executeToolCall({
               agentId,
               channelId,
@@ -302,9 +375,13 @@ export class AgentSessionGateway {
             agentId,
             channelId,
             toolName: toolCall.name,
+            toolCallId: toolCall.id,
             turnId: tempId,
             success,
             durationMs,
+            arguments: parsedArguments,
+            output,
+            structuredOutput,
           });
 
           await prisma.agentToolCall.create({
@@ -331,6 +408,10 @@ export class AgentSessionGateway {
 
           if (success && toolCall.name === WRITE_TOOL_NAME) successfulWriteToolCalls += 1;
           if (success && toolCall.name === BASH_TOOL_NAME) successfulBashToolCalls += 1;
+          if (success && [TODO_WRITE_TOOL_NAME, WRITE_TOOL_NAME, BASH_TOOL_NAME, SEND_REPLY_TOOL_NAME].includes(toolCall.name)) {
+            taskMode = taskMode || [TODO_WRITE_TOOL_NAME, SEND_REPLY_TOOL_NAME].includes(toolCall.name);
+            taskState = await readPersistedTaskState(agentId);
+          }
 
           messages.push({
             role: 'tool',
@@ -343,22 +424,42 @@ export class AgentSessionGateway {
 
       // ── Fallback if tool loop exhausted without text response ─────────────
       if (!finalResponse) {
+        taskState = await readPersistedTaskState(agentId);
         const fallbackContent = buildToolFallbackContent(toolExecutionSummaries);
 
-        if (!fallbackContent) {
+        if (taskMode) {
+          finalResponse = {
+            id: `task-fallback-${tempId}`,
+            content: taskState.incompleteTodos.length > 0
+              ? `I made progress but did not finish the task within this turn. Remaining checklist items: ${taskState.incompleteTodos.map((todo) => todo.content).join('; ')}.`
+              : (fallbackContent ?? 'I made progress on the task, but I ran out of tool rounds before producing a final report.'),
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0 },
+            providerMetadata: { fallback: 'task-loop-exhausted' },
+          };
+        }
+
+        if (!finalResponse && !fallbackContent) {
           throw new Error('Agent exhausted the maximum number of tool rounds without producing a final response.');
         }
 
-        finalResponse = {
-          id: `tool-fallback-${tempId}`,
-          content: fallbackContent,
-          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0 },
-          providerMetadata: { fallback: 'tool-loop-exhausted' },
-        };
+        if (!finalResponse) {
+          finalResponse = {
+            id: `tool-fallback-${tempId}`,
+            content: fallbackContent ?? 'The requested tool action completed successfully.',
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0 },
+            providerMetadata: { fallback: 'tool-loop-exhausted' },
+          };
+        }
       }
 
+      if (!finalResponse) {
+        throw new Error('Agent finished the tool loop without a final response.');
+      }
+
+      const ensuredFinalResponse = finalResponse;
+
       // ── Sanitize content ──────────────────────────────────────────────────
-      const rawContent = sanitizeAgentVisibleContent(stripMessageWrapper(finalResponse.content));
+      const rawContent = sanitizeAgentVisibleContent(stripMessageWrapper(ensuredFinalResponse.content));
 
       if (rawContent === NO_REPLY_TOKEN) {
         // Agent decided not to reply — close the stream silently.
@@ -404,9 +505,9 @@ export class AgentSessionGateway {
         JSON.stringify({
           provider: provider.name,
           model: provider.model,
-          responseId: finalResponse.id,
-          usage: finalResponse.usage,
-          providerMetadata: finalResponse.providerMetadata ?? null,
+          responseId: ensuredFinalResponse.id,
+          usage: ensuredFinalResponse.usage,
+          providerMetadata: ensuredFinalResponse.providerMetadata ?? null,
           context: {
             promptTokens: context.totalTokens,
             budgetUsed: context.budgetUsed,
@@ -417,6 +518,17 @@ export class AgentSessionGateway {
             staticPrefixCacheHit: context.staticPrefixCacheHit ?? false,
           },
           toolCalls: toolExecutionSummaries,
+          task: {
+            mode: taskMode ? 'multi_step' : 'chat',
+            reason: taskModeReason,
+            continuedRounds: continuedTaskRounds,
+            blocked: taskBlocked,
+            verificationStatus: verificationDecision.status,
+            totalTodos: taskState.totalTodos,
+            completedTodos: taskState.completedTodos,
+            incompleteTodos: taskState.incompleteTodos.map((todo) => todo.content),
+            hasInProgress: taskState.hasInProgress,
+          },
           relayedChannels: relayCommands.length > 0 ? relayCommands.map((cmd) => cmd.channelName) : undefined,
         }),
       );
