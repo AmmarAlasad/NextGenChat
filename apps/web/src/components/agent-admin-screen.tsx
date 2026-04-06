@@ -276,9 +276,10 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
                 <input className="w-full rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none" onChange={(event) => setAgentForm((current) => ({ ...current, persona: event.target.value }))} placeholder="Persona" value={agentForm.persona ?? ''} />
                 <input className="w-full rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none" onChange={(event) => setAgentForm((current) => ({ ...current, voiceTone: event.target.value }))} placeholder="Voice tone" value={agentForm.voiceTone ?? ''} />
                 <select className="w-full rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none" onChange={(event) => setAgentForm((current) => ({ ...current, triggerMode: event.target.value as UpdateAgentInput['triggerMode'] }))} value={agentForm.triggerMode}>
-                  <option value="AUTO">Auto</option>
+                  <option value="AUTO">Auto (self-filter via [[NO_REPLY]])</option>
+                  <option value="WAKEUP">Wakeup (pickup LLM pre-filter)</option>
                   <option value="MENTIONS_ONLY">Mentions only</option>
-                  <option value="ALL_MESSAGES">All messages</option>
+                  <option value="ALL_MESSAGES">All messages (no filter)</option>
                   <option value="DISABLED">Disabled</option>
                 </select>
                 <select className="w-full rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none" onChange={(event) => setAgentForm((current) => ({ ...current, status: event.target.value as UpdateAgentInput['status'] }))} value={agentForm.status}>

@@ -41,7 +41,7 @@ interface CacheEntry {
   messages: LLMMessage[];
   /** Number of messages in the prefix (for slicing dynamic messages after). */
   prefixCount: number;
-  /** SHA-256 of the watched files' mtimes at cache-build time. */
+  /** SHA-256 of the watched files' mtimes + project content at cache-build time. */
   fileHash: string;
   /** Unix ms when this entry was created. */
   builtAt: number;
@@ -115,6 +115,27 @@ class StaticPrefixCache {
         this.cache.delete(key);
       }
     }
+  }
+
+  /**
+   * Invalidate all cached entries for a specific channel (all agents).
+   * Called when DB-sourced content changes (project.md, agency.md) since
+   * those changes are not captured by the mtime-based file hash.
+   */
+  invalidateByChannel(channelId: string): void {
+    for (const key of this.cache.keys()) {
+      if (key.endsWith(`:${channelId}`)) {
+        this.cache.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Invalidate ALL cached entries across all agents and channels.
+   * Called when workspace-level files (agency.md) change.
+   */
+  invalidateAll(): void {
+    this.cache.clear();
   }
 }
 

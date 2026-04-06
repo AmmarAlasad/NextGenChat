@@ -23,7 +23,7 @@ function serializeAgent(agent: {
   name: string;
   slug: string;
   status: 'ACTIVE' | 'PAUSED' | 'ARCHIVED';
-  triggerMode: 'AUTO' | 'MENTIONS_ONLY' | 'ALL_MESSAGES' | 'DISABLED';
+  triggerMode: 'AUTO' | 'WAKEUP' | 'MENTIONS_ONLY' | 'ALL_MESSAGES' | 'DISABLED';
   identity: { systemPrompt: string | null; persona: string | null } | null;
 }): AgentSummary {
   return {
@@ -44,7 +44,7 @@ function serializeAgentDetail(agent: {
   name: string;
   slug: string;
   status: 'ACTIVE' | 'PAUSED' | 'ARCHIVED';
-  triggerMode: 'AUTO' | 'MENTIONS_ONLY' | 'ALL_MESSAGES' | 'DISABLED';
+  triggerMode: 'AUTO' | 'WAKEUP' | 'MENTIONS_ONLY' | 'ALL_MESSAGES' | 'DISABLED';
   primaryChannelId: string | null;
   identity: { systemPrompt: string | null; persona: string | null; voiceTone: string | null } | null;
   channelMemberships: Array<{ channelId: string }>;

@@ -49,6 +49,7 @@ export const AgentDocType = z.enum([
   'memory.md',
   'Heartbeat.md',
   'user.md',
+  'wakeup.md',
 ]);
 export type AgentDocType = z.infer<typeof AgentDocType>;
 

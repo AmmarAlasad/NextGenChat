@@ -1,166 +1,50 @@
 # AGENTS.md
 
-Agent operating guide for `NextGenChat`.
+Compact repo guide for OpenCode sessions in `NextGenChat`.
 
-## Repo Snapshot
-- Monorepo managed with `pnpm` workspaces and `turbo`.
-- Apps live in `apps/`; shared packages live in `packages/`.
-- Backend: Fastify + Socket.io + Prisma + TypeScript.
-- Web: Next.js App Router + React + TypeScript.
-- Shared API and socket contracts live in `packages/types` as Zod schemas plus inferred types.
-- Current implementation status and roadmap live in `CLAUDE.md` and `plan.md`.
+## Read First
+- Read `CLAUDE.md` before non-trivial work. It contains required file-header rules and the agent-system constraints that still matter.
+- Read `apps/web/AGENTS.md` before editing `apps/web`. This repo uses `next@16.2.2`; check installed docs in `node_modules/next/dist/docs/` instead of relying on memory.
+- Read `plan.md` only for major architecture or cross-package changes. Prefer scripts and code over plan prose when they disagree.
 
-## First Reads
-- Read `CLAUDE.md` before making non-trivial changes.
-- Read `plan.md` before major architectural or cross-package changes.
-- Read `apps/web/AGENTS.md` before editing anything in `apps/web`.
+## Repo Shape
+- Monorepo: `apps/backend`, `apps/web`, `packages/types`, `packages/config`.
+- `packages/types` is the contract source of truth for API payloads and socket events. Backend and web are expected to import from it, not redefine schemas locally.
+- `packages/types/src/index.ts` re-exports with explicit `.js` paths; keep that pattern when adding exports.
+- `apps/mobile` is not a workspace package yet; do not assume mobile scripts exist.
 
-## Rule Files Present
-- Root `AGENTS.md`: this file.
-- `apps/web/AGENTS.md`: Next.js-specific warning plus scaffold-note reminder.
-- No `.cursorrules` file was found.
-- No `.cursor/rules/` directory was found.
-- No `.github/copilot-instructions.md` file was found.
+## Commands That Matter
+- Use `pnpm setup:local`, not `pnpm setup`. The README calls out that `pnpm setup` can hit pnpm's built-in command instead of the repo bootstrap.
+- `pnpm dev:local` is the real local dev entrypoint. It stops stale servers, copies root `.env` to `apps/backend/.env`, runs `prisma:generate` + `prisma:push`, then starts Turbo dev.
+- `pnpm install:local` is the one-line bootstrap/service install path, not a normal dependency install.
+- Focused package commands:
+  - Backend: `pnpm --filter @nextgenchat/backend dev|build|lint|typecheck|test`
+  - Web: `pnpm --filter @nextgenchat/web dev|build|lint|typecheck`
+  - Types: `pnpm --filter @nextgenchat/types build|lint|typecheck`
+- Single backend test: `pnpm --filter @nextgenchat/backend exec vitest run <path-or-pattern>` or `-t "name"`.
+- `apps/web` currently has no test script. `pnpm test` only exercises packages that define one.
 
-## Locked Architecture Rules
-- Use Fastify, not Express.
-- Use Socket.io, not raw WebSockets.
-- Use Prisma for database access; avoid raw SQL except approved full-text cases.
-- Use Argon2id for password hashing.
-- Keep refresh tokens in secure `httpOnly` cookies; never use `localStorage`.
-- Treat `packages/types` as the single source of truth for request, response, and socket contracts.
-- Respect `DEPLOYMENT_MODE`; do not hardcode local vs shared behavior.
-- Local mode may run work in-process; shared mode uses BullMQ and Redis-backed fan-out.
+## Verified Local Mode Behavior
+- `scripts/setup.sh` forces local defaults into `.env`: `DEPLOYMENT_MODE=local`, `DATABASE_URL=file:./dev.db`, `REDIS_ENABLED=false`.
+- Root `.env` is the source file; setup/dev scripts copy it to `apps/backend/.env` for Prisma.
+- `AGENT_WORKSPACES_DIR` is chosen during setup and stored outside the repo by default (`~/.nextgenchat/agent-workspaces`). Do not assume agent files live under the project tree.
+- Backend env validation requires `OPENAI_API_KEY`; local boot is not complete without it.
 
-## Required File Header
-- Every source file in `apps/` and `packages/` must begin with the scaffold note described in `CLAUDE.md`.
-- Preserve existing scaffold notes when editing.
-- If a file's responsibility changes, update the note instead of removing it.
-- If you create a new source file, add the note before imports.
+## Verification Order
+- CI runs: `pnpm lint` -> `pnpm typecheck` -> `pnpm test` -> `pnpm --filter @nextgenchat/backend prisma:validate`.
+- If you change shared contracts in `packages/types`, run `pnpm --filter @nextgenchat/types build` before typechecking backend or web.
 
-## Workspace Commands
-- Install dependencies: `pnpm install`
-- Local setup: `pnpm setup:local`
-- One-line local bootstrap: `pnpm install:local`
-- Start local dev flow: `pnpm dev:local`
-- Stop local dev processes: `pnpm stop`
-- Run all workspace dev tasks: `pnpm dev`
-- Build everything: `pnpm build`
-- Lint everything: `pnpm lint`
-- Type-check everything: `pnpm typecheck`
-- Run all tests: `pnpm test`
-- Format repo files: `pnpm format`
+## Source File Rule
+- Every source file in `apps/` and `packages/` must keep the top-of-file scaffold note described in `CLAUDE.md`.
+- When creating a new source file, add that note before imports.
 
-## Package Commands
-- Backend dev: `pnpm --filter @nextgenchat/backend dev`
-- Web dev: `pnpm --filter @nextgenchat/web dev`
-- Backend build: `pnpm --filter @nextgenchat/backend build`
-- Web build: `pnpm --filter @nextgenchat/web build`
-- Types build: `pnpm --filter @nextgenchat/types build`
-- Backend lint: `pnpm --filter @nextgenchat/backend lint`
-- Web lint: `pnpm --filter @nextgenchat/web lint`
-- Types lint: `pnpm --filter @nextgenchat/types lint`
-- Backend type-check: `pnpm --filter @nextgenchat/backend typecheck`
-- Web type-check: `pnpm --filter @nextgenchat/web typecheck`
-- Types type-check: `pnpm --filter @nextgenchat/types typecheck`
+## Architecture Notes Agents Commonly Miss
+- Backend entrypoint is `apps/backend/src/main.ts`: Fastify + Socket.io + Prisma, with the agent processor started at boot.
+- Queue behavior is mode-dependent: `apps/backend/src/queues/agent.processor.ts` creates a real BullMQ worker only when Redis is enabled; local mode returns a no-op worker handle.
+- Keep backend route handlers thin; business logic lives in `*.service.ts`.
+- Non-public backend routes and socket payloads are expected to be validated with shared Zod schemas from `@nextgenchat/types`.
 
-## Test Commands
-- Run all tests in the monorepo: `pnpm test`
-- Run backend tests: `pnpm --filter @nextgenchat/backend test`
-- Run backend tests in watch mode: `pnpm --filter @nextgenchat/backend test:watch`
-- Run a single backend test file: `pnpm --filter @nextgenchat/backend exec vitest run src/path/to/file.test.ts`
-- Run a single backend test by test name: `pnpm --filter @nextgenchat/backend exec vitest run -t "test name"`
-- `apps/web` currently has no `test` script; do not invent one in instructions or automation.
-- `pnpm test` uses Turborepo, so only packages with a `test` script will execute tests.
-
-## Prisma And Data Commands
-- Generate Prisma client: `pnpm --filter @nextgenchat/backend prisma:generate`
-- Push local schema to SQLite: `pnpm --filter @nextgenchat/backend prisma:push`
-- Run development migrations: `pnpm --filter @nextgenchat/backend prisma:migrate`
-- Open Prisma Studio: `pnpm --filter @nextgenchat/backend prisma:studio`
-- Validate Prisma schema: `pnpm --filter @nextgenchat/backend prisma:validate`
-
-## Working Style
-- Prefer small, targeted changes over broad refactors.
-- Inspect neighboring files before editing so new code matches local patterns.
-- Check real package scripts before assuming a command exists.
-- Do not rewrite unrelated code just to normalize style.
-- Preserve user changes you did not make.
-
-## Shared Contracts
-- Define new API schemas, DTOs, and socket payloads in `packages/types/src/` first.
-- Export both the Zod schema and the inferred TypeScript type from shared contract files.
-- Re-export new modules through `packages/types/src/index.ts`.
-- In `packages/types`, internal export paths use explicit `.js` extensions.
-- After changing shared contracts, run `pnpm --filter @nextgenchat/types build` before typechecking backend or web.
-- Do not duplicate contracts in app code.
-
-## TypeScript Rules
-- TypeScript is strict; do not bypass with `any` unless unavoidable and justified inline.
-- Prefer `z.infer<typeof Schema>` over handwritten duplicate types.
-- In `packages/types`, ESLint enforces interface-style type definitions where applicable.
-- Use `import type` for type-only imports.
-- Match the existing type style in the file unless repo rules require otherwise.
-
-## Imports And Exports
-- Match the surrounding file's quote style; the repo is not fully normalized.
-- Group imports as external packages, workspace packages, then local modules.
-- Keep imports tidy, but avoid churn from reordering unrelated lines.
-- In backend code, prefer the `@/` alias for local imports where it is already established.
-
-## Naming Conventions
-- Use `PascalCase` for React components, Zod schemas, enums, and TypeScript types.
-- Use `camelCase` for variables, functions, object properties, and service methods.
-- Use `SCREAMING_SNAKE_CASE` only for real top-level constants.
-- Backend feature files follow patterns like `auth.routes.ts`, `auth.service.ts`, and `auth.schema.ts`.
-- Keep filenames descriptive and aligned with existing module naming.
-
-## Formatting
-- Shared Prettier config enforces semicolons and trailing commas.
-- Match existing formatting in files you touch instead of mass-normalizing.
-- Prefer concise code over extra helpers unless reuse or clarity clearly improves.
-- Add comments only when behavior is not obvious from the code.
-- Avoid non-ASCII characters unless the file already uses them and there is a strong reason.
-
-## Backend Guidelines
-- Keep route handlers thin; business logic belongs in `*.service.ts`.
-- In backend feature modules, `*.schema.ts` should re-export or compose shared schemas rather than redefining them.
-- Validate route inputs with Zod schemas imported from `@nextgenchat/types`.
-- Put auth middleware on every non-public route.
-- Validate Socket.io payloads before processing.
-- Apply rate limiting to auth endpoints and message-send flows.
-- Never emit ad-hoc socket event names; use shared contracts in `packages/types/src/socket-events.ts`.
-- Rooms are named `channel:{channelId}`; namespaces are `/chat` and `/presence`.
-
-## Frontend Guidelines
-- Preserve the existing Next.js App Router structure under `apps/web/src/app`.
-- Reuse shared schemas and types from `@nextgenchat/types` for forms and API clients.
-- Do not assume the Next.js version from memory; check `apps/web/package.json` and `node_modules/next/dist/docs/`.
-- Keep desktop and mobile behavior in mind for UI changes.
-- Follow existing patterns around React Query, Zustand, React Hook Form, and Socket.io client usage.
-
-## Error Handling And Logging
-- Fail fast on invalid configuration; backend env validation belongs in `apps/backend/src/config/env.ts`.
-- Throw or return structured errors with stable codes when designing APIs.
-- Handle async boundaries explicitly in services, workers, and provider integrations.
-- Do not log passwords, tokens, API keys, refresh tokens, or chat message content.
-- Log identifiers and operational context instead of sensitive payloads.
-
-## Security Requirements
-- Provider credentials must be encrypted at rest and never returned to clients.
-- Verify agent ownership before any workspace or file operation.
-- Verify upload MIME types server-side and keep storage keys on a safe validated pattern.
-- Keep security behavior environment-driven for local vs network modes.
-- Do not weaken auth, cookie, or encryption decisions without updating the architecture docs.
-
-## Agent-System Notes
-- Agent workspace files live under `$AGENT_WORKSPACES_DIR/{agentId}/`.
-- Protected files such as `soul.md`, `identity.md`, `agent.md`, and `pickup.md` are only writable through `AgentCreatorAgent` flows.
-- Preserve `stripMessageWrapper()` behavior in `apps/backend/src/queues/agent.processor.ts`; it prevents XML wrapper leakage into saved replies.
-- Preserve the routing model in `agent-routing.service.ts`: mode gates, agent-sender guard, then pickup LLM.
-- `send_reply` posts intermediate messages in the current channel and should not trigger downstream agents.
-
-## When Unsure
-- Choose the option that preserves shared contracts, strict typing, and thin route handlers.
-- Prefer consistency with `CLAUDE.md` and `plan.md` over ad hoc local patterns.
-- If introducing a new pattern, document it only when the reason would otherwise be unclear.
+## Agent-System Gotchas
+- Agent routing behavior lives in `apps/backend/src/modules/agents/agent-routing.service.ts`. Current modes in code are `DISABLED`, `MENTIONS_ONLY`, `WAKEUP`, and unconditional scheduling for the remaining active agents; do not rely on older doc names.
+- Protected agent workspace files are enforced by backend flows; preserve that behavior if touching workspace tooling.
+- Preserve `stripMessageWrapper()` protections in `apps/backend/src/queues/agent.processor.ts` / related gateway flow so saved replies do not leak internal XML-style wrappers.

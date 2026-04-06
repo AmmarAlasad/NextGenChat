@@ -26,7 +26,7 @@ import { z } from 'zod';
 export const AgentStatus = z.enum(['ACTIVE', 'PAUSED', 'ARCHIVED']);
 export type AgentStatus = z.infer<typeof AgentStatus>;
 
-export const AgentTriggerMode = z.enum(['AUTO', 'MENTIONS_ONLY', 'ALL_MESSAGES', 'DISABLED']);
+export const AgentTriggerMode = z.enum(['AUTO', 'WAKEUP', 'MENTIONS_ONLY', 'ALL_MESSAGES', 'DISABLED']);
 export type AgentTriggerMode = z.infer<typeof AgentTriggerMode>;
 
 export const MemoryScope = z.enum(['GLOBAL', 'CHANNEL', 'USER']);

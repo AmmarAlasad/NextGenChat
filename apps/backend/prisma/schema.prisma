@@ -64,6 +64,7 @@ enum AgentStatus {
 
 enum AgentTriggerMode {
   AUTO
+  WAKEUP
   MENTIONS_ONLY
   ALL_MESSAGES
   DISABLED
@@ -490,16 +491,20 @@ model OAuthToken {
 }
 
 model ConversationSummary {
-  id                  String   @id @default(uuid())
-  channelId            String
-  agentId              String
-  summary              String
-  tokenCount           Int
-  coversFromMessageId  String
-  covesToMessageId     String
-  createdAt            DateTime @default(now())
-  channel              Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  agent                Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  id                   String    @id @default(uuid())
+  channelId             String
+  agentId               String
+  summary               String
+  tokenCount            Int
+  coversFromMessageId   String
+  covesToMessageId      String
+  /// ID of the first message NOT covered by this summary (start of unsummarized tail).
+  /// Equivalent to OpenClaw's firstKeptEntryId. Context builder filters candidates
+  /// to createdAt >= firstKeptMessage.createdAt to skip already-summarized messages.
+  firstKeptMessageId    String?
+  createdAt             DateTime  @default(now())
+  channel               Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  agent                 Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
   @@index([channelId, agentId, createdAt])
 }

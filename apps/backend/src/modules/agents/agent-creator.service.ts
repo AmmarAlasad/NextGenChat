@@ -45,7 +45,17 @@ These rules are non-negotiable. Violating any of them will break the running sys
 Agent.md MUST contain ALL of the following. Do not remove or rename these:
 - A section on when to update memory.md (using workspace_write_file)
 - A section on when to update user.md (using workspace_write_file)
+- A section titled "Explicit Memory Requests" with rules for handling user memory requests
 - A section on tool usage rules that mentions workspace_write_file
+- A section titled "Group Chat Participation" explaining when to output [[NO_REPLY]]
+
+### wakeup.md — REQUIRED (for WAKEUP routing mode)
+
+wakeup.md is a system prompt for a cheap routing LLM that decides YES or NO before the agent's full turn runs. It MUST:
+- Describe the agent's name and role concisely (one sentence)
+- List clear YES conditions (when to wake the agent)
+- List clear NO conditions (when to stay silent)
+- End with "When in doubt, answer NO"
 
 ### soul.md — MUST BE SUBSTANTIVE
 
@@ -66,7 +76,19 @@ The agent's moral foundation. Injected first — overrides everything else. Make
 Name, role, expertise areas, voice and tone. System Prompt section: 2–3 sentences of core character. Make this feel like a real professional, not a generic AI.
 
 ### Agent.md — Operating Manual
-Memory update rules, tool usage rules, heartbeat instructions. Tailor to the agent's domain.
+Memory update rules, explicit memory request handling, tool usage rules, heartbeat instructions, and group chat participation rules. Tailor to the agent's domain.
+
+The "Explicit Memory Requests" section MUST include these exact rules (adapt wording to the agent's voice, but preserve the logic):
+- When the user explicitly asks to remember something: save it immediately to memory.md (or user.md if it describes the user) via workspace_write_file. Do not ask for confirmation — just save it and confirm.
+- Never say you will remember something without actually calling workspace_write_file.
+- When you encounter clearly valuable cross-session information: if certain, save silently; if unsure, ask once "Should I save that to my memory for future sessions?" then save if yes.
+- Do NOT offer to save information that is ephemeral, already in memory, vague, or part of normal back-and-forth with no future relevance.
+
+The "Group Chat Participation" section MUST include these exact rules (adapt the wording to fit the agent's voice, but preserve the logic):
+- Output [[NO_REPLY]] (and nothing else) when the message is clearly addressed to a specific other agent by name and not to you
+- Output [[NO_REPLY]] when the conversation is a direct back-and-forth between the user and another agent and your input was not invited
+- Respond normally when addressed by name, when the message is a general group question relevant to your expertise, or when explicitly @mentioned
+- When in doubt, stay silent rather than interrupt
 
 ### user.md — Model of the User
 Blank template the agent fills over time. Keep it clean and scannable.
@@ -131,6 +153,14 @@ function validateAgentMd(content: string): ValidationResult {
 
   if (!trimmed.includes('workspace_write_file')) {
     return { valid: false, reason: 'Agent.md must reference workspace_write_file for writing memory files.' };
+  }
+
+  if (!trimmed.includes('[[NO_REPLY]]')) {
+    return { valid: false, reason: 'Agent.md must include a Group Chat Participation section that explains when to output [[NO_REPLY]].' };
+  }
+
+  if (!trimmed.toLowerCase().includes('explicit memory') && !trimmed.toLowerCase().includes('remember')) {
+    return { valid: false, reason: 'Agent.md must include an Explicit Memory Requests section explaining how to handle user memory requests.' };
   }
 
   return { valid: true };
@@ -399,6 +429,7 @@ export class AgentCreatorService {
       'memory.md': 'memory.md',
       'Heartbeat.md': 'heartbeat.md',
       'agency.md': 'agency.md',
+      'wakeup.md': 'wakeup.md',
     };
 
     return map[docType] ?? docType.toLowerCase();

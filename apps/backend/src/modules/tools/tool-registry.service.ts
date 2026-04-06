@@ -225,7 +225,13 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
       const fileStat = await stat(filePath).catch(() => null);
 
       if (!fileStat) {
-        throw new Error('Workspace file not found.');
+        // Return a structured not-found result instead of throwing — prevents
+        // agents from burning tool calls on missing files. Agent can see what's
+        // available by calling workspace_read_file on '.' (the workspace root).
+        return {
+          output: `File not found: ${displayPath}\nTip: call workspace_read_file with filePath="." to list available files.`,
+          structuredOutput: { filePath: displayPath, exists: false },
+        };
       }
 
       const offset = input.offset ?? 1;
@@ -274,7 +280,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
 
       // Protect system-managed files from agent self-modification.
       // Only AgentCreatorAgent (admin API) may update these.
-      const PROTECTED_FILES = ['soul.md', 'identity.md', 'agent.md', 'pickup.md'];
+      const PROTECTED_FILES = ['soul.md', 'identity.md', 'agent.md', 'pickup.md', 'wakeup.md'];
       const baseName = path.basename(filePath).toLowerCase();
       if (PROTECTED_FILES.includes(baseName)) {
         throw new Error(`The file "${path.basename(filePath)}" is managed by AgentCreatorAgent and cannot be modified by agents directly. You can update user.md, memory.md, and heartbeat.md freely.`);

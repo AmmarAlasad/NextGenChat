@@ -188,8 +188,16 @@ export class AgentSessionGateway {
 
       const triggeringMessage = await prisma.message.findUnique({
         where: { id: messageId },
-        select: { content: true },
+        select: { content: true, createdAt: true },
       });
+
+      // Reject stale jobs — e.g. Redis retries for messages from a previous session.
+      // A job whose triggering message is older than 5 minutes is discarded silently.
+      const MESSAGE_AGE_LIMIT_MS = 5 * 60 * 1_000;
+      if (triggeringMessage && Date.now() - triggeringMessage.createdAt.getTime() > MESSAGE_AGE_LIMIT_MS) {
+        console.warn(`[gateway] Discarding stale job for agent ${agentId}: message ${messageId} is too old.`);
+        return;
+      }
 
       const provider = await providerRegistry.get(agentId);
       const context = await contextBuilder.build(agentId, channelId, messageId);
@@ -364,115 +372,19 @@ export class AgentSessionGateway {
       }
 
       // ── Stream the final response ─────────────────────────────────────────
-      // For the tool-fallback path we already have the full content; stream it
-      // via provider.stream() (which falls back to a single chunk for non-SSE
-      // providers). For the normal path, we also use provider.stream() but pass
-      // the already-computed content as a system message so the LLM can echo it
-      // as streaming tokens.
-      //
-      // Simpler and correct approach: if finalResponse came from a real LLM call
-      // (not the fallback), we re-invoke stream() on the same messages to get
-      // real tokens. But that wastes an API call.
-      //
-      // Best approach: the gateway uses provider.stream() for the FINAL LLM call
-      // instead of provider.complete(). Here we do that by checking if the last
-      // response has a real ID (not the tool-fallback synthetic ID).
-      //
-      // For the current implementation: we have the full content from the last
-      // provider.complete() call. We stream it through the base provider's
-      // single-chunk stream() which yields the content as-is. For OpenAI the
-      // real streaming happens because we call stream() directly below.
-      //
-      // To get TRUE token-level streaming for the final round, we need to
-      // replace the last provider.complete() call with provider.stream(). We
-      // do that now: the last round of the tool loop that produces a text
-      // response re-runs as a stream call. The content collected from the stream
-      // is used for persistence (same as before), but each delta is forwarded to
-      // the socket immediately.
-      //
-      // IMPORTANT: finalResponse was already set by the tool loop above. For the
-      // streaming approach, we need to redo the last LLM call as stream(). Since
-      // we can't "undo" the last complete() call, we stream the already-collected
-      // content via a synthetic single-chunk stream. This gives the correct UX
-      // (content appears token by token) without a second API call.
-      //
-      // For future: restructure the tool loop so the LAST round uses stream()
-      // instead of complete(). This is a follow-up optimization.
-      //
-      // Stream the sanitized content token by token using provider.stream().
-      // The content we already have is passed back through stream() so real
-      // SSE providers yield it naturally; for others the base fallback yields
-      // it as one chunk.
+      // Emit the already-collected content as a single chunk. The content came
+      // from the tool loop's provider.complete() call — making a second LLM
+      // call via provider.stream() would waste tokens and produce different text.
+      // True token-level streaming (restructuring the last tool loop round to use
+      // stream() directly) is a follow-up optimization.
+      chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:chunk', {
+        tempId,
+        agentId,
+        channelId,
+        delta: rawContent,
+      });
 
-      let streamedContent = '';
-      let streamUsage = finalResponse.usage;
-      let streamResponseId = finalResponse.id;
-
-      // Use streaming for the final text delivery. We re-invoke the LLM with
-      // stream: true on the same message history so tokens arrive live.
-      // This is the final text round — no tools offered (toolChoice: 'none'
-      // equivalent is achieved by passing no providerTools + toolChoice: auto
-      // with no tools to pick from, which makes the model respond with text).
-      //
-      // To avoid a duplicate API call, we check if the provider supports real
-      // streaming. If it does, we re-run as stream(); if not (or for the
-      // tool-fallback path), we emit the known content as a single chunk.
-      const isFallback = finalResponse.id.startsWith('tool-fallback-');
-
-      if (!isFallback) {
-        // Re-run the final round as a streaming call so the user sees tokens live.
-        // We use the same messages array (already includes tool results) and pass
-        // no tools to force a pure text response.
-        try {
-          for await (const chunk of provider.stream({
-            messages,
-            tools: [],          // No tools on final round — pure text.
-            toolChoice: undefined,
-            maxTokens: 1024,
-            temperature: 0.4,
-          })) {
-            if (chunk.delta) {
-              streamedContent += chunk.delta;
-              chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:chunk', {
-                tempId,
-                agentId,
-                channelId,
-                delta: chunk.delta,
-              });
-            }
-
-            if (chunk.finishReason !== undefined) {
-              if (chunk.usage) streamUsage = chunk.usage;
-              if (chunk.responseId) streamResponseId = chunk.responseId;
-            }
-          }
-        } catch (streamError) {
-          // Streaming failed — fall back to emitting the known content as one chunk.
-          console.warn('[gateway] Streaming failed, falling back to single-chunk delivery:', streamError instanceof Error ? streamError.message : streamError);
-          streamedContent = rawContent;
-          chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:chunk', {
-            tempId,
-            agentId,
-            channelId,
-            delta: rawContent,
-          });
-        }
-      } else {
-        // Tool fallback path — emit known content as one chunk.
-        streamedContent = rawContent;
-        chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:chunk', {
-          tempId,
-          agentId,
-          channelId,
-          delta: rawContent,
-        });
-      }
-
-      // Use the streamed content if we got it; otherwise fall back to the
-      // sanitized content from the non-streaming path.
-      const finalContent = sanitizeAgentVisibleContent(stripMessageWrapper(
-        streamedContent.trim() || rawContent,
-      ));
+      const finalContent = rawContent;
 
       if (!finalContent || finalContent === NO_REPLY_TOKEN) {
         chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:end', {
@@ -492,8 +404,8 @@ export class AgentSessionGateway {
         JSON.stringify({
           provider: provider.name,
           model: provider.model,
-          responseId: streamResponseId,
-          usage: streamUsage,
+          responseId: finalResponse.id,
+          usage: finalResponse.usage,
           providerMetadata: finalResponse.providerMetadata ?? null,
           context: {
             promptTokens: context.totalTokens,

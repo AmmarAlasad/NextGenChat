@@ -31,6 +31,7 @@ const DOC_FILE_NAMES: Record<AgentDocType, string> = {
   'memory.md': 'memory.md',
   'Heartbeat.md': 'heartbeat.md',
   'user.md': 'user.md',
+  'wakeup.md': 'wakeup.md',
 };
 
 const WORKSPACE_AGENCY_FILE_NAME = 'agency.md';
@@ -49,6 +50,7 @@ function resolveDocType(value: string): AgentDocType {
     case 'memory.md':
     case 'Heartbeat.md':
     case 'user.md':
+    case 'wakeup.md':
       return value;
     default:
       throw new Error('Unsupported agent doc type.');
@@ -220,6 +222,7 @@ The following files are **protected** — they are managed by the system and can
 - \`soul.md\` — your ethics and hard constraints
 - \`identity.md\` — your persona, voice, and self-description
 - \`agent.md\` — this operating manual
+- \`wakeup.md\` — your group-chat wakeup decision rules
 
 The files **you are responsible for** and allowed to write:
 - \`memory.md\` — learned facts and patterns
@@ -359,6 +362,34 @@ Keep entries structured, concise, and current. Remove outdated or incorrect entr
 ## User Preferences (Quick Reference)
 
 *(A brief summary of the user's key preferences — synced from user.md as needed.)*
+`;
+}
+
+function createWakeupDoc(input: { agentName: string; agentRole: string }) {
+  return `# wakeup.md — ${input.agentName}'s Group Chat Wakeup Rules
+
+You are a routing filter for ${input.agentName}, a ${input.agentRole}.
+
+Your job: read the recent conversation and decide whether ${input.agentName} should respond.
+Answer with a single word: **YES** or **NO**.
+
+## When to answer YES
+
+- The latest message is directly addressed to ${input.agentName} by name or @mention
+- The message is a general group question that clearly falls within ${input.agentName}'s area of expertise and no other agent has already answered it well
+- The user seems stuck and ${input.agentName} can unblock them
+
+## When to answer NO
+
+- The message is addressed to a specific other agent by name and not to ${input.agentName}
+- ${input.agentName} already replied in the last 1–2 turns and the user has not addressed them since
+- Another agent already gave a sufficient answer to the same question
+- The message is conversational filler, a greeting, or not actionable
+- The user is in a back-and-forth with another agent
+
+## Default
+
+When in doubt, answer **NO**. ${input.agentName} should only speak when it genuinely adds value.
 `;
 }
 
@@ -511,6 +542,7 @@ export class WorkspaceService {
       'memory.md': createMemoryDoc(),
       'Heartbeat.md': createHeartbeatDoc({ agentName: agent.name }),
       'agency.md': createAgencyDoc({ workspaceName: agent.workspace.name }),
+      'wakeup.md': createWakeupDoc({ agentName: agent.name, agentRole: agent.identity?.persona ?? 'AI assistant' }),
     };
 
     for (const [docType, content] of Object.entries(defaults) as Array<[AgentDocType, string]>) {
@@ -576,6 +608,7 @@ export class WorkspaceService {
       'memory.md': 'long-term learnings, recurring patterns, and important facts',
       'Heartbeat.md': 'cron-driven periodic status log for long-running work',
       'agency.md': 'workspace-level operating standards and organizational context',
+      'wakeup.md': 'routing rules for the pickup LLM — when to wake this agent (YES) or stay silent (NO)',
     };
 
     const provider = new OpenAIProvider(env.OPENAI_API_KEY, env.OPENAI_MODEL || 'gpt-4o-mini');
@@ -675,6 +708,10 @@ export class WorkspaceService {
         version: { increment: 1 },
       },
     });
+
+    // Agency.md is workspace-wide — invalidate ALL cached prefixes so every
+    // agent picks up the new content on their next turn.
+    staticPrefixCache.invalidateAll();
 
     return {
       fileName: updated.fileName,

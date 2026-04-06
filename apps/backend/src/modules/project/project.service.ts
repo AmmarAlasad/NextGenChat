@@ -15,6 +15,7 @@
 import type { CreateChannelInput, CreateProjectInput, ProjectSummary, UpdateProjectInput } from '@nextgenchat/types';
 
 import { prisma } from '@/db/client.js';
+import { staticPrefixCache } from '@/modules/context/static-prefix-cache.js';
 
 const PROJECT_FILE_NAME = 'project.md';
 const PROJECT_MIME_TYPE = 'text/markdown';
@@ -178,6 +179,16 @@ export class ProjectService {
         version: { increment: 1 },
       },
     });
+
+    // Invalidate static prefix cache for all channels in this project so the
+    // updated project.md is reflected on the next agent turn.
+    const channels = await prisma.channel.findMany({
+      where: { projectId },
+      select: { id: true },
+    });
+    for (const ch of channels) {
+      staticPrefixCache.invalidateByChannel(ch.id);
+    }
 
     return {
       fileName: updated.fileName,

@@ -5,24 +5,32 @@
  * summaries, and the most relevant recent turns. This is the main context
  * engineering boundary for the agent pipeline.
  *
+ * File loading follows OpenClaw's bootstrap architecture exactly:
+ *   - Per-file char limit: 20 000 chars with 70 % head + 20 % tail truncation
+ *   - Total static file budget: 150 000 chars across all files
+ *   - Priority order: Agent.md(10) soul.md(20) identity.md(30) user.md(40)
+ *                     tools.md(50) agency.md(60) project.md(65) memory.md(70)
+ *   - heartbeat.md is dynamic — always rebuilt below the cache boundary
+ *   - SOUL.md instruction injected when soul.md is present (OpenClaw behaviour)
+ *   - Static files combined into one "Project Context" system message
+ *
+ * OpenClaw-style session management:
+ *   - 1.2× safety margin applied to budgetLimit
+ *   - firstKeptMessageId filters candidate messages so summarized ones are never reloaded
+ *   - History turn limit (MAX_HISTORY_TURNS) caps candidates before compaction runs
+ *   - compactBeforeTurn() runs synchronously BEFORE the LLM call
+ *
  * Static prefix caching:
- *   Steps 1–10 (runtime-context through agency.md) rarely change between turns
- *   and are cached in StaticPrefixCache per agentId:channelId. Heartbeat.md,
- *   conversation summary, cross-channel context, and message history are dynamic
- *   and always rebuilt from fresh DB state.
+ *   The runtime identity message + entire Project Context section are cached in
+ *   StaticPrefixCache per agentId:channelId (5-min TTL + file-mtime hash).
+ *   Dynamic messages (heartbeat, summary, cross-channel, history) are always rebuilt.
  *
- * Cross-channel awareness (DIRECT channels):
- *   When the agent is responding in a DM, the builder also injects a
- *   cross-channel-context.md section listing every group channel the agent
- *   belongs to, along with recent user-visible messages from each. This lets the
- *   agent reference those conversations and, when instructed, send to another
- *   channel with the dedicated tool.
- *
- * Phase 4 implementation status:
- * - Static prefix cache avoids re-reading workspace files on every turn.
- * - Heartbeat.md loaded separately (it changes frequently and is never cached).
- * - send_reply tool removed; agents reply via direct text streaming only.
- * - Future phases: per-provider prompt caching headers, richer compaction triggers.
+ * Phase 5 implementation status:
+ * - OpenClaw-identical file truncation and budget rules implemented.
+ * - Synchronous pre-turn compaction replaces async-after scheduling.
+ * - firstKeptMessageId prevents summarized message reload across turns.
+ * - 1.2× safety margin on all token budget calculations.
+ * - Future phases: per-provider prompt caching headers, hook system.
  */
 
 import type { LLMMessage, SenderType } from '@nextgenchat/types';
@@ -31,7 +39,13 @@ import { CONTEXT_LIMITS, RESPONSE_BUFFER } from '@nextgenchat/types';
 
 import { prisma } from '@/db/client.js';
 import { isMessageVisibleToAgent } from '@/modules/agents/agent-visibility.js';
-import { compactionService } from '@/modules/context/compaction.service.js';
+import {
+  buildBootstrapContextFiles,
+  buildDynamicContextSection,
+  buildProjectContextSection,
+  sortByContextFileOrder,
+} from '@/modules/context/bootstrap-context.js';
+import { compactionService, SAFETY_MARGIN } from '@/modules/context/compaction.service.js';
 import { promptCacheService } from '@/modules/context/cache.service.js';
 import { staticPrefixCache } from '@/modules/context/static-prefix-cache.js';
 import { tokenCounter } from '@/modules/context/token-counter.js';
@@ -52,12 +66,18 @@ export interface ContextBuildResult {
   staticPrefixCacheHit?: boolean;
 }
 
+// ── Runtime identity (hardcoded, like OpenClaw's tooling/identity sections) ───
+
 function buildRuntimeIdentityMessage(input: {
   agentName: string;
   agentSlug: string;
   channelName: string;
   channelType: 'PUBLIC' | 'PRIVATE' | 'DIRECT';
+  projectName: string | null;
   participantNames: string[];
+  workspaceRoot: string;
+  toolGuidance: string;
+  maxToolRounds: number | 'unlimited';
 }) {
   return [
     '# runtime-context.md',
@@ -86,13 +106,50 @@ function buildRuntimeIdentityMessage(input: {
     'If the user asks multiple agents for their own status, files, or opinions, answer only for yourself unless the user explicitly asks you to summarize others.',
     'Follow the user request literally. If they ask for just a list, give just a list and do not add explanations.',
     'If you decide not to reply in a group chat, return exactly [[NO_REPLY]] with no other text.',
-    `Current channel: ${input.channelName} (${input.channelType}).`,
+    `Current channel: ${input.channelName} (${input.channelType})${input.projectName ? ` — part of project "${input.projectName}"` : ''}.`,
+    ...(input.projectName ? [`This channel belongs to the "${input.projectName}" project. The project context (goals, decisions, status) is provided in the Project Context section of this system prompt.`] : []),
     `Visible participants in this channel: ${input.participantNames.join(', ') || 'none recorded'}.`,
     input.channelType === 'DIRECT'
       ? 'This is a direct conversation. Stay focused on the operator and do not role-play other agents. Do not use [[NO_REPLY]] in direct chats.'
       : 'This is a group conversation. Other agents are colleagues, but their replies are private to the user unless they explicitly hand off to you with @mention. Your goal is not to maximize response count; your goal is to improve the conversation without creating spam.',
+    '',
+    '## Workspace & Tools',
+    '',
+    `Your workspace root is: ${input.workspaceRoot}`,
+    `Tool round budget for this turn: ${input.maxToolRounds === 'unlimited' ? 'unlimited' : input.maxToolRounds}.`,
+    'Use approved tools when they help you read files, write files, run commands, or send messages to other channels.',
+    'Normal visible replies go to the current chat automatically — do not use any tool to reply in the current channel.',
+    'All file and shell work must stay inside your workspace root.',
+    'When the user asks you to send a message to a group or project channel, call `channel_send_message` — do not just describe sending.',
+    'Other agents do not automatically see your reply. If you want another agent to respond, mention them with @slug in your visible reply.',
+    'When you learn something meaningful about the user, update `user.md` via `workspace_write_file`.',
+    'When you notice a recurring pattern or important fact, update `memory.md` via `workspace_write_file`.',
+    'Do not claim a file was created or updated unless the tool call succeeded.',
+    'Do not claim a message was sent unless `channel_send_message` succeeded.',
+    '',
+    '## Memory Request Rules',
+    '',
+    'When the user explicitly asks you to remember something (e.g. "remember this", "keep this in mind for next time", "save that"):',
+    '- Save it immediately to memory.md (or user.md if it describes the user) using `workspace_write_file`. Do not ask for confirmation first — just save it and confirm: "Got it, I\'ve saved that to my memory."',
+    '- Never say you will remember something without actually calling `workspace_write_file`.',
+    '',
+    'When you encounter information that is clearly worth keeping across sessions (name, role, project names, strong preferences, important decisions, API keys the user gave you):',
+    '- If you are certain it is valuable: save it silently and optionally mention "I\'ve noted that in my memory."',
+    '- If you are unsure whether the user wants it saved: ask once — "Should I save that to my memory for future sessions?" — then save if they say yes.',
+    '',
+    'Do NOT offer to save information that is:',
+    '- Ephemeral (applies only to the current task or message)',
+    '- Already present in memory.md or user.md',
+    '- Vague or not actionable as a lasting fact',
+    '- Part of normal back-and-forth that has no future relevance',
+    '',
+    '## Approved Tools',
+    '',
+    input.toolGuidance,
   ].join('\n');
 }
+
+// ── Message conversion ────────────────────────────────────────────────────────
 
 function toConversationMessage(message: {
   senderId: string;
@@ -101,10 +158,7 @@ function toConversationMessage(message: {
   content: string;
 }, currentAgentId: string): LLMMessage {
   if (message.senderType === 'AGENT' && message.senderId === currentAgentId) {
-    return {
-      role: 'assistant',
-      content: message.content,
-    };
+    return { role: 'assistant', content: message.content };
   }
 
   const speakerType = message.senderType === 'AGENT' ? 'AGENT_COLLEAGUE' : 'USER';
@@ -119,6 +173,8 @@ function toConversationMessage(message: {
 function getContextLimit(model: string) {
   return CONTEXT_LIMITS[model] ?? 64_000;
 }
+
+// ── Cross-channel context ─────────────────────────────────────────────────────
 
 function buildCrossChannelContextMessage(channels: Array<{
   name: string;
@@ -153,63 +209,80 @@ function buildCrossChannelContextMessage(channels: Array<{
   return lines.join('\n');
 }
 
+// ── ContextBuilder ─────────────────────────────────────────────────────────────
+
 export class ContextBuilder {
   async build(agentId: string, channelId: string, triggerMessageId: string): Promise<ContextBuildResult> {
     await workspaceService.ensureAgentDocs(agentId);
 
-    // ── 1. Check static prefix cache before any file I/O ────────────────────
+    // ── 1. Static prefix cache check ──────────────────────────────────────────
     const cachedPrefix = await staticPrefixCache.get(agentId, channelId);
 
-    // ── 2. Always-needed data (message history, channel state, summary) ─────
-    const [agent, summary, triggerMessage, candidateMessages, channel] = await Promise.all([
+    // ── 2. Load latest summary first (needed to filter candidate messages) ────
+    // Two sequential round-trips are fine here — SQLite is local, <1ms each.
+    const latestSummary = await prisma.conversationSummary.findFirst({
+      where: { agentId, channelId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        summary: true,
+        coversFromMessageId: true,
+        covesToMessageId: true,
+        firstKeptMessageId: true,
+      },
+    });
+
+    // Resolve the createdAt boundary for candidate filtering using firstKeptMessageId.
+    // Messages before this boundary are already summarized — never reload them.
+    let candidateCreatedAtGte: Date | undefined;
+
+    if (latestSummary?.firstKeptMessageId) {
+      const firstKept = await prisma.message.findUnique({
+        where: { id: latestSummary.firstKeptMessageId },
+        select: { createdAt: true },
+      });
+      candidateCreatedAtGte = firstKept?.createdAt;
+    } else if (latestSummary?.covesToMessageId) {
+      const coveredTo = await prisma.message.findUnique({
+        where: { id: latestSummary.covesToMessageId },
+        select: { createdAt: true },
+      });
+      if (coveredTo) {
+        candidateCreatedAtGte = new Date(coveredTo.createdAt.getTime() + 1);
+      }
+    }
+
+    // ── 3. Parallel DB loads ──────────────────────────────────────────────────
+    const [agent, triggerMessage, candidateMessages, channel] = await Promise.all([
       prisma.agent.findUnique({
         where: { id: agentId },
-        include: {
-          providerConfig: true,
-          identity: true,
-        },
-      }),
-      prisma.conversationSummary.findFirst({
-        where: { agentId, channelId },
-        orderBy: { createdAt: 'desc' },
+        include: { providerConfig: true, identity: true },
       }),
       prisma.message.findUnique({ where: { id: triggerMessageId } }),
       prisma.message.findMany({
         where: {
           channelId,
           NOT: { id: triggerMessageId },
+          contentType: { not: 'SYSTEM' },
+          ...(candidateCreatedAtGte ? { createdAt: { gte: candidateCreatedAtGte } } : {}),
         },
         orderBy: { createdAt: 'desc' },
-        take: 80,
+        take: 200,
         select: {
           id: true,
           senderId: true,
           senderType: true,
           content: true,
+          contentType: true,
+          createdAt: true,
         },
       }),
       prisma.channel.findUnique({
         where: { id: channelId },
         include: {
-          memberships: {
-            include: {
-              user: {
-                select: {
-                  username: true,
-                },
-              },
-            },
-          },
-          agentMemberships: {
-            include: {
-              agent: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-            },
-          },
+          memberships: { include: { user: { select: { username: true } } } },
+          agentMemberships: { include: { agent: { select: { id: true, name: true } } } },
+          project: { select: { name: true } },
         },
       }),
     ]);
@@ -219,22 +292,26 @@ export class ContextBuilder {
     }
 
     const provider = await providerRegistry.get(agentId).catch(() => undefined);
-    const budgetLimit = getContextLimit(agent.providerConfig.model) - RESPONSE_BUFFER;
+    const contextWindow = getContextLimit(agent.providerConfig.model);
+
+    // Apply 1.2× safety margin to the usable budget (OpenClaw: SAFETY_MARGIN).
+    const budgetLimit = Math.floor((contextWindow - RESPONSE_BUFFER) / SAFETY_MARGIN);
 
     const prefixMessages: LLMMessage[] = [];
-    const dynamicMessages: LLMMessage[] = [];
     let staticPrefixCacheHit = false;
 
-    // ── 3a. Cache HIT — use prebuilt static prefix ───────────────────────────
+    // ── 4a. Static prefix CACHE HIT ───────────────────────────────────────────
     if (cachedPrefix) {
       prefixMessages.push(...cachedPrefix.messages);
       staticPrefixCacheHit = true;
     } else {
-      // ── 3b. Cache MISS — build the static prefix and persist it ─────────────
+      // ── 4b. Static prefix CACHE MISS — build and store ────────────────────
 
-      const [docs, workspaceAgency, projectFile] = await Promise.all([
-        // Heartbeat.md intentionally excluded here — it is dynamic and loaded below.
-        workspaceService.getAgentContextDocs(agentId, ['soul.md', 'identity.md', 'Agent.md', 'user.md', 'memory.md']),
+      const [docs, workspaceAgency, projectFile, toolGuidance] = await Promise.all([
+        // Load all static docs. heartbeat.md is excluded — it is dynamic.
+        workspaceService.getAgentContextDocs(agentId, [
+          'soul.md', 'identity.md', 'Agent.md', 'user.md', 'memory.md',
+        ]),
         prisma.workspaceFile.findFirst({
           where: { workspaceId: agent.workspaceId, agentId: null, docType: 'AGENCY_MD' },
           select: { content: true },
@@ -245,13 +322,13 @@ export class ContextBuilder {
               select: { content: true },
             })
           : Promise.resolve(null),
+        toolRegistryService.summarizeApprovedTools(agentId),
       ]);
 
-      const toolGuidance = await toolRegistryService.summarizeApprovedTools(agentId);
       const workspaceRoot = workspaceService.getAgentWorkspaceDir(agentId);
-      const docMap = new Map(docs.map((doc) => [doc.docType, doc.content ?? '']));
+      const docMap = new Map(docs.map((d) => [d.docType, d.content ?? '']));
 
-      // 1. Runtime context — always first so the agent knows where it is.
+      // ── Message 1: Runtime identity + tooling (OpenClaw: hardcoded sections) ─
       prefixMessages.push({
         role: 'system',
         content: buildRuntimeIdentityMessage({
@@ -259,79 +336,44 @@ export class ContextBuilder {
           agentSlug: agent.slug,
           channelName: channel.name,
           channelType: channel.type,
+          projectName: channel.project?.name ?? null,
           participantNames: [
             ...channel.memberships.map((m) => m.user.username),
             ...channel.agentMemberships.map((m) => m.agent.name),
           ],
+          workspaceRoot,
+          toolGuidance,
+          maxToolRounds: env.agentMaxToolRounds === 0 ? 'unlimited' : env.agentMaxToolRounds,
         }),
       });
 
-      // 2. soul.md — immutable values and ethics (highest priority after runtime).
-      const soulContent = docMap.get('soul.md');
-      if (soulContent?.trim()) {
-        prefixMessages.push({ role: 'system', content: `# soul.md\n\n${soulContent}` });
-      }
+      // ── Message 2: Project Context (OpenClaw: buildProjectContextSection) ───
+      // Assemble all static file docs, including tools.md (generated) and
+      // agency.md / project.md. Sort by CONTEXT_FILE_ORDER priority, then apply
+      // per-file (20k chars) and total (150k chars) budget with head+tail truncation.
 
-      // 3. identity.md — public persona, tone, communication style.
-      const identityContent = docMap.get('identity.md');
-      if (identityContent?.trim()) {
-        prefixMessages.push({ role: 'system', content: `# identity.md\n\n${identityContent}` });
-      }
+      const bootstrapDocs = sortByContextFileOrder([
+        { name: 'Agent.md',    content: docMap.get('Agent.md')    ?? '' },
+        { name: 'soul.md',     content: docMap.get('soul.md')     ?? '' },
+        { name: 'identity.md', content: docMap.get('identity.md') ?? '' },
+        { name: 'user.md',     content: docMap.get('user.md')     ?? '' },
+        { name: 'tools.md',    content: toolGuidance },
+        { name: 'agency.md',   content: workspaceAgency?.content  ?? '' },
+        { name: 'project.md',  content: projectFile?.content      ?? '' },
+        { name: 'memory.md',   content: docMap.get('memory.md')   ?? '' },
+      ]);
 
-      // 4. Agent.md — operating manual: tool rules, memory update triggers.
-      const agentDocContent = docMap.get('Agent.md');
-      if (agentDocContent?.trim()) {
-        prefixMessages.push({ role: 'system', content: `# Agent.md\n\n${agentDocContent}` });
-      }
-
-      // 5. tools.md — approved tools list and usage rules.
-      prefixMessages.push({
-        role: 'system',
-        content: [
-          '# tools.md',
-          '',
-          `Your workspace root is: ${workspaceRoot}`,
-          `Tool round budget for this turn: ${env.agentMaxToolRounds === 0 ? 'unlimited' : env.agentMaxToolRounds}.`,
-          'Use approved tools when they help you read files, write files, run commands, or send messages to other channels.',
-          'Normal visible replies go to the current chat automatically — do not use any tool to reply in the current channel.',
-          'All file and shell work must stay inside your workspace root.',
-          'When the user asks you to send a message to a group or project channel, call `channel_send_message` — do not just describe sending.',
-          'Other agents do not automatically see your reply. If you want another agent to respond, mention them with @slug in your visible reply.',
-          'When you learn something meaningful about the user, update `user.md` via `workspace_write_file`.',
-          'When you notice a recurring pattern or important fact, update `memory.md` via `workspace_write_file`.',
-          'Do not claim a file was created or updated unless the tool call succeeded.',
-          'Do not claim a message was sent unless `channel_send_message` succeeded.',
-          '',
-          'Approved tools:',
-          toolGuidance,
-        ].join('\n'),
+      const contextFiles = buildBootstrapContextFiles(bootstrapDocs, {
+        warn: (msg) => console.warn(msg),
       });
 
-      // 6. user.md — agent's evolving model of the user.
-      const userDocContent = docMap.get('user.md');
-      if (userDocContent?.trim()) {
-        prefixMessages.push({ role: 'system', content: `# user.md\n\n${userDocContent}` });
+      const projectContextText = buildProjectContextSection(contextFiles);
+      if (projectContextText) {
+        prefixMessages.push({ role: 'system', content: projectContextText });
       }
 
-      // 7. memory.md — long-term learnings and patterns.
-      const memoryDocContent = docMap.get('memory.md');
-      if (memoryDocContent?.trim()) {
-        prefixMessages.push({ role: 'system', content: `# memory.md\n\n${memoryDocContent}` });
-      }
-
-      // 9. project.md — shared project context (if channel belongs to a project).
-      if (projectFile?.content?.trim()) {
-        prefixMessages.push({ role: 'system', content: `# project.md\n\n${projectFile.content}` });
-      }
-
-      // 10. agency.md — workspace-level organizational constitution.
-      if (workspaceAgency?.content?.trim()) {
-        prefixMessages.push({ role: 'system', content: `# agency.md (workspace)\n\n${workspaceAgency.content}` });
-      }
-
-      // Store in cache for subsequent turns. File hash computed here so that
-      // any change to the 6 workspace docs will produce a different hash and
-      // cause the next turn to rebuild the prefix from scratch.
+      // Cache the static prefix (disk file hash; DB content invalidated via
+      // explicit invalidateByChannel / invalidateAll calls on update).
       const fileHash = await staticPrefixCache.computeFileHash(agentId);
       staticPrefixCache.set(agentId, channelId, {
         messages: [...prefixMessages],
@@ -340,61 +382,53 @@ export class ContextBuilder {
       });
     }
 
-    // ── 4. Dynamic section — always rebuilt from live state ──────────────────
+    // ── 5. Dynamic section — always rebuilt from live state ───────────────────
 
-    // 8. Heartbeat.md — loaded fresh every turn (changes frequently).
+    const dynamicMessages: LLMMessage[] = [];
+
+    // heartbeat.md — below the cache boundary, loaded fresh every turn.
     const heartbeatDocs = await workspaceService.getAgentContextDocs(agentId, ['Heartbeat.md']);
-    const heartbeatContent = heartbeatDocs[0]?.content ?? '';
-    if (heartbeatContent.trim()) {
-      dynamicMessages.push({ role: 'system', content: `# Heartbeat.md\n\n${heartbeatContent}` });
+    const heartbeatContent = heartbeatDocs[0]?.content?.trim() ?? '';
+    if (heartbeatContent) {
+      const heartbeatResult = buildBootstrapContextFiles(
+        [{ name: 'Heartbeat.md', content: heartbeatContent }],
+      );
+      const dynamicText = buildDynamicContextSection(heartbeatResult);
+      if (dynamicText) {
+        dynamicMessages.push({ role: 'system', content: dynamicText });
+      }
     }
 
-    // 11. Conversation summary — compacted older history for this agent+session.
-    if (summary?.summary) {
-      dynamicMessages.push({ role: 'system', content: `# conversation-summary.md\n\n${summary.summary}` });
+    // Conversation summary — compacted older history.
+    if (latestSummary?.summary) {
+      dynamicMessages.push({
+        role: 'system',
+        content: `# conversation-summary.md\n\n${latestSummary.summary}`,
+      });
     }
 
-    // ── 5. Cross-channel context (DIRECT channels only) ──────────────────────
-    let crossChannelInfo: Array<{
-      name: string;
-      projectName: string | null;
-      recentMessages: Array<{ senderName: string; senderType: SenderType; content: string }>;
-    }> = [];
-
+    // ── 6. Cross-channel context (DIRECT channels only) ───────────────────────
     if (channel.type === 'DIRECT') {
       const groupMemberships = await prisma.agentChannelMembership.findMany({
-        where: {
-          agentId,
-          channel: { type: { not: 'DIRECT' } },
-        },
+        where: { agentId, channel: { type: { not: 'DIRECT' } } },
         include: {
           channel: {
             include: {
-              project: {
-                select: {
-                  name: true,
-                },
-              },
+              project: { select: { name: true } },
               messages: {
                 orderBy: { createdAt: 'desc' },
                 take: 5,
-                select: {
-                  senderId: true,
-                  senderType: true,
-                  content: true,
-                  contentType: true,
-                },
+                select: { senderId: true, senderType: true, content: true, contentType: true },
               },
             },
           },
         },
       });
 
-      // Resolve sender names for cross-channel messages.
       const allCrossUserIds = new Set<string>();
       const allCrossAgentIds = new Set<string>();
-      for (const membership of groupMemberships) {
-        for (const msg of membership.channel.messages) {
+      for (const m of groupMemberships) {
+        for (const msg of m.channel.messages) {
           if (msg.senderType === 'USER') allCrossUserIds.add(msg.senderId);
           else allCrossAgentIds.add(msg.senderId);
         }
@@ -408,7 +442,7 @@ export class ContextBuilder {
       const crossUserMap = new Map(crossUsers.map((u) => [u.id, u.username]));
       const crossAgentMap = new Map(crossAgents.map((a) => [a.id, a.name]));
 
-      crossChannelInfo = groupMemberships.map((membership) => ({
+      const crossChannelInfo = groupMemberships.map((membership) => ({
         name: membership.channel.name,
         projectName: membership.channel.project?.name ?? null,
         recentMessages: [...membership.channel.messages]
@@ -430,95 +464,105 @@ export class ContextBuilder {
             content: msg.content,
           })),
       }));
+
+      if (crossChannelInfo.length > 0) {
+        dynamicMessages.push({
+          role: 'system',
+          content: buildCrossChannelContextMessage(crossChannelInfo),
+        });
+      }
     }
 
-    // 12. Cross-channel context — dynamic direct-chat awareness.
-    if (crossChannelInfo.length > 0) {
-      dynamicMessages.push({ role: 'system', content: buildCrossChannelContextMessage(crossChannelInfo) });
-    }
+    // ── 7. Resolve sender names for visible candidates ────────────────────────
+    const chronologicalCandidates = [...candidateMessages]
+      .reverse()
+      .filter((m) => isMessageVisibleToAgent({
+        messageSenderId: m.senderId,
+        messageSenderType: m.senderType,
+        messageContent: m.content,
+        currentAgentId: agentId,
+        currentAgentSlug: agent.slug,
+        currentAgentName: agent.name,
+      }));
 
-    // ── 6. Message history — visibility-filtered, token-budgeted ────────────
-    const visibleTriggerMessage = isMessageVisibleToAgent({
+    const triggerVisible = isMessageVisibleToAgent({
       messageSenderId: triggerMessage.senderId,
       messageSenderType: triggerMessage.senderType,
       messageContent: triggerMessage.content,
       currentAgentId: agentId,
       currentAgentSlug: agent.slug,
       currentAgentName: agent.name,
-    }) ? triggerMessage : null;
-    const visibleCandidateMessages = candidateMessages.filter((message) => isMessageVisibleToAgent({
-      messageSenderId: message.senderId,
-      messageSenderType: message.senderType,
-      messageContent: message.content,
-      currentAgentId: agentId,
-      currentAgentSlug: agent.slug,
-      currentAgentName: agent.name,
-    }));
+    });
 
-    const userSenderIds = Array.from(new Set([visibleTriggerMessage?.senderType === 'USER' ? visibleTriggerMessage.senderId : null, ...visibleCandidateMessages.filter((message) => message.senderType === 'USER').map((message) => message.senderId)].filter((value): value is string => Boolean(value))));
-    const agentSenderIds = Array.from(new Set([visibleTriggerMessage?.senderType === 'AGENT' ? visibleTriggerMessage.senderId : null, ...visibleCandidateMessages.filter((message) => message.senderType === 'AGENT').map((message) => message.senderId)].filter((value): value is string => Boolean(value))));
+    const userSenderIds = Array.from(new Set([
+      ...(triggerVisible && triggerMessage.senderType === 'USER' ? [triggerMessage.senderId] : []),
+      ...chronologicalCandidates.filter((m) => m.senderType === 'USER').map((m) => m.senderId),
+    ]));
+    const agentSenderIds = Array.from(new Set([
+      ...(triggerVisible && triggerMessage.senderType === 'AGENT' ? [triggerMessage.senderId] : []),
+      ...chronologicalCandidates.filter((m) => m.senderType === 'AGENT').map((m) => m.senderId),
+    ]));
 
-    const [users, agents] = await Promise.all([
-      prisma.user.findMany({
-        where: { id: { in: userSenderIds } },
-        select: { id: true, username: true },
-      }),
-      prisma.agent.findMany({
-        where: { id: { in: agentSenderIds } },
-        select: { id: true, name: true },
-      }),
+    const [users, agentNames] = await Promise.all([
+      prisma.user.findMany({ where: { id: { in: userSenderIds } }, select: { id: true, username: true } }),
+      prisma.agent.findMany({ where: { id: { in: agentSenderIds } }, select: { id: true, name: true } }),
     ]);
 
-    const userNameMap = new Map(users.map((entry) => [entry.id, entry.username]));
-    const agentNameMap = new Map(agents.map((entry) => [entry.id, entry.name]));
+    const userNameMap = new Map(users.map((u) => [u.id, u.username]));
+    const agentNameMap = new Map(agentNames.map((a) => [a.id, a.name]));
 
-    const triggerPrompt = toConversationMessage(
+    // ── 8. Synchronous pre-turn compaction (OpenClaw: compactBeforeTurn) ──────
+    const prefixTokens = await tokenCounter.count(prefixMessages, provider);
+    const dynamicTokens = await tokenCounter.count(dynamicMessages, provider);
+
+    const triggerLLMMessage = toConversationMessage(
       {
-        senderId: visibleTriggerMessage?.senderId ?? triggerMessage.senderId,
-        senderType: visibleTriggerMessage?.senderType ?? triggerMessage.senderType,
-        senderName: (visibleTriggerMessage?.senderType ?? triggerMessage.senderType) === 'AGENT'
-          ? (agentNameMap.get(visibleTriggerMessage?.senderId ?? triggerMessage.senderId) ?? null)
-          : (userNameMap.get(visibleTriggerMessage?.senderId ?? triggerMessage.senderId) ?? null),
-        content: visibleTriggerMessage?.content ?? triggerMessage.content,
+        senderId: triggerMessage.senderId,
+        senderType: triggerMessage.senderType,
+        senderName: triggerMessage.senderType === 'AGENT'
+          ? (agentNameMap.get(triggerMessage.senderId) ?? null)
+          : (userNameMap.get(triggerMessage.senderId) ?? null),
+        content: triggerMessage.content,
       },
       agentId,
     );
+    const triggerTokens = await tokenCounter.count([triggerLLMMessage], provider);
 
-    const recentMessagesChronological = [...visibleCandidateMessages].reverse().map((message) =>
+    const historyBudgetTokens = budgetLimit - prefixTokens - dynamicTokens - triggerTokens;
+
+    const compactionResult = await compactionService.compactBeforeTurn({
+      agentId,
+      channelId,
+      agentName: agent.name,
+      agentSlug: agent.slug,
+      visibleMessages: chronologicalCandidates,
+      historyBudgetTokens: Math.max(0, historyBudgetTokens),
+      contextWindow,
+      previousSummary: latestSummary ? { id: latestSummary.id, summary: latestSummary.summary } : null,
+    });
+
+    // ── 9. Convert kept history to LLMMessages ────────────────────────────────
+    const historyMessages: LLMMessage[] = compactionResult.keptMessages.map((m) =>
       toConversationMessage(
         {
-          senderId: message.senderId,
-          senderType: message.senderType,
-          senderName: message.senderType === 'AGENT' ? (agentNameMap.get(message.senderId) ?? null) : (userNameMap.get(message.senderId) ?? null),
-          content: message.content,
+          senderId: m.senderId,
+          senderType: m.senderType,
+          senderName: m.senderType === 'AGENT'
+            ? (agentNameMap.get(m.senderId) ?? null)
+            : (userNameMap.get(m.senderId) ?? null),
+          content: m.content,
         },
         agentId,
       ),
     );
-    const includedRecent: LLMMessage[] = [];
-    const overflowMessageIds: string[] = [];
 
-    for (let index = recentMessagesChronological.length - 1; index >= 0; index -= 1) {
-      const candidate = recentMessagesChronological[index];
-      const nextMessages = [...prefixMessages, ...dynamicMessages, candidate, ...includedRecent, triggerPrompt];
-      const tokenCount = await tokenCounter.count(nextMessages, provider);
+    const messages = [
+      ...prefixMessages,
+      ...dynamicMessages,
+      ...historyMessages,
+      triggerLLMMessage,
+    ];
 
-      if (tokenCount <= budgetLimit) {
-        includedRecent.unshift(candidate);
-      } else {
-        overflowMessageIds.push(visibleCandidateMessages[visibleCandidateMessages.length - 1 - index].id);
-      }
-    }
-
-    if (overflowMessageIds.length > 0) {
-      compactionService.schedule({
-        agentId,
-        channelId,
-        overflowMessageIds,
-      });
-    }
-
-    const messages = [...prefixMessages, ...dynamicMessages, ...includedRecent, triggerPrompt];
     const totalTokens = await tokenCounter.count(messages, provider);
 
     return {
@@ -526,8 +570,8 @@ export class ContextBuilder {
       totalTokens,
       budgetUsed: totalTokens,
       budgetLimit,
-      compactionTriggered: overflowMessageIds.length > 0,
-      summaryUsed: Boolean(summary),
+      compactionTriggered: compactionResult.compacted,
+      summaryUsed: Boolean(latestSummary),
       staticPrefixKey: promptCacheService.buildStaticPrefixKey(messages, prefixMessages.length),
       staticPrefixCacheHit,
     };
