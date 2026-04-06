@@ -13,6 +13,7 @@
     "service:logs": "journalctl --user -u nextgenchat.service -f",
     "service:stop": "systemctl --user stop nextgenchat.service",
     "dev:local": "bash scripts/dev.sh",
+    "dev:local:win": "powershell -ExecutionPolicy Bypass -File scripts/dev.ps1",
     "dev:phase1": "pnpm dev:local",
     "stop": "bash scripts/stop.sh",
     "dev": "turbo dev",
