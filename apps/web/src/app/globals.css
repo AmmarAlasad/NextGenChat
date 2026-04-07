@@ -1,118 +1,222 @@
 /*
- * Global Styles
+ * Global Styles — NextGenChat v3
  *
- * Defines the Antimatter UI design token palette, Tailwind v4 theme registration,
- * global resets, and the background texture used on all pages.
- * All color values come from the Stitch "Antimatter UI" design system (indigo primary).
- * Dark-mode overrides follow the same token names.
- * Add new tokens here first; never inline brand colors directly in component files.
+ * Full ink-black / twilight-indigo / vintage-grape / cool-steel / strawberry-red
+ * palette. All five color families are registered as Tailwind utilities.
+ * No light mode — always dark. Custom scrollbar, selection, body texture.
  */
 
 @import "tailwindcss";
 
+/* ── Raw palette tokens ──────────────────────────────────────────────────── */
 :root {
-  /* Background / foreground */
-  --background: #f7f9fb;
-  --foreground: #2a3439;
+  /* ink-black */
+  --ib-50:  #edf0f7; --ib-100: #dce2ef; --ib-200: #b9c4df;
+  --ib-300: #95a7d0; --ib-400: #7289c0; --ib-500: #4f6cb0;
+  --ib-600: #3f568d; --ib-700: #2f416a; --ib-800: #202b46;
+  --ib-900: #101623; --ib-950: #0b0f19;
+
+  /* twilight-indigo */
+  --ti-50:  #eff0f6; --ti-100: #dfe2ec; --ti-200: #bfc4d9;
+  --ti-300: #9fa7c6; --ti-400: #7e89b4; --ti-500: #5e6ca1;
+  --ti-600: #4b5681; --ti-700: #394160; --ti-800: #262b40;
+  --ti-900: #131620; --ti-950: #0d0f16;
+
+  /* vintage-grape */
+  --vg-50:  #f1f1f4; --vg-100: #e4e2e9; --vg-200: #c8c5d3;
+  --vg-300: #ada9bc; --vg-400: #918ca6; --vg-500: #766f90;
+  --vg-600: #5e5973; --vg-700: #474356; --vg-800: #2f2c3a;
+  --vg-900: #18161d; --vg-950: #101014;
+
+  /* cool-steel */
+  --cs-50:  #f1f2f3; --cs-100: #e3e5e8; --cs-200: #c8ccd0;
+  --cs-300: #acb2b9; --cs-400: #9198a1; --cs-500: #757f8a;
+  --cs-600: #5e656e; --cs-700: #464c53; --cs-800: #2f3337;
+  --cs-900: #17191c; --cs-950: #101213;
+
+  /* strawberry-red */
+  --sr-50:  #ffe5eb; --sr-100: #ffccd6; --sr-200: #ff99ad;
+  --sr-300: #ff6685; --sr-400: #ff335c; --sr-500: #ff0033;
+  --sr-600: #cc0029; --sr-700: #99001f; --sr-800: #660014;
+  --sr-900: #33000a; --sr-950: #240007;
+
+  /* ── Semantic tokens ────────────────────────────────────────────────── */
+
+  --background:                 var(--ib-950);    /* #0b0f19 — app canvas     */
+  --foreground:                 var(--ib-100);    /* #dce2ef — body text      */
 
   /* Surface hierarchy */
-  --surface: #f7f9fb;
-  --surface-low: #f0f4f7;
-  --surface-high: #e1e9ee;
-  --surface-variant: #d9e4ea;
-  --surface-container: #e8eff3;
-  --surface-container-low: #f0f4f7;
-  --surface-container-lowest: #ffffff;
-  --surface-container-high: #e1e9ee;
+  --surface:                    var(--ib-950);
+  --surface-low:                var(--ti-950);    /* #0d0f16 — sidebar        */
+  --surface-high:               var(--ib-800);    /* #202b46 — elevated card  */
+  --surface-variant:            var(--ti-800);    /* #262b40                  */
+  --surface-container:          var(--ti-900);    /* #131620 — panels         */
+  --surface-container-low:      var(--ib-900);    /* #101623                  */
+  --surface-container-lowest:   var(--ti-900);    /* #131620 — card surfaces  */
+  --surface-container-high:     var(--ib-800);    /* #202b46                  */
 
-  /* Primary accent — Antimatter UI indigo */
-  --primary: #4c58a6;
-  --primary-dim: #404c99;
-  --primary-container: #dfe0ff;
-  --on-primary: #f9f6ff;
+  /* Primary — ink-black blue */
+  --primary:                    var(--ib-400);    /* #7289c0 — brighter blue  */
+  --primary-dim:                var(--ib-500);    /* #4f6cb0                  */
+  --primary-container:          var(--ib-800);    /* #202b46                  */
+  --on-primary:                 var(--ib-50);     /* #edf0f7                  */
 
-  /* On-surface text roles */
-  --on-surface: #2a3439;
-  --on-surface-variant: #566166;
+  /* Text */
+  --on-surface:                 var(--ib-100);    /* #dce2ef — primary text   */
+  --on-surface-variant:         var(--ib-300);    /* #95a7d0 — secondary text */
 
   /* Borders */
-  --outline: #717c82;
-  --outline-variant: #a9b4b9;
+  --outline:                    var(--ib-700);    /* #2f416a                  */
+  --outline-variant:            var(--ib-800);    /* #202b46                  */
+
+  /* Semantic states */
+  --error:                      var(--sr-500);    /* #ff0033                  */
+  --error-subtle:               var(--sr-300);    /* #ff6685                  */
+  --error-bg:                   var(--sr-950);    /* #240007                  */
+  --success:                    #22c55e;
+  --warning:                    #f59e0b;
 }
 
+/* ── Tailwind theme ──────────────────────────────────────────────────────── */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-surface: var(--surface);
-  --color-surface-low: var(--surface-low);
-  --color-surface-high: var(--surface-high);
-  --color-surface-variant: var(--surface-variant);
-  --color-surface-container: var(--surface-container);
-  --color-surface-container-low: var(--surface-container-low);
-  --color-surface-container-lowest: var(--surface-container-lowest);
-  --color-surface-container-high: var(--surface-container-high);
-  --color-primary: var(--primary);
-  --color-primary-dim: var(--primary-dim);
-  --color-primary-container: var(--primary-container);
-  --color-on-primary: var(--on-primary);
-  --color-on-surface: var(--on-surface);
-  --color-on-surface-variant: var(--on-surface-variant);
-  --color-outline: var(--outline);
-  --color-outline-variant: var(--outline-variant);
+  /* Semantic Tailwind colors */
+  --color-background:                 var(--background);
+  --color-foreground:                 var(--foreground);
+  --color-surface:                    var(--surface);
+  --color-surface-low:                var(--surface-low);
+  --color-surface-high:               var(--surface-high);
+  --color-surface-variant:            var(--surface-variant);
+  --color-surface-container:          var(--surface-container);
+  --color-surface-container-low:      var(--surface-container-low);
+  --color-surface-container-lowest:   var(--surface-container-lowest);
+  --color-surface-container-high:     var(--surface-container-high);
+  --color-primary:                    var(--primary);
+  --color-primary-dim:                var(--primary-dim);
+  --color-primary-container:          var(--primary-container);
+  --color-on-primary:                 var(--on-primary);
+  --color-on-surface:                 var(--on-surface);
+  --color-on-surface-variant:         var(--on-surface-variant);
+  --color-outline:                    var(--outline);
+  --color-outline-variant:            var(--outline-variant);
 
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-headline: var(--font-manrope), "Manrope", sans-serif;
+  /* Raw palette as Tailwind utilities */
+  --color-ib-50:  var(--ib-50);  --color-ib-100: var(--ib-100);
+  --color-ib-200: var(--ib-200); --color-ib-300: var(--ib-300);
+  --color-ib-400: var(--ib-400); --color-ib-500: var(--ib-500);
+  --color-ib-600: var(--ib-600); --color-ib-700: var(--ib-700);
+  --color-ib-800: var(--ib-800); --color-ib-900: var(--ib-900); --color-ib-950: var(--ib-950);
 
-  /* Typing indicator dots */
-  --animate-typing: typing 1.4s ease-in-out infinite;
+  --color-ti-50:  var(--ti-50);  --color-ti-100: var(--ti-100);
+  --color-ti-200: var(--ti-200); --color-ti-300: var(--ti-300);
+  --color-ti-400: var(--ti-400); --color-ti-500: var(--ti-500);
+  --color-ti-600: var(--ti-600); --color-ti-700: var(--ti-700);
+  --color-ti-800: var(--ti-800); --color-ti-900: var(--ti-900); --color-ti-950: var(--ti-950);
+
+  --color-vg-50:  var(--vg-50);  --color-vg-100: var(--vg-100);
+  --color-vg-200: var(--vg-200); --color-vg-300: var(--vg-300);
+  --color-vg-400: var(--vg-400); --color-vg-500: var(--vg-500);
+  --color-vg-600: var(--vg-600); --color-vg-700: var(--vg-700);
+  --color-vg-800: var(--vg-800); --color-vg-900: var(--vg-900); --color-vg-950: var(--vg-950);
+
+  --color-cs-50:  var(--cs-50);  --color-cs-100: var(--cs-100);
+  --color-cs-200: var(--cs-200); --color-cs-300: var(--cs-300);
+  --color-cs-400: var(--cs-400); --color-cs-500: var(--cs-500);
+  --color-cs-600: var(--cs-600); --color-cs-700: var(--cs-700);
+  --color-cs-800: var(--cs-800); --color-cs-900: var(--cs-900); --color-cs-950: var(--cs-950);
+
+  --color-sr-50:  var(--sr-50);  --color-sr-100: var(--sr-100);
+  --color-sr-200: var(--sr-200); --color-sr-300: var(--sr-300);
+  --color-sr-400: var(--sr-400); --color-sr-500: var(--sr-500);
+  --color-sr-600: var(--sr-600); --color-sr-700: var(--sr-700);
+  --color-sr-800: var(--sr-800); --color-sr-900: var(--sr-900); --color-sr-950: var(--sr-950);
+
+  /* Fonts */
+  --font-sans:     var(--font-geist-sans);
+  --font-mono:     var(--font-geist-mono);
+  --font-headline: var(--font-syne), "Syne", sans-serif;
+
+  /* Animations */
+  --animate-typing:   typing   1.4s ease-in-out infinite;
+  --animate-fade-in:  fade-in  0.15s ease-out;
+  --animate-slide-up: slide-up 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-blink:    blink    1s step-end infinite;
 
   @keyframes typing {
-    0%, 100% { opacity: 0.2; }
-    50%       { opacity: 1;   }
+    0%, 100% { opacity: 0.25; transform: scale(0.85); }
+    50%       { opacity: 1;   transform: scale(1);    }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  @keyframes slide-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0);   }
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0; }
+  }
+  @keyframes tool-enter {
+    from { opacity: 0; transform: translateX(-6px); }
+    to   { opacity: 1; transform: translateX(0);    }
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0b0f10;
-    --foreground: #e2e8eb;
-    --surface: #0b0f10;
-    --surface-low: #161c1e;
-    --surface-high: #222c2e;
-    --surface-variant: #2c3a3c;
-    --surface-container: #1a2224;
-    --surface-container-low: #161c1e;
-    --surface-container-lowest: #111617;
-    --surface-container-high: #222c2e;
-    --primary: #9ca8fd;
-    --primary-dim: #b0bcff;
-    --primary-container: #2c3885;
-    --on-primary: #1a2260;
-    --on-surface: #e2e8eb;
-    --on-surface-variant: #9aa3a7;
-    --outline: #4a5558;
-    --outline-variant: #2e3a3c;
-  }
-}
-
-html {
-  min-height: 100%;
-}
+/* ── Base ────────────────────────────────────────────────────────────────── */
+html { min-height: 100%; color-scheme: dark; }
 
 body {
   min-height: 100vh;
   margin: 0;
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--ib-950);
+  color: var(--ib-100);
   background-image:
-    radial-gradient(circle at top left, rgba(76, 88, 166, 0.07), transparent 26%),
-    radial-gradient(circle at bottom right, rgba(83, 95, 120, 0.05), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0));
+    radial-gradient(ellipse 70% 50% at 0% 0%,   rgba(114,137,192,0.05) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 40% at 100% 100%, rgba(47, 65,106,0.08) 0%, transparent 55%);
   font-family: var(--font-geist-sans), sans-serif;
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
+a { color: inherit; text-decoration: none; }
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 3px; height: 3px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--ib-700); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ib-500); }
+
+/* ── Selection ───────────────────────────────────────────────────────────── */
+::selection { background: rgba(114,137,192,0.25); color: var(--ib-50); }
+
+/* ── Forms ───────────────────────────────────────────────────────────────── */
+input, textarea, select { color-scheme: dark; }
+
+/* ── Tool entry animation ────────────────────────────────────────────────── */
+.tool-line-enter { animation: tool-enter 0.18s ease-out forwards; }
+
+/* ── Agent markdown prose ────────────────────────────────────────────────── */
+/*
+ * Scoped to .agent-md — never bleeds into user messages or UI chrome.
+ * Ordered-list marker color and li bullet positioning handled inline in
+ * the AgentMarkdown component; these rules handle the few things that
+ * Tailwind utilities can't target easily.
+ */
+.agent-md ol > li { list-style: decimal; }
+.agent-md ol > li::marker { color: var(--ib-500); font-size: 12px; }
+.agent-md ul > li { list-style: none; }
+.agent-md ul > li > span:first-child { display: none; } /* hide redundant bullet span when list-style is used */
+
+/* Code block inner <code> should not get the inline pill style */
+.agent-md pre > code {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  font-size: inherit !important;
+  color: inherit !important;
 }
+
+/* First element in agent-md has no top margin */
+.agent-md > *:first-child { margin-top: 0 !important; }
+
+/* Table row hover */
+.agent-md tbody tr:hover td { background: rgba(114,137,192,0.04); }

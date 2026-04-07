@@ -1,11 +1,8 @@
 /**
  * Setup Route — First-Run Wizard
  *
- * Renders the one-time owner setup screen that seeds the owner account,
- * default workspace, channel, and primary agent.
- * Layout follows the Stitch "first-run-setup" design: centered header outside
- * the card, gradient accent top bar, two labelled sections (User Account +
- * Primary Agent), 2-column password grid, and a decorative background.
+ * One-time owner setup: account credentials + primary agent description.
+ * Dark, minimal two-section card — matches the login aesthetic.
  *
  * Phase 1 implementation status:
  * - Creates the owner account plus the seeded workspace, channel, and agent.
@@ -20,6 +17,16 @@ import { useRouter } from 'next/navigation';
 
 import { useAuth } from '@/components/auth-provider';
 
+const inputClass = [
+  'w-full rounded-lg px-3 py-2.5 text-sm text-on-surface outline-none',
+  'transition-colors placeholder:text-on-surface-variant/25',
+].join(' ');
+
+const inputStyle = {
+  background: 'var(--surface-container)',
+  border: '1px solid var(--outline-variant)',
+};
+
 export default function SetupPage() {
   const router = useRouter();
   const { ready, setupRequired, setup, user } = useAuth();
@@ -28,7 +35,8 @@ export default function SetupPage() {
     password: '',
     confirmPassword: '',
     agentName: 'Atelier',
-    agentDescription: 'A calm and technically precise AI collaborator. Helps reason clearly, answers directly, and keeps responses useful and grounded.',
+    agentDescription:
+      'A calm and technically precise AI collaborator. Helps reason clearly, answers directly, and keeps responses useful and grounded.',
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -40,20 +48,29 @@ export default function SetupPage() {
   }, [ready, router, setupRequired, user]);
 
   if (!ready) {
-    return <main className="flex min-h-screen items-center justify-center text-on-surface-variant">Loading setup...</main>;
+    return (
+      <main className="flex min-h-screen items-center justify-center">
+        <span className="text-sm text-on-surface-variant/40">Loading…</span>
+      </main>
+    );
   }
 
-  function field(key: keyof typeof form, label: string, type = 'text') {
+  function field(key: keyof typeof form, label: string, type = 'text', placeholder?: string) {
     return (
-      <div className="grid gap-1.5">
-        <label className="px-1 text-xs font-semibold text-on-surface-variant" htmlFor={key}>
+      <div className="space-y-1.5">
+        <label className="block text-xs font-medium text-on-surface-variant/60" htmlFor={key}>
           {label}
         </label>
         <input
-          className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-low px-4 py-2.5 text-sm font-medium text-on-surface placeholder:text-outline transition-all focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+          autoComplete={type === 'password' ? 'new-password' : 'off'}
+          className={inputClass}
           id={key}
           onChange={(e) => setForm((c) => ({ ...c, [key]: e.target.value }))}
+          onFocus={(e) => { e.target.style.borderColor = 'var(--primary)'; }}
+          onBlur={(e) => { e.target.style.borderColor = 'var(--outline-variant)'; }}
+          placeholder={placeholder}
           required
+          style={inputStyle}
           type={type}
           value={form[key] as string}
         />
@@ -62,41 +79,41 @@ export default function SetupPage() {
   }
 
   return (
-    <main className="relative flex min-h-screen items-center justify-center p-6 sm:p-12">
-      {/* Decorative background blobs */}
-      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden" aria-hidden>
-        <div className="absolute -left-24 -top-24 h-96 w-96 rounded-full bg-primary/5 blur-3xl" />
-        <div className="absolute -right-48 top-1/2 h-[32rem] w-[32rem] rounded-full bg-surface-container/10 blur-[100px]" />
-      </div>
+    <main className="flex min-h-screen items-center justify-center px-4 py-8">
+      <div className="w-full max-w-[440px]">
 
-      <div className="w-full max-w-xl">
-        {/* Page header — outside the card */}
-        <header className="mb-10 text-center">
-          <div className="mb-6 inline-flex h-24 w-24 items-center justify-center overflow-hidden rounded-2xl border border-outline-variant/20 bg-surface-container-high shadow-sm">
+        {/* Brand */}
+        <div className="mb-8 flex flex-col items-center gap-4">
+          <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-xl bg-primary shadow-lg shadow-primary/20">
             <Image
-              alt="NextGenChat logo"
+              alt="NextGenChat"
               className="h-full w-full object-cover"
-              height={96}
+              height={44}
               priority
               src="/nextgenchat-brand-mark.png"
-              width={96}
+              width={44}
             />
           </div>
-          <h1 className="font-headline mb-3 text-3xl font-extrabold tracking-tight text-on-surface">
-            NextGenChat
-          </h1>
-          <p className="mx-auto max-w-sm text-base font-medium leading-relaxed text-on-surface-variant">
-            A local-first AI workspace. Your data and conversations stay on your machine.
-          </p>
-        </header>
+          <div className="text-center">
+            <h1 className="font-headline text-2xl font-bold tracking-tight text-on-surface">
+              Set up your workspace
+            </h1>
+            <p className="mt-1 text-sm text-on-surface-variant/60">
+              Local-first · Your data stays on your machine
+            </p>
+          </div>
+        </div>
 
         {/* Card */}
-        <div className="relative overflow-hidden rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-8 shadow-[0_8px_30px_rgba(42,52,57,0.04)] sm:p-10">
-          {/* Gradient accent bar */}
-          <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary to-primary-dim" />
-
+        <div
+          className="overflow-hidden rounded-2xl"
+          style={{
+            background: 'var(--surface-container-lowest)',
+            border: '1px solid var(--outline-variant)',
+          }}
+        >
           <form
-            className="space-y-8"
+            className="p-6"
             onSubmit={async (e) => {
               e.preventDefault();
               setSubmitting(true);
@@ -111,79 +128,99 @@ export default function SetupPage() {
               }
             }}
           >
-            {/* Section: User Account */}
-            <section className="space-y-4">
-              <div className="mb-2 flex items-center gap-2">
-                <span className="text-lg leading-none text-on-surface-variant">○</span>
-                <h2 className="font-headline text-sm font-bold uppercase tracking-wider text-on-surface">
-                  User Account
-                </h2>
+            {/* Section: Account */}
+            <div className="mb-6">
+              <div className="mb-4 flex items-center gap-2">
+                <span
+                  className="flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold"
+                  style={{ background: 'var(--primary-container)', color: 'var(--on-surface-variant)' }}
+                >
+                  1
+                </span>
+                <span className="font-headline text-xs font-semibold uppercase tracking-widest text-on-surface-variant/50">
+                  Owner Account
+                </span>
               </div>
-
-              {field('username', 'Username')}
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                {field('password', 'Password', 'password')}
-                {field('confirmPassword', 'Confirm Password', 'password')}
+              <div className="space-y-3">
+                {field('username', 'Username', 'text', 'e.g. admin')}
+                <div className="grid grid-cols-2 gap-3">
+                  {field('password', 'Password', 'password')}
+                  {field('confirmPassword', 'Confirm', 'password')}
+                </div>
               </div>
-            </section>
+            </div>
 
-            <hr className="border-outline-variant/20" />
+            {/* Divider */}
+            <div className="my-5" style={{ borderTop: '1px solid var(--outline-variant)' }} />
 
-            {/* Section: Primary Agent */}
-            <section className="space-y-4">
-              <div className="mb-2 flex items-center gap-2">
-                <span className="text-lg leading-none text-on-surface-variant">◈</span>
-                <h2 className="font-headline text-sm font-bold uppercase tracking-wider text-on-surface">
+            {/* Section: Agent */}
+            <div className="mb-6">
+              <div className="mb-4 flex items-center gap-2">
+                <span
+                  className="flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold"
+                  style={{ background: 'var(--primary-container)', color: 'var(--on-surface-variant)' }}
+                >
+                  2
+                </span>
+                <span className="font-headline text-xs font-semibold uppercase tracking-widest text-on-surface-variant/50">
                   Primary Agent
-                </h2>
+                </span>
               </div>
-
-              {field('agentName', 'Primary Agent Name')}
-
-              <div className="grid gap-1.5">
-                <label className="px-1 text-xs font-semibold text-on-surface-variant" htmlFor="agentDescription">
-                  Description
-                </label>
-                <p className="px-1 text-[11px] text-on-surface-variant/60">
-                  Describe who this agent is — their role, personality, and expertise. AgentCreatorAgent will use this to generate their full configuration automatically.
-                </p>
-                <textarea
-                  className="min-h-[100px] w-full resize-none rounded-lg border border-outline-variant/30 bg-surface-container-low px-4 py-3 text-sm font-medium text-on-surface placeholder:text-outline transition-all focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-                  id="agentDescription"
-                  onChange={(e) => setForm((c) => ({ ...c, agentDescription: e.target.value }))}
-                  placeholder="e.g. Ivy is a UX/UI designer with a sharp eye for interaction patterns and a warm, direct communication style."
-                  required
-                  value={form.agentDescription}
-                />
+              <div className="space-y-3">
+                {field('agentName', 'Agent name', 'text', 'e.g. Atelier')}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-medium text-on-surface-variant/60" htmlFor="agentDescription">
+                    Description
+                  </label>
+                  <p className="text-[11px] text-on-surface-variant/35">
+                    AgentCreatorAgent will generate full configuration from this.
+                  </p>
+                  <textarea
+                    className="w-full resize-none rounded-lg px-3 py-2.5 text-sm text-on-surface outline-none placeholder:text-on-surface-variant/25"
+                    id="agentDescription"
+                    onChange={(e) => setForm((c) => ({ ...c, agentDescription: e.target.value }))}
+                    onFocus={(e) => { e.target.style.borderColor = 'var(--primary)'; }}
+                    onBlur={(e) => { e.target.style.borderColor = 'var(--outline-variant)'; }}
+                    placeholder="Describe the agent's role and personality…"
+                    required
+                    rows={3}
+                    style={{ ...inputStyle, minHeight: '80px' }}
+                    value={form.agentDescription}
+                  />
+                </div>
               </div>
-            </section>
+            </div>
 
             {error ? (
-              <p className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-700">
+              <div
+                className="mb-4 flex items-start gap-2 rounded-lg px-3 py-2.5 text-sm"
+                style={{
+                  background: 'rgba(255, 0, 51, 0.08)',
+                  border: '1px solid rgba(255, 0, 51, 0.2)',
+                  color: '#ff6685',
+                }}
+              >
+                <svg className="mt-0.5 h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="10" /><path d="M12 8v4m0 4h.01" strokeLinecap="round" />
+                </svg>
                 {error}
-              </p>
+              </div>
             ) : null}
 
-            <div className="pt-2">
-              <button
-                className="font-headline flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-8 py-3.5 text-base font-bold text-on-primary shadow-lg shadow-primary/20 transition-all hover:bg-primary-dim active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={submitting}
-                type="submit"
-              >
-                {submitting ? 'Creating workspace & agent files…' : 'Create Workspace'}
-                {!submitting && <span className="text-lg leading-none">→</span>}
-              </button>
-              <p className="mt-4 text-center text-[11px] font-semibold uppercase tracking-widest text-on-surface-variant/70">
-                Ready to launch local environment
-              </p>
-            </div>
+            <button
+              className="font-headline w-full rounded-lg py-2.5 text-sm font-semibold text-on-primary transition-all active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+              disabled={submitting}
+              style={{ background: submitting ? 'var(--primary-dim)' : 'var(--primary)' }}
+              type="submit"
+            >
+              {submitting ? 'Creating workspace…' : 'Launch Workspace →'}
+            </button>
           </form>
         </div>
 
-        <footer className="mt-12 text-center text-xs font-medium text-on-surface-variant opacity-60">
-          NextGenChat · Local Development Node · v1.0.0
-        </footer>
+        <p className="mt-8 text-center text-[11px] text-on-surface-variant/25">
+          NextGenChat · Local Node
+        </p>
       </div>
     </main>
   );

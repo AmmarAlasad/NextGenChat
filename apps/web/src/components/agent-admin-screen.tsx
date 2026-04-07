@@ -1,8 +1,8 @@
 /**
  * Agent Admin Screen
  *
- * Dedicated agent workspace where the operator edits agent settings and durable
- * markdown docs. Includes a lightweight writing-assistant bubble for doc help.
+ * Dedicated agent workspace: settings, seven-file doc editor, skills panel,
+ * AgentCreatorAgent chat, and workspace agency editor.
  *
  * Phase 5 implementation status:
  * - Seven-file agent architecture: soul.md, identity.md, Agent.md, user.md, memory.md, Heartbeat.md, pickup.md
@@ -16,11 +16,22 @@
 
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
-import type { AgentCreatorChatMessage, AgentCreatorChatResponse, AgentDetail, AgentDocRecord, AgentSkill, AgentSkillType, CreateSkillInput, UpdateAgentDocInput, UpdateAgentInput, WorkspaceDocRecord } from '@nextgenchat/types';
+import type {
+  AgentCreatorChatMessage,
+  AgentCreatorChatResponse,
+  AgentDetail,
+  AgentDocRecord,
+  AgentSkill,
+  AgentSkillType,
+  CreateSkillInput,
+  UpdateAgentDocInput,
+  UpdateAgentInput,
+  WorkspaceDocRecord,
+} from '@nextgenchat/types';
 
 import { useAuth } from '@/components/auth-provider';
 import { apiJson } from '@/lib/api';
@@ -29,18 +40,112 @@ const DOC_ORDER = ['soul.md', 'identity.md', 'Agent.md', 'user.md', 'memory.md',
 type DocTab = (typeof DOC_ORDER)[number];
 
 const DOC_DESCRIPTIONS: Record<DocTab, string> = {
-  'soul.md': 'Core values & ethics — immutable principles',
-  'identity.md': 'Public persona, tone & communication style',
-  'Agent.md': 'Operating manual — tool rules & memory triggers',
-  'user.md': "Agent's model of the user — written by the agent",
-  'memory.md': 'Long-term patterns & learnings — written by the agent',
-  'Heartbeat.md': 'Periodic status log for resumable work',
-  'pickup.md': 'Pickup agent decision instructions',
+  'soul.md': 'Core values & ethics — immutable',
+  'identity.md': 'Persona, tone & style',
+  'Agent.md': 'Operating manual & tool rules',
+  'user.md': "Agent's model of the user",
+  'memory.md': 'Long-term patterns & learnings',
+  'Heartbeat.md': 'Resumable work status log',
+  'pickup.md': 'Pickup LLM decision instructions',
 };
+
+const DOC_ICONS: Record<DocTab, string> = {
+  'soul.md': '◈',
+  'identity.md': '◉',
+  'Agent.md': '▣',
+  'user.md': '◎',
+  'memory.md': '⬡',
+  'Heartbeat.md': '◇',
+  'pickup.md': '◫',
+};
+
+const PROTECTED_DOCS: DocTab[] = ['soul.md', 'identity.md', 'Agent.md', 'pickup.md'];
+
+type CenterView = 'settings' | 'doc' | 'skill' | 'agency';
+
+function avatarColor(name: string): string {
+  const palette = ['#7289c0', '#5e6ca1', '#766f90', '#5e5973', '#7e89b4', '#4f6cb0', '#918ca6'];
+  let h = 0;
+  for (let i = 0; i < name.length; i++) { h = ((h << 5) - h) + name.charCodeAt(i); h |= 0; }
+  return palette[Math.abs(h) % palette.length];
+}
+
+function triggerLabel(mode: string): string {
+  return { AUTO: 'Auto', WAKEUP: 'Wakeup', MENTIONS_ONLY: 'Mentions', ALL_MESSAGES: 'All msgs', DISABLED: 'Disabled' }[mode] ?? mode;
+}
+
+function statusDot(status: string) {
+  const color = { ACTIVE: '#22c55e', PAUSED: '#f59e0b', ARCHIVED: 'rgba(255,255,255,0.2)' }[status] ?? 'rgba(255,255,255,0.2)';
+  return <span className="inline-block h-2 w-2 rounded-full" style={{ background: color, boxShadow: status === 'ACTIVE' ? `0 0 6px ${color}` : 'none' }} />;
+}
+
+// ── Form primitives ───────────────────────────────────────────────────────────
+
+const fieldBase = {
+  background: 'var(--surface-container)',
+  border: '1px solid var(--outline-variant)',
+  color: 'var(--on-surface)',
+};
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <label className="block text-[10px] font-semibold uppercase tracking-[0.1em] text-on-surface-variant/40">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function FInput({ value, onChange, placeholder, disabled }: { value: string; onChange: (v: string) => void; placeholder?: string; disabled?: boolean }) {
+  return (
+    <input
+      className="w-full rounded-md px-3 py-2 text-sm outline-none placeholder:opacity-25 transition-colors"
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      onFocus={(e) => { if (!disabled) e.target.style.borderColor = 'var(--primary)'; }}
+      onBlur={(e) => { e.target.style.borderColor = 'var(--outline-variant)'; }}
+      placeholder={placeholder}
+      style={{ ...fieldBase, opacity: disabled ? 0.5 : 1 }}
+      value={value}
+    />
+  );
+}
+
+function FSelect({ value, onChange, children }: { value: string; onChange: (v: string) => void; children: React.ReactNode }) {
+  return (
+    <select
+      className="w-full rounded-md px-3 py-2 text-sm outline-none"
+      onChange={(e) => onChange(e.target.value)}
+      style={fieldBase}
+      value={value}
+    >
+      {children}
+    </select>
+  );
+}
+
+function FTextarea({ value, onChange, placeholder, rows = 4, mono = false }: { value: string; onChange: (v: string) => void; placeholder?: string; rows?: number; mono?: boolean }) {
+  return (
+    <textarea
+      className={`w-full resize-none rounded-md px-3 py-2.5 text-sm outline-none placeholder:opacity-25 transition-colors ${mono ? 'font-mono text-xs leading-6' : ''}`}
+      onChange={(e) => onChange(e.target.value)}
+      onFocus={(e) => { e.target.style.borderColor = 'var(--primary)'; }}
+      onBlur={(e) => { e.target.style.borderColor = 'var(--outline-variant)'; }}
+      placeholder={placeholder}
+      rows={rows}
+      style={fieldBase}
+      value={value}
+    />
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 export function AgentAdminScreen({ agentId }: { agentId: string }) {
   const router = useRouter();
   const { accessToken, ready, setupRequired, user } = useAuth();
+  const creatorScrollRef = useRef<HTMLDivElement>(null);
+
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [docs, setDocs] = useState<Record<string, AgentDocRecord>>({});
   const [activeTab, setActiveTab] = useState<DocTab>('identity.md');
@@ -54,8 +159,9 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
   const [savingAgent, setSavingAgent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [centerView, setCenterView] = useState<CenterView>('doc');
+  const [sidebarSection, setSidebarSection] = useState<'files' | 'skills'>('files');
 
-  // Skills state
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<AgentSkill | null>(null);
   const [skillDraft, setSkillDraft] = useState('');
@@ -64,7 +170,6 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
   const [savingSkill, setSavingSkill] = useState(false);
   const [deletingSkill, setDeletingSkill] = useState(false);
 
-  // Workspace agency state
   const [workspaceAgency, setWorkspaceAgency] = useState<WorkspaceDocRecord | null>(null);
   const [agencyDraft, setAgencyDraft] = useState('');
   const [savingAgency, setSavingAgency] = useState(false);
@@ -72,24 +177,15 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
 
   useEffect(() => {
     if (!ready) return;
-    if (setupRequired) {
-      router.replace('/setup');
-      return;
-    }
-    if (!user) {
-      router.replace('/login');
-    }
+    if (setupRequired) { router.replace('/setup'); return; }
+    if (!user) { router.replace('/login'); }
   }, [ready, router, setupRequired, user]);
 
   useEffect(() => {
     if (!accessToken) return;
-
     let active = true;
-
     async function load() {
-      setLoading(true);
-      setError(null);
-
+      setLoading(true); setError(null);
       try {
         const headers = { Authorization: `Bearer ${accessToken}` };
         const [nextAgent, nextDocs, nextAgency, nextSkills] = await Promise.all([
@@ -98,9 +194,7 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
           apiJson<WorkspaceDocRecord>('/workspace/agency', { headers }),
           apiJson<AgentSkill[]>(`/agents/${agentId}/skills`, { headers }),
         ]);
-
         if (!active) return;
-
         setAgent(nextAgent);
         setAgentForm({
           name: nextAgent.name,
@@ -116,20 +210,13 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
         setAgencySavedAt(nextAgency.updatedAt);
         setSkills(nextSkills);
       } catch (loadError) {
-        if (active) {
-          setError(loadError instanceof Error ? loadError.message : 'Failed to load agent workspace.');
-        }
+        if (active) setError(loadError instanceof Error ? loadError.message : 'Failed to load agent workspace.');
       } finally {
-        if (active) {
-          setLoading(false);
-        }
+        if (active) setLoading(false);
       }
     }
-
     void load();
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [accessToken, agentId]);
 
   const activeDoc = docs[activeTab] ?? null;
@@ -139,122 +226,87 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
     setSavedAt(activeDoc?.updatedAt ?? null);
   }, [activeDoc]);
 
+  useEffect(() => {
+    if (creatorScrollRef.current) {
+      creatorScrollRef.current.scrollTop = creatorScrollRef.current.scrollHeight;
+    }
+  }, [creatorHistory, creatorLoading]);
+
   const hasDocChanges = useMemo(() => draft !== (activeDoc?.content ?? ''), [activeDoc?.content, draft]);
   const hasAgentChanges = useMemo(() => {
     if (!agent) return false;
     return JSON.stringify(agentForm) !== JSON.stringify({
-      name: agent.name,
-      persona: agent.persona ?? '',
-      systemPrompt: agent.systemPrompt ?? '',
-      voiceTone: agent.voiceTone ?? '',
-      triggerMode: agent.triggerMode,
-      status: agent.status,
+      name: agent.name, persona: agent.persona ?? '', systemPrompt: agent.systemPrompt ?? '',
+      voiceTone: agent.voiceTone ?? '', triggerMode: agent.triggerMode, status: agent.status,
     });
   }, [agent, agentForm]);
   const hasAgencyChanges = agencyDraft !== (workspaceAgency?.content ?? '');
 
   async function saveDoc() {
     if (!accessToken) return;
-    setSavingDoc(true);
-    setError(null);
-
+    setSavingDoc(true); setError(null);
     try {
       const payload: UpdateAgentDocInput = { content: draft };
       const updated = await apiJson<AgentDocRecord>(`/agents/${agentId}/docs/${encodeURIComponent(activeTab)}`, {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify(payload),
+        method: 'PUT', headers: { Authorization: `Bearer ${accessToken}` }, body: JSON.stringify(payload),
       });
       setDocs((current) => ({ ...current, [updated.docType]: updated }));
       setSavedAt(updated.updatedAt);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Failed to save document.');
-    } finally {
-      setSavingDoc(false);
-    }
+    } finally { setSavingDoc(false); }
   }
 
   async function saveAgent() {
     if (!accessToken) return;
-    setSavingAgent(true);
-    setError(null);
-
+    setSavingAgent(true); setError(null);
     try {
       await apiJson(`/agents/${agentId}`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify(agentForm),
+        method: 'PATCH', headers: { Authorization: `Bearer ${accessToken}` }, body: JSON.stringify(agentForm),
       });
-      const refreshed = await apiJson<AgentDetail>(`/agents/${agentId}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      const refreshed = await apiJson<AgentDetail>(`/agents/${agentId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
       setAgent(refreshed);
       setAgentForm({
-        name: refreshed.name,
-        persona: refreshed.persona ?? '',
-        systemPrompt: refreshed.systemPrompt ?? '',
-        voiceTone: refreshed.voiceTone ?? '',
-        triggerMode: refreshed.triggerMode,
-        status: refreshed.status,
+        name: refreshed.name, persona: refreshed.persona ?? '', systemPrompt: refreshed.systemPrompt ?? '',
+        voiceTone: refreshed.voiceTone ?? '', triggerMode: refreshed.triggerMode, status: refreshed.status,
       });
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Failed to save agent settings.');
-    } finally {
-      setSavingAgent(false);
-    }
+    } finally { setSavingAgent(false); }
   }
 
   async function saveAgency() {
     if (!accessToken) return;
-    setSavingAgency(true);
-    setError(null);
-
+    setSavingAgency(true); setError(null);
     try {
       const updated = await apiJson<WorkspaceDocRecord>('/workspace/agency', {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ content: agencyDraft }),
+        method: 'PUT', headers: { Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({ content: agencyDraft }),
       });
-      setWorkspaceAgency(updated);
-      setAgencyDraft(updated.content);
-      setAgencySavedAt(updated.updatedAt);
+      setWorkspaceAgency(updated); setAgencyDraft(updated.content); setAgencySavedAt(updated.updatedAt);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Failed to save workspace agency.');
-    } finally {
-      setSavingAgency(false);
-    }
+    } finally { setSavingAgency(false); }
   }
 
   async function sendCreatorMessage() {
     if (!accessToken || !creatorInput.trim() || creatorLoading) return;
     const message = creatorInput.trim();
-    setCreatorInput('');
-    setCreatorLoading(true);
-
+    setCreatorInput(''); setCreatorLoading(true);
     const nextHistory: AgentCreatorChatMessage[] = [...creatorHistory, { role: 'user', content: message }];
     setCreatorHistory(nextHistory);
-
     try {
       const response = await apiJson<AgentCreatorChatResponse>(`/agents/${agentId}/creator/chat`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}` },
+        method: 'POST', headers: { Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({ message, history: creatorHistory }),
       });
-
       setCreatorHistory([...nextHistory, { role: 'assistant', content: response.reply }]);
-
       if (response.fileUpdates.length > 0) {
-        // Re-fetch updated docs so the editor reflects the new content.
-        const updatedDocs = await apiJson<AgentDocRecord[]>(`/agents/${agentId}/docs`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
+        const updatedDocs = await apiJson<AgentDocRecord[]>(`/agents/${agentId}/docs`, { headers: { Authorization: `Bearer ${accessToken}` } });
         setDocs(Object.fromEntries(updatedDocs.map((doc) => [doc.docType, doc])));
       }
     } catch (creatorError) {
       setCreatorHistory([...nextHistory, { role: 'assistant', content: `Error: ${creatorError instanceof Error ? creatorError.message : 'Request failed.'}` }]);
-    } finally {
-      setCreatorLoading(false);
-    }
+    } finally { setCreatorLoading(false); }
   }
 
   function openSkill(skill: AgentSkill) {
@@ -262,307 +314,729 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
     setSkillDraft(skill.content);
     setSkillForm({ name: skill.name, description: skill.description ?? '', type: skill.type, toolNames: skill.toolNames.join(', ') });
     setShowNewSkill(false);
+    setCenterView('skill');
   }
 
   function openNewSkill() {
-    setSelectedSkill(null);
-    setSkillDraft('');
+    setSelectedSkill(null); setSkillDraft('');
     setSkillForm({ name: '', description: '', type: 'ON_DEMAND', toolNames: '' });
     setShowNewSkill(true);
+    setCenterView('skill');
   }
 
   async function saveSkill() {
     if (!accessToken) return;
-    setSavingSkill(true);
-    setError(null);
+    setSavingSkill(true); setError(null);
     try {
       const toolNames = skillForm.toolNames.split(',').map((t) => t.trim()).filter(Boolean);
       if (showNewSkill) {
         const payload: CreateSkillInput = { name: skillForm.name, description: skillForm.description || undefined, type: skillForm.type, toolNames: toolNames.length > 0 ? toolNames : undefined, content: skillDraft };
         const created = await apiJson<AgentSkill>(`/agents/${agentId}/skills`, { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` }, body: JSON.stringify(payload) });
-        setSkills((prev) => [...prev, created]);
-        setSelectedSkill(created);
-        setShowNewSkill(false);
+        setSkills((prev) => [...prev, created]); setSelectedSkill(created); setShowNewSkill(false);
       } else if (selectedSkill) {
         const updated = await apiJson<AgentSkill>(`/agents/${agentId}/skills/${selectedSkill.name}`, { method: 'PUT', headers: { Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({ description: skillForm.description || undefined, type: skillForm.type, toolNames, content: skillDraft }) });
-        setSkills((prev) => prev.map((s) => s.name === updated.name ? updated : s));
-        setSelectedSkill(updated);
+        setSkills((prev) => prev.map((s) => s.name === updated.name ? updated : s)); setSelectedSkill(updated);
       }
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Failed to save skill.');
-    } finally {
-      setSavingSkill(false);
-    }
+    } finally { setSavingSkill(false); }
   }
 
   async function deleteSkill(name: string) {
     if (!accessToken) return;
-    setDeletingSkill(true);
-    setError(null);
+    setDeletingSkill(true); setError(null);
     try {
       await apiJson(`/agents/${agentId}/skills/${name}`, { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } });
       setSkills((prev) => prev.filter((s) => s.name !== name));
-      if (selectedSkill?.name === name) { setSelectedSkill(null); setShowNewSkill(false); }
+      if (selectedSkill?.name === name) { setSelectedSkill(null); setShowNewSkill(false); setCenterView('doc'); }
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete skill.');
-    } finally {
-      setDeletingSkill(false);
-    }
+    } finally { setDeletingSkill(false); }
   }
 
   if (!ready || loading) {
-    return <main className="flex min-h-screen items-center justify-center px-6 py-16 text-on-surface-variant">Loading agent workspace…</main>;
+    return (
+      <main className="flex h-screen items-center justify-center" style={{ background: 'var(--background)' }}>
+        <div className="flex items-center gap-3">
+          <span className="h-1.5 w-1.5 animate-[typing_1.4s_ease-in-out_0s_infinite] rounded-full bg-primary/60" />
+          <span className="h-1.5 w-1.5 animate-[typing_1.4s_ease-in-out_0.2s_infinite] rounded-full bg-primary/60" />
+          <span className="h-1.5 w-1.5 animate-[typing_1.4s_ease-in-out_0.4s_infinite] rounded-full bg-primary/60" />
+        </div>
+      </main>
+    );
   }
 
+  const agentColor = agent ? avatarColor(agent.name) : '#7289c0';
+  const agentInitials = agent ? agent.name.slice(0, 2).toUpperCase() : '??';
+  const isProtected = PROTECTED_DOCS.includes(activeTab);
+
   return (
-    <main className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto flex min-h-screen max-w-[1680px] flex-col gap-6 px-4 py-6 lg:px-6">
-        <header className="flex flex-col gap-4 rounded-[1.75rem] border border-outline/10 bg-surface-container-lowest p-6 shadow-sm xl:flex-row xl:items-start xl:justify-between">
-          <div>
-            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/55">Agent Workspace</p>
-            <h1 className="font-headline mt-3 text-3xl font-bold tracking-tight text-on-surface">{agent?.name ?? 'Agent'}</h1>
-            <p className="mt-3 max-w-2xl text-sm leading-7 text-on-surface-variant">Edit agent settings, maintain durable markdown docs, and configure the pickup agent that decides when this agent should engage in group conversations.</p>
+    <main
+      className="flex h-screen flex-col overflow-hidden"
+      style={{ background: 'var(--background)', color: 'var(--on-surface)' }}
+    >
+
+      {/* ── Top bar ─────────────────────────────────────────────────────────── */}
+      <header
+        className="flex h-11 shrink-0 items-center justify-between px-4"
+        style={{
+          background: 'rgba(13, 15, 22, 0.9)',
+          backdropFilter: 'blur(12px)',
+          borderBottom: '1px solid var(--outline-variant)',
+        }}
+      >
+        {/* Left: back + agent identity */}
+        <div className="flex items-center gap-3">
+          <Link
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-on-surface-variant/40 transition-colors hover:bg-white/5 hover:text-on-surface-variant"
+            href="/chat"
+          >
+            <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Chat
+          </Link>
+
+          <span style={{ color: 'var(--outline-variant)' }}>·</span>
+
+          {/* Agent badge */}
+          <div className="flex items-center gap-2">
+            <div
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[9px] font-bold text-white"
+              style={{ background: agentColor }}
+            >
+              {agentInitials}
+            </div>
+            <span className="font-headline text-sm font-semibold text-on-surface">{agent?.name ?? 'Agent'}</span>
+            <div className="flex items-center gap-1.5">
+              {statusDot(agent?.status ?? 'ACTIVE')}
+              <span className="text-[10px] text-on-surface-variant/40">{triggerLabel(agent?.triggerMode ?? 'AUTO')}</span>
+            </div>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <Link className="rounded-full border border-outline/20 px-4 py-2 text-sm font-semibold text-on-surface-variant transition hover:bg-surface-container" href="/chat">Back to chat</Link>
-            <button className="rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-on-primary shadow-sm transition hover:bg-primary-dim disabled:opacity-50" disabled={!hasAgentChanges || savingAgent} onClick={saveAgent} type="button">{savingAgent ? 'Saving agent…' : 'Save agent settings'}</button>
-            <button className="rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-on-primary shadow-sm transition hover:bg-primary-dim disabled:opacity-50" disabled={!hasDocChanges || savingDoc} onClick={saveDoc} type="button">{savingDoc ? 'Saving doc…' : 'Save document'}</button>
+        </div>
+
+        {/* Right: save actions + error */}
+        <div className="flex items-center gap-2">
+          {error && (
+            <span className="truncate text-[11px]" style={{ color: 'rgba(255, 102, 133, 0.8)', maxWidth: '280px' }}>{error}</span>
+          )}
+
+          {centerView === 'settings' && (
+            <button
+              className="font-headline rounded-md px-3 py-1.5 text-[11px] font-semibold text-on-primary transition disabled:cursor-not-allowed disabled:opacity-30"
+              disabled={!hasAgentChanges || savingAgent}
+              onClick={saveAgent}
+              style={{ background: 'var(--primary)' }}
+              type="button"
+            >
+              {savingAgent ? 'Saving…' : 'Save settings'}
+            </button>
+          )}
+
+          {centerView === 'doc' && (
+            <>
+              {savedAt && (
+                <span className="text-[10px] text-on-surface-variant/30">
+                  Saved {new Date(savedAt).toLocaleTimeString()}
+                </span>
+              )}
+              {isProtected && (
+                <span
+                  className="rounded px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
+                  style={{ background: 'rgba(255, 0, 51, 0.12)', color: 'rgba(255, 102, 133, 0.7)', border: '1px solid rgba(255, 0, 51, 0.2)' }}
+                >
+                  Protected
+                </span>
+              )}
+              <button
+                className="font-headline rounded-md px-3 py-1.5 text-[11px] font-semibold text-on-primary transition disabled:cursor-not-allowed disabled:opacity-30"
+                disabled={!hasDocChanges || savingDoc}
+                onClick={saveDoc}
+                style={{ background: hasDocChanges ? 'var(--primary)' : 'var(--primary-dim)' }}
+                type="button"
+              >
+                {savingDoc ? 'Saving…' : 'Save'}
+              </button>
+            </>
+          )}
+
+          {centerView === 'skill' && (
+            <button
+              className="font-headline rounded-md px-3 py-1.5 text-[11px] font-semibold text-on-primary transition disabled:cursor-not-allowed disabled:opacity-30"
+              disabled={savingSkill || !skillDraft.trim() || !skillForm.name.trim()}
+              onClick={saveSkill}
+              style={{ background: 'var(--primary)' }}
+              type="button"
+            >
+              {savingSkill ? 'Saving…' : showNewSkill ? 'Create skill' : 'Save skill'}
+            </button>
+          )}
+
+          {centerView === 'agency' && (
+            <button
+              className="font-headline rounded-md px-3 py-1.5 text-[11px] font-semibold text-on-primary transition disabled:cursor-not-allowed disabled:opacity-30"
+              disabled={!hasAgencyChanges || savingAgency}
+              onClick={saveAgency}
+              style={{ background: 'var(--primary)' }}
+              type="button"
+            >
+              {savingAgency ? 'Saving…' : 'Save agency'}
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* ── Body ────────────────────────────────────────────────────────────── */}
+      <div className="flex flex-1 overflow-hidden">
+
+        {/* ── Left sidebar ──────────────────────────────────────────────────── */}
+        <aside
+          className="flex w-[210px] shrink-0 flex-col overflow-hidden"
+          style={{ background: 'var(--ti-950)', borderRight: '1px solid var(--outline-variant)' }}
+        >
+          {/* Sidebar tabs: Files | Skills */}
+          <div
+            className="flex shrink-0 items-center gap-0"
+            style={{ borderBottom: '1px solid var(--outline-variant)' }}
+          >
+            {(['files', 'skills'] as const).map((section) => (
+              <button
+                className="flex-1 py-2.5 text-[10px] font-semibold uppercase tracking-[0.1em] transition-colors"
+                key={section}
+                onClick={() => setSidebarSection(section)}
+                style={{
+                  color: sidebarSection === section ? 'var(--on-surface)' : 'var(--on-surface-variant)',
+                  opacity: sidebarSection === section ? 1 : 0.4,
+                  borderBottom: sidebarSection === section ? '1px solid var(--primary)' : '1px solid transparent',
+                  marginBottom: '-1px',
+                }}
+                type="button"
+              >
+                {section === 'files' ? 'Files' : 'Skills'}
+              </button>
+            ))}
           </div>
-        </header>
 
-        {error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
+          {/* Settings entry */}
+          <button
+            className="flex shrink-0 items-center gap-2.5 px-3 py-2 transition-colors"
+            onClick={() => setCenterView('settings')}
+            style={{
+              background: centerView === 'settings' ? 'rgba(114, 137, 192, 0.12)' : 'transparent',
+              borderLeft: centerView === 'settings' ? '2px solid var(--primary)' : '2px solid transparent',
+            }}
+            onMouseEnter={(e) => { if (centerView !== 'settings') (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.04)'; }}
+            onMouseLeave={(e) => { if (centerView !== 'settings') (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+            type="button"
+          >
+            <span className="text-[13px]" style={{ color: centerView === 'settings' ? 'var(--primary)' : 'var(--on-surface-variant)', opacity: centerView === 'settings' ? 1 : 0.5 }}>⚙</span>
+            <span
+              className="text-[12px] font-medium"
+              style={{ color: centerView === 'settings' ? 'var(--on-surface)' : 'var(--on-surface-variant)', opacity: centerView === 'settings' ? 1 : 0.6 }}
+            >
+              Settings
+            </span>
+          </button>
 
-        <section className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)_360px]">
-          <aside className="space-y-6 rounded-[1.5rem] border border-outline/10 bg-surface-container-lowest p-4 shadow-sm">
-            <section>
-              <p className="px-2 pb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">Agent settings</p>
-              <div className="space-y-3 rounded-2xl bg-surface-container p-4">
-                <input className="w-full rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none" onChange={(event) => setAgentForm((current) => ({ ...current, name: event.target.value }))} placeholder="Agent name" value={agentForm.name ?? ''} />
-                <input className="w-full rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none" onChange={(event) => setAgentForm((current) => ({ ...current, persona: event.target.value }))} placeholder="Persona" value={agentForm.persona ?? ''} />
-                <input className="w-full rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none" onChange={(event) => setAgentForm((current) => ({ ...current, voiceTone: event.target.value }))} placeholder="Voice tone" value={agentForm.voiceTone ?? ''} />
-                <select className="w-full rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none" onChange={(event) => setAgentForm((current) => ({ ...current, triggerMode: event.target.value as UpdateAgentInput['triggerMode'] }))} value={agentForm.triggerMode}>
-                  <option value="AUTO">Auto (self-filter via [[NO_REPLY]])</option>
-                  <option value="WAKEUP">Wakeup (pickup LLM pre-filter)</option>
-                  <option value="MENTIONS_ONLY">Mentions only</option>
-                  <option value="ALL_MESSAGES">All messages (no filter)</option>
-                  <option value="DISABLED">Disabled</option>
-                </select>
-                <select className="w-full rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none" onChange={(event) => setAgentForm((current) => ({ ...current, status: event.target.value as UpdateAgentInput['status'] }))} value={agentForm.status}>
-                  <option value="ACTIVE">Active</option>
-                  <option value="PAUSED">Paused</option>
-                  <option value="ARCHIVED">Archived</option>
-                </select>
-                <textarea className="min-h-32 w-full rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none" onChange={(event) => setAgentForm((current) => ({ ...current, systemPrompt: event.target.value }))} placeholder="System prompt" value={agentForm.systemPrompt ?? ''} />
-              </div>
-            </section>
+          {/* Agency entry */}
+          <button
+            className="flex shrink-0 items-center gap-2.5 px-3 py-2 transition-colors"
+            onClick={() => setCenterView('agency')}
+            style={{
+              background: centerView === 'agency' ? 'rgba(114, 137, 192, 0.12)' : 'transparent',
+              borderLeft: centerView === 'agency' ? '2px solid var(--primary)' : '2px solid transparent',
+            }}
+            onMouseEnter={(e) => { if (centerView !== 'agency') (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.04)'; }}
+            onMouseLeave={(e) => { if (centerView !== 'agency') (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+            type="button"
+          >
+            <span className="text-[13px]" style={{ color: centerView === 'agency' ? 'var(--primary)' : 'var(--on-surface-variant)', opacity: centerView === 'agency' ? 1 : 0.5 }}>⬡</span>
+            <span
+              className="text-[12px] font-medium"
+              style={{ color: centerView === 'agency' ? 'var(--on-surface)' : 'var(--on-surface-variant)', opacity: centerView === 'agency' ? 1 : 0.6 }}
+            >
+              Agency
+            </span>
+          </button>
 
-            <section>
-              <p className="px-2 pb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">Agent docs</p>
-              <div className="space-y-2">
+          <div className="shrink-0 my-1" style={{ borderTop: '1px solid var(--outline-variant)' }} />
+
+          {/* Files or Skills list */}
+          <div className="flex-1 overflow-y-auto py-1">
+            {sidebarSection === 'files' ? (
+              <div>
+                <p className="px-3 py-1.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant/30">Agent Docs</p>
                 {DOC_ORDER.map((docType) => {
-                  const selected = docType === activeTab && !selectedSkill && !showNewSkill;
+                  const isActive = centerView === 'doc' && activeTab === docType;
+                  const isProtectedDoc = PROTECTED_DOCS.includes(docType);
                   return (
-                    <button className={`w-full rounded-2xl px-4 py-3 text-left transition ${selected ? 'bg-primary text-on-primary shadow-sm' : 'bg-surface-container text-on-surface hover:bg-surface-container-high'}`} key={docType} onClick={() => { setActiveTab(docType); setSelectedSkill(null); setShowNewSkill(false); }} type="button">
-                      <div className="text-sm font-semibold">{docs[docType]?.fileName ?? docType}</div>
-                      <div className={`mt-1 text-xs ${selected ? 'text-on-primary/75' : 'text-on-surface-variant/60'}`}>{DOC_DESCRIPTIONS[docType]}</div>
+                    <button
+                      className="flex w-full items-center gap-2 px-3 py-1.5 transition-colors"
+                      key={docType}
+                      onClick={() => { setActiveTab(docType); setCenterView('doc'); setSelectedSkill(null); setShowNewSkill(false); }}
+                      style={{
+                        background: isActive ? 'rgba(114, 137, 192, 0.12)' : 'transparent',
+                        borderLeft: isActive ? '2px solid var(--primary)' : '2px solid transparent',
+                      }}
+                      onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.04)'; }}
+                      onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+                      type="button"
+                    >
+                      <span
+                        className="shrink-0 text-[11px]"
+                        style={{ color: isActive ? 'var(--primary)' : 'var(--on-surface-variant)', opacity: isActive ? 1 : 0.4 }}
+                      >
+                        {DOC_ICONS[docType]}
+                      </span>
+                      <div className="min-w-0 flex-1 text-left">
+                        <div
+                          className="truncate font-mono text-[11px] font-medium"
+                          style={{ color: isActive ? 'var(--on-surface)' : 'var(--on-surface-variant)', opacity: isActive ? 1 : 0.7 }}
+                        >
+                          {docType}
+                        </div>
+                      </div>
+                      {isProtectedDoc && (
+                        <span className="shrink-0 text-[8px]" style={{ color: 'rgba(255, 102, 133, 0.4)' }}>●</span>
+                      )}
                     </button>
                   );
                 })}
               </div>
-            </section>
-
-            <section>
-              <div className="flex items-center justify-between px-2 pb-3">
-                <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">Skills</p>
-                <button className="rounded-full bg-primary px-3 py-1 text-[11px] font-bold text-on-primary" onClick={openNewSkill} type="button">+ New</button>
-              </div>
-              {skills.length === 0 && !showNewSkill ? (
-                <p className="px-2 text-xs text-on-surface-variant/50">No skills yet. Add one to give this agent reusable instruction sets.</p>
-              ) : (
-                <div className="space-y-1">
-                  {(['PASSIVE', 'ON_DEMAND', 'TOOL_BASED'] as AgentSkillType[]).map((type) => {
-                    const group = skills.filter((s) => s.type === type);
-                    if (group.length === 0) return null;
-                    const label = type === 'PASSIVE' ? 'Passive' : type === 'ON_DEMAND' ? 'On-demand' : 'Tool-based';
-                    const badge = type === 'PASSIVE' ? 'bg-emerald-100 text-emerald-700' : type === 'ON_DEMAND' ? 'bg-sky-100 text-sky-700' : 'bg-violet-100 text-violet-700';
-                    return (
-                      <div key={type}>
-                        <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">{label}</p>
-                        {group.map((skill) => {
-                          const isSelected = selectedSkill?.name === skill.name;
-                          return (
-                            <button className={`w-full rounded-xl px-3 py-2.5 text-left transition ${isSelected ? 'bg-primary text-on-primary' : 'bg-surface-container text-on-surface hover:bg-surface-container-high'}`} key={skill.name} onClick={() => openSkill(skill)} type="button">
-                              <div className="flex items-center gap-2">
-                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${isSelected ? 'bg-white/20 text-white' : badge}`}>{skill.isActive ? 'on' : 'off'}</span>
-                                <span className="text-sm font-semibold">{skill.name}</span>
-                              </div>
-                              {skill.description ? <div className={`mt-0.5 truncate text-xs ${isSelected ? 'text-on-primary/70' : 'text-on-surface-variant/60'}`}>{skill.description}</div> : null}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
+            ) : (
+              <div>
+                <div className="flex items-center justify-between px-3 py-1.5">
+                  <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant/30">Skills</p>
+                  <button
+                    className="rounded px-1.5 py-0.5 text-[9px] font-semibold text-on-primary transition hover:opacity-80"
+                    onClick={openNewSkill}
+                    style={{ background: 'var(--primary)' }}
+                    type="button"
+                  >
+                    + New
+                  </button>
                 </div>
-              )}
-            </section>
-          </aside>
+                {skills.length === 0 && !showNewSkill ? (
+                  <p className="px-3 py-2 text-[11px] text-on-surface-variant/30">No skills yet.</p>
+                ) : (
+                  <>
+                    {showNewSkill && (
+                      <button
+                        className="flex w-full items-center gap-2 px-3 py-1.5"
+                        style={{
+                          background: 'rgba(114, 137, 192, 0.12)',
+                          borderLeft: '2px solid var(--primary)',
+                        }}
+                        type="button"
+                      >
+                        <span className="text-[10px]" style={{ color: 'var(--primary)' }}>+</span>
+                        <span className="font-mono text-[11px] text-on-surface">New skill…</span>
+                      </button>
+                    )}
+                    {(['PASSIVE', 'ON_DEMAND', 'TOOL_BASED'] as AgentSkillType[]).map((type) => {
+                      const group = skills.filter((s) => s.type === type);
+                      if (group.length === 0) return null;
+                      const typeLabel = { PASSIVE: 'Passive', ON_DEMAND: 'On-demand', TOOL_BASED: 'Tool-based' }[type];
+                      return (
+                        <div key={type}>
+                          <p className="px-3 pt-2 pb-1 text-[9px] font-semibold uppercase tracking-widest text-on-surface-variant/25">{typeLabel}</p>
+                          {group.map((skill) => {
+                            const isActive = centerView === 'skill' && selectedSkill?.name === skill.name;
+                            return (
+                              <button
+                                className="flex w-full items-center gap-2 px-3 py-1.5 transition-colors"
+                                key={skill.name}
+                                onClick={() => openSkill(skill)}
+                                style={{
+                                  background: isActive ? 'rgba(114, 137, 192, 0.12)' : 'transparent',
+                                  borderLeft: isActive ? '2px solid var(--primary)' : '2px solid transparent',
+                                }}
+                                onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.04)'; }}
+                                onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+                                type="button"
+                              >
+                                <span
+                                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                  style={{ background: skill.isActive ? '#22c55e' : 'rgba(255,255,255,0.15)' }}
+                                />
+                                <span
+                                  className="truncate font-mono text-[11px]"
+                                  style={{ color: isActive ? 'var(--on-surface)' : 'var(--on-surface-variant)', opacity: isActive ? 1 : 0.7 }}
+                                >
+                                  {skill.name}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </aside>
 
-          <section className="flex min-h-[74vh] flex-col rounded-[1.5rem] border border-outline/10 bg-surface-container-lowest shadow-sm">
-            {(selectedSkill ?? showNewSkill) ? (
-              <>
-                <div className="border-b border-outline/10 px-6 py-5">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">Skill Editor</p>
-                  <div className="mt-3 grid grid-cols-2 gap-3">
-                    <input
-                      className="rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none disabled:opacity-50"
-                      disabled={!showNewSkill}
-                      onChange={(e) => setSkillForm((f) => ({ ...f, name: e.target.value }))}
-                      placeholder="skill-name (lowercase, hyphens)"
-                      value={skillForm.name}
-                    />
-                    <select
-                      className="rounded-xl border border-outline/15 bg-surface-container px-3 py-2 text-sm outline-none"
-                      onChange={(e) => setSkillForm((f) => ({ ...f, type: e.target.value as AgentSkillType }))}
-                      value={skillForm.type}
-                    >
-                      <option value="PASSIVE">Passive — always in context</option>
-                      <option value="ON_DEMAND">On-demand — activated by agent</option>
-                      <option value="TOOL_BASED">Tool-based — activated + tool guidance</option>
-                    </select>
-                    <input
-                      className="rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none"
-                      onChange={(e) => setSkillForm((f) => ({ ...f, description: e.target.value }))}
-                      placeholder="Short description (optional)"
-                      value={skillForm.description}
-                    />
-                    <input
-                      className="rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none"
-                      onChange={(e) => setSkillForm((f) => ({ ...f, toolNames: e.target.value }))}
-                      placeholder="Tool names (comma-separated, tool-based only)"
-                      value={skillForm.toolNames}
-                    />
+        {/* ── Center: editor area ────────────────────────────────────────────── */}
+        <section className="flex flex-1 flex-col overflow-hidden" style={{ background: 'var(--ib-950)' }}>
+
+          {/* Editor top bar */}
+          <div
+            className="flex h-9 shrink-0 items-center gap-0 overflow-x-auto px-0"
+            style={{ background: 'var(--ti-900)', borderBottom: '1px solid var(--outline-variant)' }}
+          >
+            {centerView === 'settings' && (
+              <div
+                className="flex h-full items-center gap-2 border-b-2 px-4"
+                style={{ borderColor: 'var(--primary)', background: 'var(--ib-950)' }}
+              >
+                <span className="text-[10px]" style={{ color: 'var(--primary)' }}>⚙</span>
+                <span className="font-mono text-[11px] text-on-surface">settings</span>
+              </div>
+            )}
+            {centerView === 'doc' && (
+              <div
+                className="flex h-full items-center gap-2 border-b-2 px-4"
+                style={{ borderColor: 'var(--primary)', background: 'var(--ib-950)' }}
+              >
+                <span className="font-mono text-[11px]" style={{ color: 'var(--primary)' }}>{DOC_ICONS[activeTab]}</span>
+                <span className="font-mono text-[11px] text-on-surface">{activeTab}</span>
+                {hasDocChanges && <span className="h-1.5 w-1.5 rounded-full bg-primary/60" />}
+              </div>
+            )}
+            {centerView === 'skill' && (
+              <div
+                className="flex h-full items-center gap-2 border-b-2 px-4"
+                style={{ borderColor: 'var(--primary)', background: 'var(--ib-950)' }}
+              >
+                <span className="font-mono text-[11px]" style={{ color: 'var(--primary)' }}>◈</span>
+                <span className="font-mono text-[11px] text-on-surface">{showNewSkill ? 'new-skill' : (selectedSkill?.name ?? 'skill')}</span>
+              </div>
+            )}
+            {centerView === 'agency' && (
+              <div
+                className="flex h-full items-center gap-2 border-b-2 px-4"
+                style={{ borderColor: 'var(--primary)', background: 'var(--ib-950)' }}
+              >
+                <span className="font-mono text-[11px]" style={{ color: 'var(--primary)' }}>⬡</span>
+                <span className="font-mono text-[11px] text-on-surface">agency.md</span>
+                {hasAgencyChanges && <span className="h-1.5 w-1.5 rounded-full bg-primary/60" />}
+              </div>
+            )}
+          </div>
+
+          {/* Editor content */}
+          <div className="flex flex-1 flex-col overflow-hidden">
+
+            {/* Settings view */}
+            {centerView === 'settings' && (
+              <div className="flex-1 overflow-y-auto px-8 py-6">
+                <div className="mx-auto max-w-xl space-y-5">
+                  <div>
+                    <h2 className="font-headline text-base font-semibold text-on-surface">Agent Configuration</h2>
+                    <p className="mt-0.5 text-[11px] text-on-surface-variant/40">Basic settings for {agent?.name ?? 'this agent'}.</p>
+                  </div>
+                  <div
+                    className="rounded-xl p-5 space-y-4"
+                    style={{ background: 'var(--surface-container-lowest)', border: '1px solid var(--outline-variant)' }}
+                  >
+                    <div className="grid grid-cols-2 gap-4">
+                      <Field label="Name">
+                        <FInput value={agentForm.name ?? ''} onChange={(v) => setAgentForm((c) => ({ ...c, name: v }))} placeholder="Agent name" />
+                      </Field>
+                      <Field label="Persona">
+                        <FInput value={agentForm.persona ?? ''} onChange={(v) => setAgentForm((c) => ({ ...c, persona: v }))} placeholder="Persona" />
+                      </Field>
+                      <Field label="Voice Tone">
+                        <FInput value={agentForm.voiceTone ?? ''} onChange={(v) => setAgentForm((c) => ({ ...c, voiceTone: v }))} placeholder="e.g. calm, precise" />
+                      </Field>
+                      <Field label="Trigger Mode">
+                        <FSelect value={agentForm.triggerMode ?? 'AUTO'} onChange={(v) => setAgentForm((c) => ({ ...c, triggerMode: v as UpdateAgentInput['triggerMode'] }))}>
+                          <option value="AUTO">Auto</option>
+                          <option value="WAKEUP">Wakeup</option>
+                          <option value="MENTIONS_ONLY">Mentions only</option>
+                          <option value="ALL_MESSAGES">All messages</option>
+                          <option value="DISABLED">Disabled</option>
+                        </FSelect>
+                      </Field>
+                    </div>
+                    <Field label="Status">
+                      <FSelect value={agentForm.status ?? 'ACTIVE'} onChange={(v) => setAgentForm((c) => ({ ...c, status: v as UpdateAgentInput['status'] }))}>
+                        <option value="ACTIVE">Active</option>
+                        <option value="PAUSED">Paused</option>
+                        <option value="ARCHIVED">Archived</option>
+                      </FSelect>
+                    </Field>
+                    <Field label="System Prompt">
+                      <FTextarea value={agentForm.systemPrompt ?? ''} onChange={(v) => setAgentForm((c) => ({ ...c, systemPrompt: v }))} placeholder="System prompt override…" rows={4} />
+                    </Field>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Doc editor view */}
+            {centerView === 'doc' && (
+              <div className="flex flex-1 overflow-hidden">
+                {/* Gutter */}
+                <div
+                  className="hidden w-[42px] shrink-0 select-none overflow-hidden py-5 text-right md:block"
+                  style={{ borderRight: '1px solid var(--outline-variant)' }}
+                >
+                  {draft.split('\n').map((_, i) => (
+                    <div key={i} className="pr-3 font-mono text-[10px] leading-7" style={{ color: 'var(--on-surface-variant)', opacity: 0.2 }}>
+                      {i + 1}
+                    </div>
+                  ))}
+                </div>
+                {/* Textarea */}
+                <textarea
+                  className="flex-1 resize-none bg-transparent py-5 pl-5 pr-8 font-mono text-[13px] leading-7 text-on-surface outline-none placeholder:opacity-25"
+                  onChange={(e) => setDraft(e.target.value)}
+                  placeholder={isProtected ? 'This file is managed by AgentCreatorAgent.' : 'Write in markdown…'}
+                  style={{ caretColor: 'var(--primary)' }}
+                  value={draft}
+                />
+              </div>
+            )}
+
+            {/* Skill editor view */}
+            {centerView === 'skill' && (
+              <div className="flex flex-1 flex-col overflow-hidden">
+                <div
+                  className="shrink-0 px-6 py-4"
+                  style={{ borderBottom: '1px solid var(--outline-variant)', background: 'var(--surface-container-lowest)' }}
+                >
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Skill name">
+                      <FInput disabled={!showNewSkill} onChange={(v) => setSkillForm((f) => ({ ...f, name: v }))} placeholder="skill-name" value={skillForm.name} />
+                    </Field>
+                    <Field label="Type">
+                      <FSelect value={skillForm.type} onChange={(v) => setSkillForm((f) => ({ ...f, type: v as AgentSkillType }))}>
+                        <option value="PASSIVE">Passive — always active</option>
+                        <option value="ON_DEMAND">On-demand</option>
+                        <option value="TOOL_BASED">Tool-based</option>
+                      </FSelect>
+                    </Field>
+                    <Field label="Description">
+                      <FInput value={skillForm.description} onChange={(v) => setSkillForm((f) => ({ ...f, description: v }))} placeholder="Short description" />
+                    </Field>
+                    <Field label="Tool names (comma-separated)">
+                      <FInput value={skillForm.toolNames} onChange={(v) => setSkillForm((f) => ({ ...f, toolNames: v }))} placeholder="tool_a, tool_b" />
+                    </Field>
                   </div>
                 </div>
                 <textarea
-                  className="min-h-[55vh] flex-1 resize-none bg-transparent px-6 py-5 font-mono text-sm leading-7 text-on-surface outline-none"
+                  className="flex-1 resize-none bg-transparent px-6 py-5 font-mono text-[13px] leading-7 text-on-surface outline-none placeholder:opacity-25"
                   onChange={(e) => setSkillDraft(e.target.value)}
-                  placeholder="Write the skill instructions in markdown..."
+                  placeholder="Write the skill instructions in markdown…"
+                  style={{ caretColor: 'var(--primary)' }}
                   value={skillDraft}
                 />
-                <div className="flex items-center gap-3 border-t border-outline/10 px-6 py-4">
-                  <button className="rounded-full bg-primary px-5 py-2 text-sm font-semibold text-on-primary disabled:opacity-50" disabled={savingSkill || !skillDraft.trim() || !skillForm.name.trim()} onClick={saveSkill} type="button">{savingSkill ? 'Saving…' : showNewSkill ? 'Create skill' : 'Save skill'}</button>
-                  {selectedSkill ? (
-                    <button className="rounded-full border border-rose-200 px-5 py-2 text-sm font-semibold text-rose-600 hover:bg-rose-50 disabled:opacity-50" disabled={deletingSkill} onClick={() => void deleteSkill(selectedSkill.name)} type="button">{deletingSkill ? 'Deleting…' : 'Delete skill'}</button>
-                  ) : null}
-                  <button className="rounded-full border border-outline/20 px-5 py-2 text-sm font-semibold text-on-surface-variant hover:bg-surface-container" onClick={() => { setSelectedSkill(null); setShowNewSkill(false); }} type="button">Cancel</button>
+                <div
+                  className="flex shrink-0 items-center gap-2 px-6 py-3"
+                  style={{ borderTop: '1px solid var(--outline-variant)', background: 'var(--surface-container-lowest)' }}
+                >
+                  {selectedSkill && (
+                    <button
+                      className="rounded-md px-3 py-1.5 text-[11px] font-medium transition disabled:opacity-30"
+                      disabled={deletingSkill}
+                      onClick={() => void deleteSkill(selectedSkill.name)}
+                      style={{ border: '1px solid rgba(255, 0, 51, 0.25)', color: 'rgba(255, 102, 133, 0.7)', background: 'transparent' }}
+                      type="button"
+                    >
+                      {deletingSkill ? 'Deleting…' : 'Delete'}
+                    </button>
+                  )}
+                  <button
+                    className="rounded-md px-3 py-1.5 text-[11px] font-medium transition"
+                    onClick={() => { setSelectedSkill(null); setShowNewSkill(false); setCenterView('doc'); }}
+                    style={{ border: '1px solid var(--outline)', color: 'var(--on-surface-variant)', background: 'transparent' }}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
                 </div>
-              </>
-            ) : (
-              <>
-                <div className="border-b border-outline/10 px-6 py-5">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">Editor</p>
-                  <h2 className="mt-2 text-xl font-bold text-on-surface">{activeDoc?.fileName ?? activeTab}</h2>
-                  <p className="mt-2 text-sm text-on-surface-variant">{savedAt ? `Last saved ${new Date(savedAt).toLocaleString()}` : 'Not saved yet'}</p>
-                </div>
-                <textarea className="min-h-[65vh] flex-1 resize-none bg-transparent px-6 py-5 font-mono text-sm leading-7 text-on-surface outline-none" onChange={(event) => setDraft(event.target.value)} value={draft} />
-              </>
+              </div>
             )}
-          </section>
 
-          <aside className="flex min-h-[74vh] flex-col gap-6 rounded-[1.5rem] border border-outline/10 bg-surface-container-lowest p-5 shadow-sm">
-            <section className="rounded-2xl bg-surface-container p-5 ring-1 ring-outline/10">
-              <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">Preview</p>
-              <div className="mt-4 max-h-[20vh] overflow-auto rounded-xl bg-surface-container-lowest p-4">
-                <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7 text-on-surface/85">{draft}</pre>
-              </div>
-            </section>
-
-            <section className="flex flex-1 flex-col rounded-2xl bg-surface-container ring-1 ring-outline/10">
-              <div className="flex items-center justify-between gap-3 border-b border-outline/10 px-5 py-4">
-                <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">AgentCreatorAgent</p>
-                  <p className="mt-1 text-xs leading-5 text-on-surface-variant">Chat to edit any of this agent&apos;s files. It knows all the rules.</p>
-                </div>
-                <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-on-primary">AC</div>
-              </div>
-
-              {/* Message history */}
-              <div className="flex max-h-64 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
-                {creatorHistory.length === 0 ? (
-                  <p className="text-xs leading-6 text-on-surface-variant/50">
-                    Tell me what to change. Examples:<br />
-                    &ldquo;Make her tone warmer and more casual&rdquo;<br />
-                    &ldquo;She should be an expert in React and performance&rdquo;<br />
-                    &ldquo;Add a rule that she always shows code examples&rdquo;
-                  </p>
-                ) : (
-                  creatorHistory.map((msg, index) => (
-                    <div className={`flex flex-col gap-1 ${msg.role === 'user' ? 'items-end' : 'items-start'}`} key={index}>
-                      <div className={`max-w-[90%] rounded-2xl px-3 py-2 text-xs leading-5 ${msg.role === 'user' ? 'bg-primary text-on-primary' : 'bg-surface-container-lowest text-on-surface ring-1 ring-outline/10'}`}>
-                        {msg.content}
-                      </div>
+            {/* Agency editor view */}
+            {centerView === 'agency' && (
+              <div className="flex flex-1 overflow-hidden">
+                <div
+                  className="hidden w-[42px] shrink-0 select-none overflow-hidden py-5 text-right md:block"
+                  style={{ borderRight: '1px solid var(--outline-variant)' }}
+                >
+                  {agencyDraft.split('\n').map((_, i) => (
+                    <div key={i} className="pr-3 font-mono text-[10px] leading-7" style={{ color: 'var(--on-surface-variant)', opacity: 0.2 }}>
+                      {i + 1}
                     </div>
-                  ))
-                )}
-                {creatorLoading ? (
-                  <div className="flex items-start">
-                    <div className="rounded-2xl bg-surface-container-lowest px-3 py-2 text-xs text-on-surface-variant ring-1 ring-outline/10">Thinking…</div>
-                  </div>
-                ) : null}
+                  ))}
+                </div>
+                <div className="flex flex-1 flex-col overflow-hidden">
+                  <textarea
+                    className="flex-1 resize-none bg-transparent py-5 pl-5 pr-8 font-mono text-[13px] leading-7 text-on-surface outline-none placeholder:opacity-25"
+                    onChange={(e) => setAgencyDraft(e.target.value)}
+                    onFocus={(e) => { e.target.style.caretColor = 'var(--primary)'; }}
+                    placeholder="Shared workspace constitution for all agents…"
+                    style={{ caretColor: 'var(--primary)' }}
+                    value={agencyDraft}
+                  />
+                  {agencySavedAt && (
+                    <div
+                      className="shrink-0 px-5 py-2 text-[10px] text-on-surface-variant/25"
+                      style={{ borderTop: '1px solid var(--outline-variant)' }}
+                    >
+                      Last saved {new Date(agencySavedAt).toLocaleString()}
+                    </div>
+                  )}
+                </div>
               </div>
+            )}
+          </div>
+        </section>
 
-              {/* Input */}
-              <div className="border-t border-outline/10 px-5 py-4">
-                <textarea
-                  className="min-h-16 w-full resize-none rounded-xl border border-outline/15 bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-on-surface-variant/40"
-                  disabled={creatorLoading}
-                  onChange={(event) => setCreatorInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' && !event.shiftKey) {
-                      event.preventDefault();
-                      void sendCreatorMessage();
+        {/* ── Right panel: AgentCreatorAgent chat ───────────────────────────── */}
+        <aside
+          className="flex w-[320px] shrink-0 flex-col overflow-hidden"
+          style={{ background: 'var(--ti-950)', borderLeft: '1px solid var(--outline-variant)' }}
+        >
+          {/* Creator header */}
+          <div
+            className="shrink-0 px-4 py-3.5"
+            style={{ borderBottom: '1px solid var(--outline-variant)' }}
+          >
+            <div className="flex items-center gap-3">
+              <div
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[10px] font-bold text-white"
+                style={{ background: 'var(--primary)', boxShadow: '0 2px 8px rgba(114,137,192,0.35)' }}
+              >
+                AC
+              </div>
+              <div>
+                <p className="font-headline text-[12px] font-semibold text-on-surface">AgentCreatorAgent</p>
+                <p className="text-[10px] text-on-surface-variant/35">Natural language file editing</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Creator history */}
+          <div
+            className="flex flex-1 flex-col gap-2 overflow-y-auto px-3 py-3"
+            ref={creatorScrollRef}
+          >
+            {creatorHistory.length === 0 ? (
+              <div className="space-y-3 py-2">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-on-surface-variant/25">Try saying…</p>
+                {[
+                  'Make the tone warmer and more approachable',
+                  'Add TypeScript expertise to identity.md',
+                  'Update pickup.md to respond to code questions',
+                  'She should always show code examples',
+                ].map((example, i) => (
+                  <button
+                    className="w-full rounded-lg px-3 py-2 text-left text-[11px] text-on-surface-variant/50 transition-colors hover:text-on-surface-variant"
+                    key={i}
+                    onClick={() => setCreatorInput(example)}
+                    style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--outline-variant)' }}
+                    type="button"
+                  >
+                    {example}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              creatorHistory.map((msg, index) => (
+                <div
+                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                  key={index}
+                >
+                  {msg.role === 'assistant' && (
+                    <div
+                      className="mr-2 mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[8px] font-bold text-white"
+                      style={{ background: 'var(--primary)' }}
+                    >
+                      AC
+                    </div>
+                  )}
+                  <div
+                    className="max-w-[84%] rounded-xl px-3 py-2.5 text-[12px] leading-[1.55]"
+                    style={
+                      msg.role === 'user'
+                        ? { background: 'rgba(114, 137, 192, 0.2)', color: 'var(--on-surface)', border: '1px solid rgba(114, 137, 192, 0.25)' }
+                        : { background: 'var(--surface-container)', color: 'var(--on-surface)', border: '1px solid var(--outline-variant)' }
                     }
-                  }}
-                  placeholder="Describe a change..."
-                  value={creatorInput}
-                />
+                  >
+                    {msg.content}
+                  </div>
+                </div>
+              ))
+            )}
+
+            {creatorLoading && (
+              <div className="flex items-start gap-2">
+                <div
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[8px] font-bold text-white"
+                  style={{ background: 'var(--primary)' }}
+                >
+                  AC
+                </div>
+                <div
+                  className="flex items-center gap-1.5 rounded-xl px-3 py-2.5"
+                  style={{ background: 'var(--surface-container)', border: '1px solid var(--outline-variant)' }}
+                >
+                  <span className="h-1.5 w-1.5 animate-[typing_1.4s_ease-in-out_0s_infinite] rounded-full" style={{ background: 'var(--primary)' }} />
+                  <span className="h-1.5 w-1.5 animate-[typing_1.4s_ease-in-out_0.2s_infinite] rounded-full" style={{ background: 'var(--primary)' }} />
+                  <span className="h-1.5 w-1.5 animate-[typing_1.4s_ease-in-out_0.4s_infinite] rounded-full" style={{ background: 'var(--primary)' }} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Creator input */}
+          <div
+            className="shrink-0 p-3"
+            style={{ borderTop: '1px solid var(--outline-variant)' }}
+          >
+            <div
+              className="flex flex-col rounded-xl overflow-hidden"
+              style={{ background: 'var(--surface-container)', border: '1px solid var(--outline-variant)' }}
+            >
+              <textarea
+                className="min-h-[68px] resize-none bg-transparent px-3 pt-3 pb-1 text-[12px] text-on-surface outline-none placeholder:opacity-25"
+                disabled={creatorLoading}
+                onChange={(e) => setCreatorInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendCreatorMessage(); }
+                }}
+                placeholder="Describe a change to any agent file…"
+                style={{ caretColor: 'var(--primary)' }}
+                value={creatorInput}
+              />
+              <div className="flex items-center justify-between px-3 py-2">
+                <span className="text-[9px] text-on-surface-variant/25">Enter to send · Shift+Enter for newline</span>
                 <button
-                  className="mt-2 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-on-primary disabled:opacity-50"
+                  className="font-headline flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold text-on-primary transition disabled:cursor-not-allowed disabled:opacity-30 active:scale-[0.97]"
                   disabled={!creatorInput.trim() || creatorLoading}
                   onClick={() => void sendCreatorMessage()}
+                  style={{
+                    background: creatorInput.trim() && !creatorLoading ? 'var(--primary)' : 'var(--primary-dim)',
+                    boxShadow: creatorInput.trim() && !creatorLoading ? '0 2px 8px rgba(114,137,192,0.3)' : 'none',
+                  }}
                   type="button"
                 >
                   {creatorLoading ? 'Updating…' : 'Send'}
+                  {!creatorLoading && (
+                    <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                      <path d="M5 12h14M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
                 </button>
               </div>
-            </section>
-
-            {/* ── Workspace Agency ────────────────────────────────────────── */}
-            <section className="rounded-2xl bg-surface-container p-5 ring-1 ring-outline/10">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">Workspace agency</p>
-                  <p className="mt-2 text-sm leading-6 text-on-surface-variant">Shared mission and standards injected into every agent&apos;s context. One file, all agents.</p>
-                  <p className="mt-1 text-xs text-on-surface-variant/50">{agencySavedAt ? `Saved ${new Date(agencySavedAt).toLocaleString()}` : 'Not saved yet'}</p>
-                </div>
-              </div>
-              <textarea
-                className="mt-4 min-h-48 w-full resize-none rounded-xl border border-outline/15 bg-surface-container-lowest px-3 py-3 font-mono text-sm leading-7 text-on-surface outline-none"
-                onChange={(event) => setAgencyDraft(event.target.value)}
-                value={agencyDraft}
-              />
-              <button
-                className="mt-4 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-on-primary disabled:opacity-50"
-                disabled={!hasAgencyChanges || savingAgency}
-                onClick={saveAgency}
-                type="button"
-              >
-                {savingAgency ? 'Saving…' : 'Save workspace agency'}
-              </button>
-            </section>
-          </aside>
-        </section>
+            </div>
+          </div>
+        </aside>
       </div>
     </main>
   );
