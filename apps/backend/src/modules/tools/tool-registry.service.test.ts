@@ -79,6 +79,21 @@ vi.mock('@/sockets/socket-server.js', () => ({
   })),
 }));
 
+vi.mock('@/modules/agents/skill.service.js', () => ({
+  skillService: {
+    list: vi.fn(async () => []),
+    get: vi.fn(async () => null),
+    upsert: vi.fn(),
+    delete: vi.fn(),
+  },
+}));
+
+vi.mock('@/modules/agents/skill-installer.service.js', () => ({
+  skillInstallerService: {
+    installFromUrl: vi.fn(),
+  },
+}));
+
 import { toolRegistryService } from './tool-registry.service.js';
 
 describe('toolRegistryService', () => {
@@ -110,8 +125,8 @@ describe('toolRegistryService', () => {
       args: JSON.stringify({ pattern: '**/*.ts' }),
     });
 
-    expect(result.output).toContain('src/app.ts');
-    expect(result.output).toContain('src/util.ts');
+    expect(result.output).toContain(path.join('src', 'app.ts'));
+    expect(result.output).toContain(path.join('src', 'util.ts'));
   });
 
   it('searches file contents with workspace_grep', async () => {
@@ -122,8 +137,8 @@ describe('toolRegistryService', () => {
       args: JSON.stringify({ pattern: 'TODO|greet', include: '*.ts' }),
     });
 
-    expect(result.output).toContain('src/app.ts:1: export function greet()');
-    expect(result.output).toContain('src/util.ts:2: // TODO: add formatter');
+    expect(result.output).toContain(`${path.join('src', 'app.ts')}:1: export function greet()`);
+    expect(result.output).toContain(`${path.join('src', 'util.ts')}:2: // TODO: add formatter`);
   });
 
   it('persists todo state across todowrite and todoread', async () => {
