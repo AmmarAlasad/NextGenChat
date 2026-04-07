@@ -136,6 +136,20 @@ enum AgentDocType {
   PICKUP_MD
 }
 
+enum AgentSkillType {
+  PASSIVE
+  ON_DEMAND
+  TOOL_BASED
+}
+
+enum AgentSkillSourceType {
+  MANUAL
+  GENERATED
+  GITHUB
+  CLAWHUB
+  URL
+}
+
 model SystemSetting {
   id        String   @id @default(uuid())
   key       String   @unique
@@ -373,6 +387,7 @@ model Agent {
   summaries          ConversationSummary[]
   files              WorkspaceFile[]
   ruleViolations     RuleViolation[]
+  skills             AgentSkill[]
 
   @@unique([workspaceId, slug])
 }
@@ -648,4 +663,27 @@ model PushToken {
   user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, deviceId])
+}
+
+model AgentSkill {
+  id           String         @id @default(uuid())
+  agentId      String
+  name         String
+  description  String?
+  type         AgentSkillType @default(ON_DEMAND)
+  /// JSON-encoded string[] of tool names granted when the skill is active (TOOL_BASED only).
+  toolNames    String?
+  sourceType   AgentSkillSourceType @default(MANUAL)
+  sourceLocator String?
+  sourceRef    String?
+  rootPath     String @default("")
+  /// JSON-encoded inventory of files within the installed skill directory.
+  fileInventory String?
+  isActive     Boolean        @default(true)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  agent        Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, name])
+  @@index([agentId])
 }

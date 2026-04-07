@@ -81,6 +81,46 @@ export function buildDefaultAgentTools() {
       },
       requiresApproval: false,
     },
+    {
+      toolName: 'websearch',
+      config: {
+        description: 'Search the web using Exa AI for up-to-date information.',
+        access: 'external-readonly',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'webfetch',
+      config: {
+        description: 'Fetch the content of a public URL as text or markdown.',
+        access: 'external-readonly',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'skill_activate',
+      config: {
+        description: 'Activate an on-demand or tool-based skill for the current turn.',
+        access: 'workspace-state',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'skill_list',
+      config: {
+        description: 'List all available skills for this agent.',
+        access: 'workspace-state',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'skill_install',
+      config: {
+        description: 'Download and install a skill from GitHub, clawhub.ai, or any direct markdown URL.',
+        access: 'external-write',
+      },
+      requiresApproval: false,
+    },
   ];
 }
 

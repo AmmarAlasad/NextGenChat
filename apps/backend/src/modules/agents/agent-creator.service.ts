@@ -25,10 +25,11 @@
  * - Falls back to default workspace docs silently if no OpenAI key is configured
  */
 
-import type { AgentCreatorChatMessage, AgentCreatorChatResponse, AgentDocType } from '@nextgenchat/types';
+import type { AgentCreatorChatMessage, AgentCreatorChatResponse, AgentDocType, AgentCreatorSkillInstall } from '@nextgenchat/types';
 
 import { env } from '@/config/env.js';
 import { OpenAIProvider } from '@/modules/providers/openai.provider.js';
+import { skillInstallerService } from '@/modules/agents/skill-installer.service.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
 
 const CREATOR_MODEL = 'gpt-5.4';
@@ -60,13 +61,15 @@ wakeup.md is a system prompt for a cheap routing LLM that decides YES or NO befo
 - List clear NO conditions (when to stay silent)
 - End with "When in doubt, answer NO"
 
-### soul.md — MUST BE SUBSTANTIVE
+### soul.md — MUST BE SUBSTANTIVE AND CONCISE
 
 soul.md must be a real markdown document with at least 3 sections covering values, behavioural principles, and ethical constraints. Never replace it with a short stub or JSON.
+Maximum length: 2000 characters. Be concise — no padding, no repetition, no preamble. Every sentence must earn its place.
 
-### identity.md — MUST CONTAIN THE AGENT NAME
+### identity.md — MUST CONTAIN THE AGENT NAME AND BE CONCISE
 
 identity.md must clearly state the agent's name in the Role and Name section.
+Maximum length: 1500 characters. Persona summary only — name, role, tone, and communication style. Do not expand into lengthy backstory or repeated examples.
 
 ════════════════════════════════════════
 THE SEVEN FILES
@@ -102,6 +105,10 @@ The "Tool Usage Rules" section MUST teach the following behaviors clearly:
 - Use workspace_bash only when a shell command is genuinely needed
 - Use send_reply only for intermediate progress updates in the current channel; the final reply is still returned normally at the end of the turn
 - Use todowrite and todoread for multi-step work so progress is tracked instead of held only in short-term reasoning
+- Use websearch to find up-to-date information beyond your knowledge cutoff — always include the current year in queries about recent events or releases
+- Use webfetch to read a specific URL when you already have the link; prefer websearch when you need to discover pages first
+- Use skill_list to see available skills and skill_activate to activate an on-demand or tool-based skill at the start of a relevant turn
+- Use skill_install to download and install a skill from GitHub, clawhub.ai, or any direct markdown URL; always tell the user the installed skill name and type
 - After changing files or running commands, verify the result. If verification fails, keep working and retry before giving the final answer
 
 ### user.md — Model of the User
@@ -117,6 +124,43 @@ Blank template for resumable long-running work. Keep it minimal.
 Shared operating standards and organizational context for all agents in the workspace. Keep it concise and durable.
 
 ════════════════════════════════════════
+SKILLS — THREE TYPES
+════════════════════════════════════════
+
+Skills are reusable markdown instruction sets stored in the agent's workspace under skills/{name}.md.
+
+### PASSIVE
+Always injected into the agent's static context on every turn — no activation needed.
+Use for: domain expertise the agent always needs (e.g. "brand-voice", "coding-standards").
+Keep short and focused. They consume context budget on every turn.
+
+### ON_DEMAND
+Injected only when the agent calls skill_activate("name").
+Use for: specialised workflows the agent uses occasionally (e.g. "deep-research", "code-review").
+The agent should call skill_activate at the start of a turn when it recognises the task matches.
+
+### TOOL_BASED
+Like ON_DEMAND but the skill file also describes how to combine specific tools for a workflow.
+Use for: complex multi-tool pipelines (e.g. "web-research-and-summarise" using websearch + webfetch).
+The toolNames field lists which tools the skill focuses on.
+
+### Skill file format
+Skills are plain markdown files. Optionally include YAML frontmatter:
+
+    ---
+    name: my-skill
+    description: What this skill does
+    type: ON_DEMAND
+    toolNames: websearch, webfetch
+    ---
+
+    # Skill: my-skill
+
+    Instructions for the agent...
+
+If no frontmatter, the name comes from the file slug and the type defaults to ON_DEMAND.
+
+════════════════════════════════════════
 YOUR RESPONSE FORMAT
 ════════════════════════════════════════
 
@@ -127,12 +171,23 @@ Always respond with valid JSON only. No markdown fences, no preamble:
   "fileUpdates": [
     {"docType": "soul.md", "content": "# soul.md — full markdown content..."},
     {"docType": "identity.md", "content": "# identity.md — full markdown content..."}
+  ],
+  "skillInstalls": [
+    {
+      "name": "my-skill",
+      "description": "What this skill does",
+      "type": "ON_DEMAND",
+      "toolNames": ["websearch", "webfetch"],
+      "content": "# Skill: my-skill\n\n..."
+    }
   ]
 }
 
 When CREATING a new agent: include all required files.
 When EDITING via chat: only include files you are actually changing. Never include unchanged files.
-Never truncate content. Always write complete markdown.`;
+When INSTALLING or CREATING skills: include them in skillInstalls. Always state in the reply what type each skill is and how to use it.
+Never truncate content. Always write complete markdown.
+skillInstalls is optional — omit it entirely when no skills are being installed.`;
 
 // ── Structural validators ────────────────────────────────────────────────────
 
@@ -154,6 +209,11 @@ function validateAgentMd(content: string): ValidationResult {
     'send_reply',
     'todowrite',
     'todoread',
+    'websearch',
+    'webfetch',
+    'skill_activate',
+    'skill_list',
+    'skill_install',
   ];
 
   if (isJsonBlob(trimmed)) {
@@ -196,6 +256,11 @@ function validateAgentMd(content: string): ValidationResult {
   return { valid: true };
 }
 
+const SOUL_MD_MIN = 150;
+const SOUL_MD_MAX = 2000;
+const IDENTITY_MD_MIN = 100;
+const IDENTITY_MD_MAX = 1500;
+
 function validateSoulMd(content: string): ValidationResult {
   const trimmed = content.trim();
 
@@ -203,10 +268,17 @@ function validateSoulMd(content: string): ValidationResult {
     return { valid: false, reason: 'soul.md must be a markdown document, not a JSON object.' };
   }
 
-  if (trimmed.length < 150) {
+  if (trimmed.length < SOUL_MD_MIN) {
     return {
       valid: false,
       reason: 'soul.md is too short. It must contain detailed core values, behavioural principles, and ethical constraints.',
+    };
+  }
+
+  if (trimmed.length > SOUL_MD_MAX) {
+    return {
+      valid: false,
+      reason: `soul.md is too long (${trimmed.length} chars). Keep it under ${SOUL_MD_MAX} characters — concise values only, no padding.`,
     };
   }
 
@@ -220,8 +292,15 @@ function validateIdentityMd(content: string, agentName: string): ValidationResul
     return { valid: false, reason: 'identity.md must be a markdown document, not a JSON object.' };
   }
 
-  if (trimmed.length < 100) {
+  if (trimmed.length < IDENTITY_MD_MIN) {
     return { valid: false, reason: 'identity.md is too short. It must contain the agent\'s persona, tone, and communication style.' };
+  }
+
+  if (trimmed.length > IDENTITY_MD_MAX) {
+    return {
+      valid: false,
+      reason: `identity.md is too long (${trimmed.length} chars). Keep it under ${IDENTITY_MD_MAX} characters — persona summary only, no padding.`,
+    };
   }
 
   // The agent name should appear somewhere in the file
@@ -343,6 +422,14 @@ export class AgentCreatorService {
           update.content,
         );
       }
+
+      for (const skillInstall of parsed.skillInstalls ?? []) {
+        try {
+          await skillInstallerService.installGenerated(agentId, skillInstall);
+        } catch (skillError) {
+          console.warn(`[agent-creator] Failed to install skill "${skillInstall.name}":`, skillError instanceof Error ? skillError.message : String(skillError));
+        }
+      }
     } catch (error) {
       // Non-fatal — default docs remain on disk.
       console.warn('[agent-creator] Generation failed, using defaults:', error instanceof Error ? error.message : String(error));
@@ -438,15 +525,34 @@ export class AgentCreatorService {
       }
     }
 
+    // ── Handle skillInstalls ───────────────────────────────────────────────
+    const installedSkills: AgentCreatorSkillInstall[] = [];
+    const skillRejections: string[] = [];
+
+    for (const skillInstall of parsed.skillInstalls ?? []) {
+      try {
+        await skillInstallerService.installGenerated(agentId, skillInstall);
+        installedSkills.push(skillInstall);
+      } catch (skillError) {
+        const reason = skillError instanceof Error ? skillError.message : 'unknown error';
+        console.warn(`[agent-creator] Failed to install skill "${skillInstall.name}": ${reason}`);
+        skillRejections.push(`${skillInstall.name}: ${reason}`);
+      }
+    }
+
     // Append rejection notes to the reply so the user knows something was blocked.
     let finalReply = parsed.reply;
     if (rejections.length > 0) {
       finalReply += `\n\n⚠️ The following files were NOT updated because the generated content failed safety validation:\n${rejections.map((r) => `- ${r}`).join('\n')}`;
     }
+    if (skillRejections.length > 0) {
+      finalReply += `\n\n⚠️ The following skills could not be installed:\n${skillRejections.map((r) => `- ${r}`).join('\n')}`;
+    }
 
     return {
       reply: finalReply,
       fileUpdates: writtenUpdates,
+      skillInstalls: installedSkills,
     };
   }
 

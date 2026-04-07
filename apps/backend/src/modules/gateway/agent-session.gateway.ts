@@ -90,7 +90,7 @@ function requestLikelyNeedsWriteTool(content: string) {
 
 function requestLikelyNeedsBashTool(content: string) {
   const normalized = content.toLowerCase();
-  return /(bash|shell|terminal|pwd|working directory|current path|run command|execute command|list files|ls\b)/.test(normalized);
+  return /(bash|shell|terminal|pwd|working directory|current path|run command|execute command|list files|\bls\b)/.test(normalized);
 }
 
 function getForcedToolChoice(input: {

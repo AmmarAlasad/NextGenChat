@@ -128,8 +128,18 @@ export const AgentCreatorFileUpdateSchema = z.object({
 });
 export type AgentCreatorFileUpdate = z.infer<typeof AgentCreatorFileUpdateSchema>;
 
+export const AgentCreatorSkillInstallSchema = z.object({
+  name: z.string().min(1).max(50).regex(/^[a-z0-9-]+$/),
+  description: z.string().max(1024).optional(),
+  type: z.enum(['PASSIVE', 'ON_DEMAND', 'TOOL_BASED']),
+  toolNames: z.array(z.string()).optional(),
+  content: z.string().min(1),
+});
+export type AgentCreatorSkillInstall = z.infer<typeof AgentCreatorSkillInstallSchema>;
+
 export const AgentCreatorChatResponseSchema = z.object({
   reply: z.string(),
   fileUpdates: z.array(AgentCreatorFileUpdateSchema),
+  skillInstalls: z.array(AgentCreatorSkillInstallSchema).optional(),
 });
 export type AgentCreatorChatResponse = z.infer<typeof AgentCreatorChatResponseSchema>;

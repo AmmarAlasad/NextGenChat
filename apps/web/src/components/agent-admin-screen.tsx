@@ -4,13 +4,14 @@
  * Dedicated agent workspace where the operator edits agent settings and durable
  * markdown docs. Includes a lightweight writing-assistant bubble for doc help.
  *
- * Phase 4 implementation status:
+ * Phase 5 implementation status:
  * - Seven-file agent architecture: soul.md, identity.md, Agent.md, user.md, memory.md, Heartbeat.md, pickup.md
  * - soul.md: immutable values and ethics, injected first in context
  * - user.md: agent's evolving model of the user, written by the agent via workspace_write_file
  * - memory.md: long-term patterns and learnings, written by the agent
  * - Workspace agency.md: shared across all agents, editable in the right sidebar
  * - AgentCreatorAgent chat panel: replaces the writing assistant; edits any agent file via natural-language chat
+ * - Skills panel: list/create/edit/delete passive, on-demand, and tool-based skills
  */
 
 'use client';
@@ -19,7 +20,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
-import type { AgentCreatorChatMessage, AgentCreatorChatResponse, AgentDetail, AgentDocRecord, UpdateAgentDocInput, UpdateAgentInput, WorkspaceDocRecord } from '@nextgenchat/types';
+import type { AgentCreatorChatMessage, AgentCreatorChatResponse, AgentDetail, AgentDocRecord, AgentSkill, AgentSkillType, CreateSkillInput, UpdateAgentDocInput, UpdateAgentInput, WorkspaceDocRecord } from '@nextgenchat/types';
 
 import { useAuth } from '@/components/auth-provider';
 import { apiJson } from '@/lib/api';
@@ -54,6 +55,15 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
 
+  // Skills state
+  const [skills, setSkills] = useState<AgentSkill[]>([]);
+  const [selectedSkill, setSelectedSkill] = useState<AgentSkill | null>(null);
+  const [skillDraft, setSkillDraft] = useState('');
+  const [skillForm, setSkillForm] = useState<{ name: string; description: string; type: AgentSkillType; toolNames: string }>({ name: '', description: '', type: 'ON_DEMAND', toolNames: '' });
+  const [showNewSkill, setShowNewSkill] = useState(false);
+  const [savingSkill, setSavingSkill] = useState(false);
+  const [deletingSkill, setDeletingSkill] = useState(false);
+
   // Workspace agency state
   const [workspaceAgency, setWorkspaceAgency] = useState<WorkspaceDocRecord | null>(null);
   const [agencyDraft, setAgencyDraft] = useState('');
@@ -82,10 +92,11 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
 
       try {
         const headers = { Authorization: `Bearer ${accessToken}` };
-        const [nextAgent, nextDocs, nextAgency] = await Promise.all([
+        const [nextAgent, nextDocs, nextAgency, nextSkills] = await Promise.all([
           apiJson<AgentDetail>(`/agents/${agentId}`, { headers }),
           apiJson<AgentDocRecord[]>(`/agents/${agentId}/docs`, { headers }),
           apiJson<WorkspaceDocRecord>('/workspace/agency', { headers }),
+          apiJson<AgentSkill[]>(`/agents/${agentId}/skills`, { headers }),
         ]);
 
         if (!active) return;
@@ -103,6 +114,7 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
         setWorkspaceAgency(nextAgency);
         setAgencyDraft(nextAgency.content);
         setAgencySavedAt(nextAgency.updatedAt);
+        setSkills(nextSkills);
       } catch (loadError) {
         if (active) {
           setError(loadError instanceof Error ? loadError.message : 'Failed to load agent workspace.');
@@ -245,6 +257,59 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
     }
   }
 
+  function openSkill(skill: AgentSkill) {
+    setSelectedSkill(skill);
+    setSkillDraft(skill.content);
+    setSkillForm({ name: skill.name, description: skill.description ?? '', type: skill.type, toolNames: skill.toolNames.join(', ') });
+    setShowNewSkill(false);
+  }
+
+  function openNewSkill() {
+    setSelectedSkill(null);
+    setSkillDraft('');
+    setSkillForm({ name: '', description: '', type: 'ON_DEMAND', toolNames: '' });
+    setShowNewSkill(true);
+  }
+
+  async function saveSkill() {
+    if (!accessToken) return;
+    setSavingSkill(true);
+    setError(null);
+    try {
+      const toolNames = skillForm.toolNames.split(',').map((t) => t.trim()).filter(Boolean);
+      if (showNewSkill) {
+        const payload: CreateSkillInput = { name: skillForm.name, description: skillForm.description || undefined, type: skillForm.type, toolNames: toolNames.length > 0 ? toolNames : undefined, content: skillDraft };
+        const created = await apiJson<AgentSkill>(`/agents/${agentId}/skills`, { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` }, body: JSON.stringify(payload) });
+        setSkills((prev) => [...prev, created]);
+        setSelectedSkill(created);
+        setShowNewSkill(false);
+      } else if (selectedSkill) {
+        const updated = await apiJson<AgentSkill>(`/agents/${agentId}/skills/${selectedSkill.name}`, { method: 'PUT', headers: { Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({ description: skillForm.description || undefined, type: skillForm.type, toolNames, content: skillDraft }) });
+        setSkills((prev) => prev.map((s) => s.name === updated.name ? updated : s));
+        setSelectedSkill(updated);
+      }
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Failed to save skill.');
+    } finally {
+      setSavingSkill(false);
+    }
+  }
+
+  async function deleteSkill(name: string) {
+    if (!accessToken) return;
+    setDeletingSkill(true);
+    setError(null);
+    try {
+      await apiJson(`/agents/${agentId}/skills/${name}`, { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } });
+      setSkills((prev) => prev.filter((s) => s.name !== name));
+      if (selectedSkill?.name === name) { setSelectedSkill(null); setShowNewSkill(false); }
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete skill.');
+    } finally {
+      setDeletingSkill(false);
+    }
+  }
+
   if (!ready || loading) {
     return <main className="flex min-h-screen items-center justify-center px-6 py-16 text-on-surface-variant">Loading agent workspace…</main>;
   }
@@ -295,9 +360,9 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
               <p className="px-2 pb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">Agent docs</p>
               <div className="space-y-2">
                 {DOC_ORDER.map((docType) => {
-                  const selected = docType === activeTab;
+                  const selected = docType === activeTab && !selectedSkill && !showNewSkill;
                   return (
-                    <button className={`w-full rounded-2xl px-4 py-3 text-left transition ${selected ? 'bg-primary text-on-primary shadow-sm' : 'bg-surface-container text-on-surface hover:bg-surface-container-high'}`} key={docType} onClick={() => setActiveTab(docType)} type="button">
+                    <button className={`w-full rounded-2xl px-4 py-3 text-left transition ${selected ? 'bg-primary text-on-primary shadow-sm' : 'bg-surface-container text-on-surface hover:bg-surface-container-high'}`} key={docType} onClick={() => { setActiveTab(docType); setSelectedSkill(null); setShowNewSkill(false); }} type="button">
                       <div className="text-sm font-semibold">{docs[docType]?.fileName ?? docType}</div>
                       <div className={`mt-1 text-xs ${selected ? 'text-on-primary/75' : 'text-on-surface-variant/60'}`}>{DOC_DESCRIPTIONS[docType]}</div>
                     </button>
@@ -305,15 +370,104 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
                 })}
               </div>
             </section>
+
+            <section>
+              <div className="flex items-center justify-between px-2 pb-3">
+                <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">Skills</p>
+                <button className="rounded-full bg-primary px-3 py-1 text-[11px] font-bold text-on-primary" onClick={openNewSkill} type="button">+ New</button>
+              </div>
+              {skills.length === 0 && !showNewSkill ? (
+                <p className="px-2 text-xs text-on-surface-variant/50">No skills yet. Add one to give this agent reusable instruction sets.</p>
+              ) : (
+                <div className="space-y-1">
+                  {(['PASSIVE', 'ON_DEMAND', 'TOOL_BASED'] as AgentSkillType[]).map((type) => {
+                    const group = skills.filter((s) => s.type === type);
+                    if (group.length === 0) return null;
+                    const label = type === 'PASSIVE' ? 'Passive' : type === 'ON_DEMAND' ? 'On-demand' : 'Tool-based';
+                    const badge = type === 'PASSIVE' ? 'bg-emerald-100 text-emerald-700' : type === 'ON_DEMAND' ? 'bg-sky-100 text-sky-700' : 'bg-violet-100 text-violet-700';
+                    return (
+                      <div key={type}>
+                        <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40">{label}</p>
+                        {group.map((skill) => {
+                          const isSelected = selectedSkill?.name === skill.name;
+                          return (
+                            <button className={`w-full rounded-xl px-3 py-2.5 text-left transition ${isSelected ? 'bg-primary text-on-primary' : 'bg-surface-container text-on-surface hover:bg-surface-container-high'}`} key={skill.name} onClick={() => openSkill(skill)} type="button">
+                              <div className="flex items-center gap-2">
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${isSelected ? 'bg-white/20 text-white' : badge}`}>{skill.isActive ? 'on' : 'off'}</span>
+                                <span className="text-sm font-semibold">{skill.name}</span>
+                              </div>
+                              {skill.description ? <div className={`mt-0.5 truncate text-xs ${isSelected ? 'text-on-primary/70' : 'text-on-surface-variant/60'}`}>{skill.description}</div> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
           </aside>
 
           <section className="flex min-h-[74vh] flex-col rounded-[1.5rem] border border-outline/10 bg-surface-container-lowest shadow-sm">
-            <div className="border-b border-outline/10 px-6 py-5">
-              <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">Editor</p>
-              <h2 className="mt-2 text-xl font-bold text-on-surface">{activeDoc?.fileName ?? activeTab}</h2>
-              <p className="mt-2 text-sm text-on-surface-variant">{savedAt ? `Last saved ${new Date(savedAt).toLocaleString()}` : 'Not saved yet'}</p>
-            </div>
-            <textarea className="min-h-[65vh] flex-1 resize-none bg-transparent px-6 py-5 font-mono text-sm leading-7 text-on-surface outline-none" onChange={(event) => setDraft(event.target.value)} value={draft} />
+            {(selectedSkill ?? showNewSkill) ? (
+              <>
+                <div className="border-b border-outline/10 px-6 py-5">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">Skill Editor</p>
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    <input
+                      className="rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none disabled:opacity-50"
+                      disabled={!showNewSkill}
+                      onChange={(e) => setSkillForm((f) => ({ ...f, name: e.target.value }))}
+                      placeholder="skill-name (lowercase, hyphens)"
+                      value={skillForm.name}
+                    />
+                    <select
+                      className="rounded-xl border border-outline/15 bg-surface-container px-3 py-2 text-sm outline-none"
+                      onChange={(e) => setSkillForm((f) => ({ ...f, type: e.target.value as AgentSkillType }))}
+                      value={skillForm.type}
+                    >
+                      <option value="PASSIVE">Passive — always in context</option>
+                      <option value="ON_DEMAND">On-demand — activated by agent</option>
+                      <option value="TOOL_BASED">Tool-based — activated + tool guidance</option>
+                    </select>
+                    <input
+                      className="rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none"
+                      onChange={(e) => setSkillForm((f) => ({ ...f, description: e.target.value }))}
+                      placeholder="Short description (optional)"
+                      value={skillForm.description}
+                    />
+                    <input
+                      className="rounded-xl border border-outline/15 bg-transparent px-3 py-2 text-sm outline-none"
+                      onChange={(e) => setSkillForm((f) => ({ ...f, toolNames: e.target.value }))}
+                      placeholder="Tool names (comma-separated, tool-based only)"
+                      value={skillForm.toolNames}
+                    />
+                  </div>
+                </div>
+                <textarea
+                  className="min-h-[55vh] flex-1 resize-none bg-transparent px-6 py-5 font-mono text-sm leading-7 text-on-surface outline-none"
+                  onChange={(e) => setSkillDraft(e.target.value)}
+                  placeholder="Write the skill instructions in markdown..."
+                  value={skillDraft}
+                />
+                <div className="flex items-center gap-3 border-t border-outline/10 px-6 py-4">
+                  <button className="rounded-full bg-primary px-5 py-2 text-sm font-semibold text-on-primary disabled:opacity-50" disabled={savingSkill || !skillDraft.trim() || !skillForm.name.trim()} onClick={saveSkill} type="button">{savingSkill ? 'Saving…' : showNewSkill ? 'Create skill' : 'Save skill'}</button>
+                  {selectedSkill ? (
+                    <button className="rounded-full border border-rose-200 px-5 py-2 text-sm font-semibold text-rose-600 hover:bg-rose-50 disabled:opacity-50" disabled={deletingSkill} onClick={() => void deleteSkill(selectedSkill.name)} type="button">{deletingSkill ? 'Deleting…' : 'Delete skill'}</button>
+                  ) : null}
+                  <button className="rounded-full border border-outline/20 px-5 py-2 text-sm font-semibold text-on-surface-variant hover:bg-surface-container" onClick={() => { setSelectedSkill(null); setShowNewSkill(false); }} type="button">Cancel</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="border-b border-outline/10 px-6 py-5">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-on-surface-variant/50">Editor</p>
+                  <h2 className="mt-2 text-xl font-bold text-on-surface">{activeDoc?.fileName ?? activeTab}</h2>
+                  <p className="mt-2 text-sm text-on-surface-variant">{savedAt ? `Last saved ${new Date(savedAt).toLocaleString()}` : 'Not saved yet'}</p>
+                </div>
+                <textarea className="min-h-[65vh] flex-1 resize-none bg-transparent px-6 py-5 font-mono text-sm leading-7 text-on-surface outline-none" onChange={(event) => setDraft(event.target.value)} value={draft} />
+              </>
+            )}
           </section>
 
           <aside className="flex min-h-[74vh] flex-col gap-6 rounded-[1.5rem] border border-outline/10 bg-surface-container-lowest p-5 shadow-sm">

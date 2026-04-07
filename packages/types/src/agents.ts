@@ -99,3 +99,62 @@ export const AgentCronSchema = z.object({
   task: z.string().min(1).max(2_000),
 });
 export type AgentCronInput = z.infer<typeof AgentCronSchema>;
+
+// ── Agent Skills ────────────────────────────────────────
+
+export const AgentSkillType = z.enum(['PASSIVE', 'ON_DEMAND', 'TOOL_BASED']);
+export type AgentSkillType = z.infer<typeof AgentSkillType>;
+
+export const AgentSkillSourceType = z.enum(['MANUAL', 'GENERATED', 'GITHUB', 'CLAWHUB', 'URL']);
+export type AgentSkillSourceType = z.infer<typeof AgentSkillSourceType>;
+
+export const AgentSkillFileSchema = z.object({
+  path: z.string().min(1),
+  kind: z.enum(['skill', 'reference', 'script', 'asset', 'other']),
+});
+export type AgentSkillFile = z.infer<typeof AgentSkillFileSchema>;
+
+export const AgentSkillSchema = z.object({
+  id: z.string(),
+  agentId: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  type: AgentSkillType,
+  toolNames: z.array(z.string()),
+  isActive: z.boolean(),
+  content: z.string(),
+  sourceType: AgentSkillSourceType,
+  sourceLocator: z.string().nullable(),
+  sourceRef: z.string().nullable(),
+  rootPath: z.string(),
+  fileInventory: z.array(AgentSkillFileSchema),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type AgentSkill = z.infer<typeof AgentSkillSchema>;
+
+export const CreateSkillSchema = z.object({
+  name: z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'Name must be lowercase letters, numbers, and single hyphens only'),
+  description: z.string().min(1).max(1024).optional(),
+  type: AgentSkillType,
+  toolNames: z.array(z.string()).optional(),
+  content: z.string().min(1),
+  sourceType: AgentSkillSourceType.optional(),
+  sourceLocator: z.string().optional(),
+  sourceRef: z.string().optional(),
+  fileInventory: z.array(AgentSkillFileSchema).optional(),
+});
+export type CreateSkillInput = z.infer<typeof CreateSkillSchema>;
+
+export const UpdateSkillSchema = z.object({
+  description: z.string().min(1).max(1024).optional(),
+  type: AgentSkillType.optional(),
+  toolNames: z.array(z.string()).optional(),
+  content: z.string().min(1).optional(),
+  isActive: z.boolean().optional(),
+  sourceType: AgentSkillSourceType.optional(),
+  sourceLocator: z.string().optional(),
+  sourceRef: z.string().optional(),
+  fileInventory: z.array(AgentSkillFileSchema).optional(),
+});
+export type UpdateSkillInput = z.infer<typeof UpdateSkillSchema>;

@@ -51,6 +51,7 @@ import { promptCacheService } from '@/modules/context/cache.service.js';
 import { staticPrefixCache } from '@/modules/context/static-prefix-cache.js';
 import { tokenCounter } from '@/modules/context/token-counter.js';
 import { providerRegistry } from '@/modules/providers/registry.js';
+import { skillService } from '@/modules/agents/skill.service.js';
 import { toolRegistryService } from '@/modules/tools/tool-registry.service.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
 import { env } from '@/config/env.js';
@@ -309,7 +310,7 @@ export class ContextBuilder {
     } else {
       // ── 4b. Static prefix CACHE MISS — build and store ────────────────────
 
-      const [docs, workspaceAgency, projectFile, toolGuidance] = await Promise.all([
+      const [docs, workspaceAgency, projectFile, toolGuidance, passiveSkills] = await Promise.all([
         // Load all static docs. heartbeat.md is excluded — it is dynamic.
         workspaceService.getAgentContextDocs(agentId, [
           'soul.md', 'identity.md', 'Agent.md', 'user.md', 'memory.md',
@@ -325,6 +326,7 @@ export class ContextBuilder {
             })
           : Promise.resolve(null),
         toolRegistryService.summarizeApprovedTools(agentId),
+        skillService.getPassiveContent(agentId),
       ]);
 
       const workspaceRoot = workspaceService.getAgentWorkspaceDir(agentId);
@@ -354,6 +356,8 @@ export class ContextBuilder {
       // agency.md / project.md. Sort by CONTEXT_FILE_ORDER priority, then apply
       // per-file (20k chars) and total (150k chars) budget with head+tail truncation.
 
+      // Passive skills sort after all named files (unknown keys → MAX_SAFE_INTEGER),
+      // then alphabetically by their "skill:{name}" key.
       const bootstrapDocs = sortByContextFileOrder([
         { name: 'Agent.md',    content: docMap.get('Agent.md')    ?? '' },
         { name: 'soul.md',     content: docMap.get('soul.md')     ?? '' },
@@ -363,6 +367,7 @@ export class ContextBuilder {
         { name: 'agency.md',   content: workspaceAgency?.content  ?? '' },
         { name: 'project.md',  content: projectFile?.content      ?? '' },
         { name: 'memory.md',   content: docMap.get('memory.md')   ?? '' },
+        ...passiveSkills,
       ]);
 
       const contextFiles = buildBootstrapContextFiles(bootstrapDocs, {

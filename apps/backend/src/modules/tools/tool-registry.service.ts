@@ -16,6 +16,8 @@ import type { LLMTool } from '@nextgenchat/types';
 import { z } from 'zod';
 
 import { prisma } from '@/db/client.js';
+import { skillService } from '@/modules/agents/skill.service.js';
+import { skillInstallerService } from '@/modules/agents/skill-installer.service.js';
 import { chatService } from '@/modules/chat/chat.service.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
 import { getChatNamespace, getChannelRoom } from '@/sockets/socket-server.js';
@@ -34,11 +36,22 @@ const TOOL_SEND_CHANNEL_MESSAGE = 'channel_send_message';
 const TOOL_SEND_REPLY = 'send_reply';
 const TOOL_TODO_READ = 'todoread';
 const TOOL_TODO_WRITE = 'todowrite';
+const TOOL_WEBSEARCH = 'websearch';
+const TOOL_WEBFETCH = 'webfetch';
+const TOOL_SKILL_ACTIVATE = 'skill_activate';
+const TOOL_SKILL_LIST = 'skill_list';
+const TOOL_SKILL_INSTALL = 'skill_install';
 const TOOL_STATE_DIR = '.nextgenchat';
 const TODO_STATE_FILE = `${TOOL_STATE_DIR}/todo-state.json`;
 const DEFAULT_SEARCH_LIMIT = 200;
 const MESSAGE_WRAPPER_RE = /^<message\b[^>]*>\s*/i;
 const MESSAGE_WRAPPER_CLOSE_RE = /\s*<\/message>\s*$/i;
+
+const WEBSEARCH_TIMEOUT_MS = 25_000;
+const WEBFETCH_TIMEOUT_MS = 30_000;
+const WEBFETCH_MAX_TIMEOUT_MS = 120_000;
+const WEBFETCH_MAX_BYTES = 5 * 1024 * 1024;
+const EXA_MCP_URL = 'https://mcp.exa.ai/mcp';
 
 const ReadToolSchema = z.object({
   filePath: z.string().min(1).describe('Absolute or root-relative path to a file or directory to read.'),
@@ -89,6 +102,33 @@ const TodoWriteToolSchema = z.object({
 });
 
 const TodoReadToolSchema = z.object({});
+
+const WebSearchToolSchema = z.object({
+  query: z.string().min(1).describe('Search query'),
+  numResults: z.number().int().positive().optional().describe('Number of results to return (default: 8)'),
+  livecrawl: z.enum(['fallback', 'preferred']).optional().describe("Live crawl mode — 'fallback': use live crawling as backup if cached unavailable, 'preferred': prioritize live crawling"),
+  type: z.enum(['auto', 'fast', 'deep']).optional().describe("Search type — 'auto': balanced (default), 'fast': quick results, 'deep': comprehensive"),
+  contextMaxCharacters: z.number().int().positive().optional().describe('Maximum characters for context string (default: 10000)'),
+});
+
+const WebFetchToolSchema = z.object({
+  url: z.string().min(1).describe('The URL to fetch content from'),
+  format: z.enum(['text', 'markdown', 'html']).optional().describe('Format to return content in — text, markdown, or html (default: markdown)'),
+  timeout: z.number().int().positive().optional().describe('Optional timeout in seconds (max 120)'),
+});
+
+const SkillActivateToolSchema = z.object({
+  name: z.string().min(1).describe('Exact skill name (slug) to activate, as shown by skill_list.'),
+});
+
+const SkillListToolSchema = z.object({});
+
+const SkillInstallToolSchema = z.object({
+  url: z.string().min(1).describe('URL or source reference for the skill. Supports GitHub repos/directories/files, clawhub.ai, gists, npm/unpkg, direct markdown URLs, and generic public pages that expose skill markdown.'),
+  name: z.string().min(1).max(50).regex(/^[a-z0-9-]+$/).optional().describe('Override the skill name (slug). Derived from URL or frontmatter if omitted.'),
+  skill: z.string().min(1).max(100).optional().describe('Optional skill selector for multi-skill repositories, for example "obsidian-markdown". Also supported as ?skill=... or #skill=... in the URL.'),
+  type: z.enum(['PASSIVE', 'ON_DEMAND', 'TOOL_BASED']).optional().describe('Override the skill type. Parsed from frontmatter if omitted, defaults to ON_DEMAND.'),
+});
 
 type ToolExecutionResult = {
   output: string;
@@ -404,6 +444,45 @@ function resolveAllowedDirectory(agentId: string, value: string | undefined) {
   }
 
   return resolveAllowedPath(agentId, value);
+}
+
+function stripHtmlTags(html: string) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function htmlToMarkdown(html: string) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, level: string, text: string) => `${'#'.repeat(Number(level))} ${stripHtmlTags(text)}\n\n`)
+    .replace(/<strong[^>]*>([\s\S]*?)<\/strong>/gi, (_m, text: string) => `**${stripHtmlTags(text)}**`)
+    .replace(/<b[^>]*>([\s\S]*?)<\/b>/gi, (_m, text: string) => `**${stripHtmlTags(text)}**`)
+    .replace(/<em[^>]*>([\s\S]*?)<\/em>/gi, (_m, text: string) => `_${stripHtmlTags(text)}_`)
+    .replace(/<i[^>]*>([\s\S]*?)<\/i>/gi, (_m, text: string) => `_${stripHtmlTags(text)}_`)
+    .replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, text: string) => `[${stripHtmlTags(text)}](${href})`)
+    .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_m, text: string) => `- ${stripHtmlTags(text)}\n`)
+    .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (_m, text: string) => `${stripHtmlTags(text)}\n\n`)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 const builtInTools: Record<string, BuiltInToolDefinition> = {
@@ -961,6 +1040,357 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
         structuredOutput: {
           todoCount: todos.length,
           filePath: displayWorkspacePath(context.agentId, getTodoStatePath(context.agentId)),
+        },
+      };
+    },
+  },
+  [TOOL_WEBSEARCH]: {
+    name: TOOL_WEBSEARCH,
+    description: `Search the web using Exa AI. Returns up-to-date information from real websites. Use this for current events, recent documentation, or anything beyond your knowledge cutoff. The current year is ${new Date().getFullYear()}.`,
+    usageGuidance: [
+      'Use this when you need live or recent information not in your training data.',
+      'Be specific — a precise query returns better results than a vague one.',
+      "Use type='deep' for research tasks where comprehensive coverage matters.",
+      "Use type='fast' for quick factual lookups.",
+      `Always use the current year (${new Date().getFullYear()}) when searching for recent news or releases.`,
+    ],
+    schema: WebSearchToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+        numResults: { type: 'number', description: 'Number of results to return (default: 8)' },
+        livecrawl: { type: 'string', enum: ['fallback', 'preferred'], description: "Live crawl mode — 'fallback': use live crawling as backup, 'preferred': prioritize live crawling" },
+        type: { type: 'string', enum: ['auto', 'fast', 'deep'], description: "Search type — 'auto': balanced (default), 'fast': quick results, 'deep': comprehensive" },
+        contextMaxCharacters: { type: 'number', description: 'Maximum characters for context string (default: 10000)' },
+      },
+      required: ['query'],
+    },
+    async execute(args, context) {
+      void context;
+      const input = WebSearchToolSchema.parse(args);
+
+      const body = {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'web_search_exa',
+          arguments: {
+            query: input.query,
+            type: input.type ?? 'auto',
+            numResults: input.numResults ?? 8,
+            livecrawl: input.livecrawl ?? 'fallback',
+            ...(input.contextMaxCharacters ? { contextMaxCharacters: input.contextMaxCharacters } : {}),
+          },
+        },
+      };
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), WEBSEARCH_TIMEOUT_MS);
+
+      try {
+        const response = await fetch(EXA_MCP_URL, {
+          method: 'POST',
+          headers: {
+            'accept': 'application/json, text/event-stream',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timer);
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Web search failed (${response.status}): ${errorText}`);
+        }
+
+        const responseText = await response.text();
+
+        // Parse SSE response — find the first data line with results
+        for (const line of responseText.split('\n')) {
+          if (line.startsWith('data: ')) {
+            const data = JSON.parse(line.slice(6)) as { result?: { content?: Array<{ type: string; text: string }> } };
+            if (data.result?.content?.[0]?.text) {
+              return {
+                output: data.result.content[0].text,
+                structuredOutput: { query: input.query, numResults: input.numResults ?? 8 },
+              };
+            }
+          }
+        }
+
+        return {
+          output: 'No search results found. Try a different or more specific query.',
+          structuredOutput: { query: input.query, numResults: 0 },
+        };
+      } catch (error) {
+        clearTimeout(timer);
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw new Error('Web search timed out after 25 seconds.', { cause: error });
+        }
+        throw error;
+      }
+    },
+  },
+  [TOOL_WEBFETCH]: {
+    name: TOOL_WEBFETCH,
+    description: 'Fetch the content of any public URL and return it as text or markdown. Use this to read documentation pages, articles, API references, or any web resource.',
+    usageGuidance: [
+      'Use this to read a specific URL when you already have the link.',
+      'Prefer websearch when you need to discover relevant pages first.',
+      "Use format='markdown' (default) for readable content; 'html' only if you need the raw markup.",
+      'Content larger than 5MB will be rejected.',
+    ],
+    schema: WebFetchToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        url: { type: 'string', description: 'The URL to fetch content from' },
+        format: { type: 'string', enum: ['text', 'markdown', 'html'], description: 'Format to return content in — text, markdown, or html (default: markdown)' },
+        timeout: { type: 'number', description: 'Optional timeout in seconds (max 120)' },
+      },
+      required: ['url'],
+    },
+    async execute(args, context) {
+      void context;
+      const input = WebFetchToolSchema.parse(args);
+
+      if (!input.url.startsWith('http://') && !input.url.startsWith('https://')) {
+        throw new Error('URL must start with http:// or https://');
+      }
+
+      const timeoutMs = Math.min((input.timeout ?? WEBFETCH_TIMEOUT_MS / 1_000) * 1_000, WEBFETCH_MAX_TIMEOUT_MS);
+      const format = input.format ?? 'markdown';
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const response = await fetch(input.url, {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.1',
+            'Accept-Language': 'en-US,en;q=0.9',
+          },
+        });
+
+        clearTimeout(timer);
+
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`);
+        }
+
+        const contentLength = response.headers.get('content-length');
+        if (contentLength && Number(contentLength) > WEBFETCH_MAX_BYTES) {
+          throw new Error('Response too large (exceeds 5MB limit)');
+        }
+
+        const buffer = await response.arrayBuffer();
+        if (buffer.byteLength > WEBFETCH_MAX_BYTES) {
+          throw new Error('Response too large (exceeds 5MB limit)');
+        }
+
+        const contentType = response.headers.get('content-type') ?? '';
+        const isHtml = contentType.includes('text/html');
+        const rawText = new TextDecoder().decode(buffer);
+
+        let output: string;
+        if (format === 'html') {
+          output = rawText;
+        } else if (format === 'markdown' && isHtml) {
+          output = htmlToMarkdown(rawText);
+        } else if (format === 'text' && isHtml) {
+          output = stripHtmlTags(rawText);
+        } else {
+          output = rawText;
+        }
+
+        return {
+          output,
+          structuredOutput: {
+            url: input.url,
+            format,
+            contentType,
+            byteLength: buffer.byteLength,
+          },
+        };
+      } catch (error) {
+        clearTimeout(timer);
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw new Error(`Web fetch timed out after ${timeoutMs / 1_000} seconds.`, { cause: error });
+        }
+        throw error;
+      }
+    },
+  },
+  [TOOL_SKILL_ACTIVATE]: {
+    name: TOOL_SKILL_ACTIVATE,
+    description: 'Activate an on-demand or tool-based skill for this turn. The skill\'s instructions are injected into your context so you can follow them immediately.',
+    usageGuidance: [
+      'Use this at the start of a turn when you recognise the task matches one of your skills.',
+      'Call skill_list first if you are not sure what skills are available.',
+      'Passive skills are already in your context — you do not need to activate them.',
+      'After activation, follow the skill instructions for the rest of this turn.',
+    ],
+    schema: SkillActivateToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        name: { type: 'string', description: 'Exact skill name (slug) to activate.' },
+      },
+      required: ['name'],
+    },
+    async execute(args, context) {
+      const input = SkillActivateToolSchema.parse(args);
+      const skill = await prisma.agentSkill.findUnique({
+        where: { agentId_name: { agentId: context.agentId, name: input.name } },
+      });
+
+      if (!skill || !skill.isActive) {
+        throw new Error(`Skill "${input.name}" not found or is inactive. Call skill_list to see available skills.`);
+      }
+
+      if (skill.type === 'PASSIVE') {
+        return {
+          output: `Skill "${input.name}" is passive — its instructions are already in your context at all times. No activation needed.`,
+          structuredOutput: { name: input.name, type: 'PASSIVE', alreadyActive: true },
+        };
+      }
+
+      const files = await skillService.readSkillFiles(context.agentId, input.name);
+      const content = files.find((file: { path: string; content: string }) => file.path === 'SKILL.md')?.content ?? '';
+
+      if (!content.trim()) {
+        throw new Error(`Skill "${input.name}" exists but has no content. Edit it in the agent workspace.`);
+      }
+
+      const toolNames: string[] = skill.toolNames ? (JSON.parse(skill.toolNames) as string[]) : [];
+      const toolSection = toolNames.length > 0
+        ? `\n\n**Tools this skill focuses on:** ${toolNames.join(', ')}`
+        : '';
+      const resources = files
+        .filter((file: { path: string; content: string }) => file.path !== 'SKILL.md')
+        .map((file: { path: string; content: string }) => file.path)
+        .sort((left: string, right: string) => left.localeCompare(right));
+      const resourceSection = resources.length > 0
+        ? `\n\n<skill_resources>\n${resources.map((file: string) => `<file>${file}</file>`).join('\n')}\n</skill_resources>`
+        : '';
+
+      return {
+        output: `<skill_content name="${skill.name}">\n# Skill activated: ${skill.name}\n**Type:** ${skill.type}${skill.description ? `\n**Purpose:** ${skill.description}` : ''}\n\n---\n\n${content}${toolSection}${resourceSection}\n</skill_content>`,
+        structuredOutput: { name: skill.name, type: skill.type, description: skill.description ?? null, toolNames },
+      };
+    },
+  },
+  [TOOL_SKILL_LIST]: {
+    name: TOOL_SKILL_LIST,
+    description: 'List all skills available to you, grouped by type (PASSIVE, ON_DEMAND, TOOL_BASED).',
+    usageGuidance: [
+      'Use this when you want to know which skills you have before activating one.',
+      'Passive skills are already active — they appear here for reference only.',
+    ],
+    schema: SkillListToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    async execute(_args, context) {
+      const skills = await prisma.agentSkill.findMany({
+        where: { agentId: context.agentId, isActive: true },
+        orderBy: [{ type: 'asc' }, { name: 'asc' }],
+      });
+
+      if (skills.length === 0) {
+        return {
+          output: 'No skills are configured for this agent yet.',
+          structuredOutput: { skills: [] },
+        };
+      }
+
+      const grouped: Record<string, string[]> = { PASSIVE: [], ON_DEMAND: [], TOOL_BASED: [] };
+      for (const s of skills) {
+        const line = `  - **${s.name}**${s.description ? `: ${s.description}` : ''}`;
+        grouped[s.type]?.push(line);
+      }
+
+      const sections: string[] = ['## Your Skills'];
+      for (const [type, lines] of Object.entries(grouped)) {
+        if (lines.length === 0) continue;
+        const label = type === 'PASSIVE' ? 'Passive (always active)'
+          : type === 'ON_DEMAND' ? 'On-demand (activate with skill_activate)'
+          : 'Tool-based (activate with skill_activate)';
+        sections.push(`\n### ${label}\n${lines.join('\n')}`);
+      }
+
+      return {
+        output: sections.join('\n'),
+        structuredOutput: { skills: skills.map((s) => ({ name: s.name, type: s.type, description: s.description ?? null })) },
+      };
+    },
+  },
+  [TOOL_SKILL_INSTALL]: {
+    name: TOOL_SKILL_INSTALL,
+    description: 'Download and install a skill from any public source — GitHub, clawhub.ai, or a direct markdown URL. Fetches the raw content, parses frontmatter for metadata, and registers the skill. Always tell the user what type of skill was installed.',
+    usageGuidance: [
+      'Use this when the user asks you to install or download a skill from a URL.',
+      'Supported sources include GitHub repos, directories, blob/raw URLs, clawhub.ai pages, gists, npm/unpkg, direct .md URLs, and generic public pages that expose skill markdown.',
+      'For multi-skill repositories, pass the specific skill name in `skill`, or use `?skill=name` on the source URL.',
+      'Frontmatter in the skill file (name, description, type, toolNames) is parsed automatically, including simple list syntax for toolNames.',
+      'If the skill has no frontmatter, pass a "name" and optionally a "type" parameter.',
+      'After installing, always tell the user: the skill name, its type (PASSIVE / ON_DEMAND / TOOL_BASED), and how to use it.',
+      'PASSIVE skills are injected automatically every turn — no activation needed.',
+      'ON_DEMAND and TOOL_BASED skills require calling skill_activate("name") at the start of a relevant turn.',
+    ],
+    schema: SkillInstallToolSchema,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          url: { type: 'string', description: 'Skill source reference such as a GitHub repo/file URL, clawhub page, gist, npm package, or direct markdown URL.' },
+          name: { type: 'string', description: 'Override skill name slug (lowercase, hyphens only). Derived from URL/frontmatter if omitted.' },
+          skill: { type: 'string', description: 'Optional selector for a specific skill inside a multi-skill repository.' },
+          type: { type: 'string', enum: ['PASSIVE', 'ON_DEMAND', 'TOOL_BASED'], description: 'Override skill type. Parsed from frontmatter or defaults to ON_DEMAND.' },
+        },
+      required: ['url'],
+    },
+    async execute(args, context) {
+      const input = SkillInstallToolSchema.parse(args);
+      const installed = await skillInstallerService.installFromSource(context.agentId, input);
+      const { skill } = installed;
+
+      const typeNote = skill.type === 'PASSIVE'
+        ? `**Passive skill** — automatically injected into your context every turn. No activation needed.`
+        : skill.type === 'ON_DEMAND'
+          ? `**On-demand skill** — call \`skill_activate("${skill.name}")\` at the start of a relevant turn to load its instructions.`
+          : `**Tool-based skill** — call \`skill_activate("${skill.name}")\` to load its instructions and tool guidance.`;
+
+      return {
+        output: [
+          `Skill **${skill.name}** ${installed.action} successfully.`,
+          `**Type:** ${skill.type}`,
+          skill.description ? `**Description:** ${skill.description}` : '',
+          skill.toolNames.length > 0 ? `**Tools:** ${skill.toolNames.join(', ')}` : '',
+          `**Source Type:** ${installed.sourceKind}`,
+          `**Source:** ${installed.resolvedFrom}`,
+          '',
+          typeNote,
+        ].filter(Boolean).join('\n'),
+        structuredOutput: {
+          name: skill.name,
+          type: skill.type,
+          description: skill.description,
+          toolNames: skill.toolNames,
+          action: installed.action,
+          source: installed.resolvedFrom,
+          sourceKind: installed.sourceKind,
         },
       };
     },
