@@ -46,5 +46,5 @@ jobs:
 
       - name: Prisma schema validation
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/nextgenchat?schema=public
+          DATABASE_URL: file:./dev.db
         run: pnpm --filter @nextgenchat/backend prisma:validate
