@@ -574,6 +574,7 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
                       className="flex w-full items-center gap-2 px-3 py-1.5 transition-colors"
                       key={docType}
                       onClick={() => { setActiveTab(docType); setCenterView('doc'); setSelectedSkill(null); setShowNewSkill(false); }}
+                      title={DOC_DESCRIPTIONS[docType]}
                       style={{
                         background: isActive ? 'rgba(114, 137, 192, 0.12)' : 'transparent',
                         borderLeft: isActive ? '2px solid var(--primary)' : '2px solid transparent',

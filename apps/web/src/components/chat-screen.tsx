@@ -16,7 +16,7 @@
 
 'use client';
 
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -99,172 +99,78 @@ function getToolCallStatus(tc: ToolCallDetail): ToolCallStatus {
   return tc.success ? 'success' : 'failed';
 }
 
-// ── Agent task panel ──────────────────────────────────────────────────────────
+// ── @mention highlighter ──────────────────────────────────────────────────────
 
-const TODO_STATUS_CONFIG: Record<TodoStatus, { icon: string; color: string; label: string }> = {
-  pending:     { icon: '○', color: 'var(--ib-600)',  label: 'Pending'     },
-  in_progress: { icon: '◎', color: 'var(--ib-400)',  label: 'In progress' },
-  completed:   { icon: '●', color: '#22c55e',         label: 'Done'        },
-  cancelled:   { icon: '×', color: 'var(--sr-600)',   label: 'Cancelled'   },
-};
+const MENTION_RE = /(@\w+)/g;
 
-const TODO_PRIORITY_CONFIG: Record<TodoPriority, { color: string }> = {
-  high:   { color: 'var(--sr-400)'  },
-  medium: { color: 'var(--ib-400)'  },
-  low:    { color: 'var(--ib-700)'  },
-};
-
-function AgentTaskPanel({
-  lists,
-  agents,
-  onDismiss,
-}: {
-  lists: AgentTodoList[];
-  agents: AgentSummary[];
-  onDismiss: (agentId: string) => void;
-}) {
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-
-  if (lists.length === 0) return null;
-
-  const activeLists = lists.filter((l) => l.todos.some((t) => t.status === 'pending' || t.status === 'in_progress'));
-  const doneLists   = lists.filter((l) => l.todos.length > 0 && l.todos.every((t) => t.status === 'completed' || t.status === 'cancelled'));
-
-  // If agent is done, auto-dismiss after 4s
-  useEffect(() => {
-    for (const list of doneLists) {
-      const timer = setTimeout(() => onDismiss(list.agentId), 4000);
-      return () => clearTimeout(timer);
-    }
-  }, [doneLists, onDismiss]);
-
-  const visibleLists = [...activeLists, ...doneLists];
-  if (visibleLists.length === 0) return null;
-
-  return (
-    <div className="flex flex-col gap-2 px-4 py-2">
-      {visibleLists.map((list) => {
-        const agentColor = avatarColor(list.agentName);
-        const isCollapsed = collapsed[list.agentId] ?? false;
-        const doneCount = list.todos.filter((t) => t.status === 'completed').length;
-        const total = list.todos.length;
-        const allDone = doneCount === total && total > 0;
-        const progressPct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
-
-        return (
-          <div
-            className="overflow-hidden rounded-xl"
-            key={list.agentId}
-            style={{
-              background: 'var(--ti-950)',
-              border: `1px solid ${allDone ? 'rgba(34,197,94,0.2)' : 'var(--outline-variant)'}`,
-              boxShadow: allDone ? '0 0 12px rgba(34,197,94,0.06)' : 'none',
-            }}
-          >
-            {/* Header */}
-            <button
-              className="flex w-full items-center gap-2.5 px-3 py-2.5 transition-colors hover:bg-white/[0.02]"
-              onClick={() => setCollapsed((c) => ({ ...c, [list.agentId]: !c[list.agentId] }))}
-              type="button"
+/** Recursively walk React children; wrap @word tokens in a red mention span. */
+function mentionify(children: React.ReactNode): React.ReactNode {
+  return React.Children.map(children, (child) => {
+    if (typeof child === 'string' && MENTION_RE.test(child)) {
+      MENTION_RE.lastIndex = 0; // reset after .test()
+      const parts = child.split(MENTION_RE);
+      return parts.map((part, i) =>
+        MENTION_RE.test(part)
+          ? (
+            <span
+              key={i}
+              className="font-semibold"
+              style={{ color: 'var(--sr-400)' }}
             >
-              {/* Agent avatar */}
-              <div
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[8px] font-bold text-white"
-                style={{ background: agentColor }}
-              >
-                {list.agentName.slice(0, 2).toUpperCase()}
-              </div>
+              {part}
+            </span>
+          )
+          : part,
+      );
+    }
+    if (React.isValidElement<{ children?: React.ReactNode }>(child) && child.props.children) {
+      return React.cloneElement(child, {}, mentionify(child.props.children));
+    }
+    return child;
+  });
+}
 
-              <span className="text-[12px] font-semibold" style={{ color: allDone ? '#22c55e' : 'var(--on-surface)' }}>
-                {list.agentName}
-              </span>
-              <span className="text-[11px]" style={{ color: 'var(--ib-600)' }}>
-                {allDone ? 'All done' : `${doneCount}/${total}`}
-              </span>
+// ── Inline todos — compact list shown inside a message bubble ────────────────
 
-              {/* Progress bar */}
-              <div className="h-1 flex-1 overflow-hidden rounded-full" style={{ background: 'var(--ti-800)' }}>
-                <div
-                  className="h-full rounded-full transition-all duration-500"
-                  style={{
-                    width: `${progressPct}%`,
-                    background: allDone ? '#22c55e' : 'var(--primary)',
-                  }}
-                />
-              </div>
-
+function InlineTodos({ todos }: { todos: AgentTodo[] }) {
+  if (todos.length === 0) return null;
+  return (
+    <div
+      className="mt-3 space-y-0.5 rounded-lg px-3 py-2"
+      style={{ background: 'rgba(13,15,22,0.5)', border: '1px solid var(--outline-variant)' }}
+    >
+      {todos.map((todo, i) => {
+        const isDone      = todo.status === 'completed';
+        const isCancelled = todo.status === 'cancelled';
+        const isActive    = todo.status === 'in_progress';
+        return (
+          <div className="flex items-center gap-2 py-[3px]" key={i}>
+            {/* status icon */}
+            <span
+              className="shrink-0 text-[11px] leading-none"
+              style={{
+                color: isDone ? '#22c55e' : isActive ? 'var(--ib-400)' : isCancelled ? 'var(--sr-600)' : 'var(--ib-700)',
+                animation: isActive ? 'typing 2s ease-in-out infinite' : 'none',
+              }}
+            >
+              {isDone ? '✓' : isActive ? '◎' : isCancelled ? '✕' : '○'}
+            </span>
+            {/* text */}
+            <span
+              className="text-[12px] leading-[1.4]"
+              style={{
+                color: isDone || isCancelled ? 'var(--ib-700)' : isActive ? 'var(--ib-200)' : 'var(--ib-500)',
+                textDecoration: isCancelled ? 'line-through' : 'none',
+              }}
+            >
+              {todo.content}
+            </span>
+            {/* priority pip — only on pending/active */}
+            {!isDone && !isCancelled && (
               <span
-                className="shrink-0 text-[10px] transition-transform"
-                style={{
-                  color: 'var(--ib-600)',
-                  transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
-                }}
-              >
-                ▾
-              </span>
-
-              {/* Dismiss */}
-              <span
-                className="shrink-0 rounded px-1 py-0.5 text-[10px] transition-colors hover:text-on-surface"
-                onClick={(e) => { e.stopPropagation(); onDismiss(list.agentId); }}
-                style={{ color: 'var(--ib-700)' }}
-              >
-                ✕
-              </span>
-            </button>
-
-            {/* Todo list */}
-            {!isCollapsed && (
-              <div
-                className="border-t px-3 py-2 space-y-1"
-                style={{ borderColor: 'var(--outline-variant)' }}
-              >
-                {list.todos.map((todo, i) => {
-                  const sc = TODO_STATUS_CONFIG[todo.status];
-                  const pc = TODO_PRIORITY_CONFIG[todo.priority];
-                  const isDone = todo.status === 'completed' || todo.status === 'cancelled';
-                  return (
-                    <div
-                      className="flex items-start gap-2.5 rounded-lg px-2 py-1.5"
-                      key={i}
-                      style={{
-                        background: todo.status === 'in_progress' ? 'rgba(114,137,192,0.06)' : 'transparent',
-                        borderLeft: todo.status === 'in_progress' ? '2px solid var(--primary)' : '2px solid transparent',
-                      }}
-                    >
-                      {/* Status icon */}
-                      <span
-                        className="mt-[2px] shrink-0 text-[13px] font-bold leading-none"
-                        style={{
-                          color: sc.color,
-                          animation: todo.status === 'in_progress' ? 'typing 2s ease-in-out infinite' : 'none',
-                        }}
-                      >
-                        {sc.icon}
-                      </span>
-
-                      {/* Content */}
-                      <span
-                        className="flex-1 text-[12px] leading-5"
-                        style={{
-                          color: isDone ? 'var(--ib-600)' : 'var(--ib-100)',
-                          textDecoration: todo.status === 'cancelled' ? 'line-through' : 'none',
-                          opacity: isDone ? 0.6 : 1,
-                        }}
-                      >
-                        {todo.content}
-                      </span>
-
-                      {/* Priority dot */}
-                      <span
-                        className="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full"
-                        style={{ background: pc.color, opacity: isDone ? 0.3 : 1 }}
-                        title={`${todo.priority} priority`}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
+                className="ml-auto h-1 w-1 shrink-0 rounded-full"
+                style={{ background: todo.priority === 'high' ? 'var(--sr-500)' : todo.priority === 'medium' ? 'var(--ib-500)' : 'var(--ib-800)' }}
+              />
             )}
           </div>
         );
@@ -364,24 +270,24 @@ function AgentMarkdown({ content, streaming = false }: { content: string; stream
         components={{
           // Headings
           h1: ({ children }) => (
-            <h1 className="font-headline mt-5 mb-3 text-[20px] font-bold leading-tight" style={{ color: 'var(--on-surface)' }}>{children}</h1>
+            <h1 className="font-headline mt-5 mb-3 text-[20px] font-bold leading-tight" style={{ color: 'var(--on-surface)' }}>{mentionify(children)}</h1>
           ),
           h2: ({ children }) => (
-            <h2 className="font-headline mt-4 mb-2.5 text-[17px] font-semibold leading-tight" style={{ color: 'var(--on-surface)' }}>{children}</h2>
+            <h2 className="font-headline mt-4 mb-2.5 text-[17px] font-semibold leading-tight" style={{ color: 'var(--on-surface)' }}>{mentionify(children)}</h2>
           ),
           h3: ({ children }) => (
-            <h3 className="font-headline mt-3 mb-2 text-[15px] font-semibold leading-tight" style={{ color: 'var(--ib-200)' }}>{children}</h3>
+            <h3 className="font-headline mt-3 mb-2 text-[15px] font-semibold leading-tight" style={{ color: 'var(--ib-200)' }}>{mentionify(children)}</h3>
           ),
           // Paragraph — no extra margin on first child
           p: ({ children }) => (
-            <p className="mb-3 last:mb-0">{children}</p>
+            <p className="mb-3 last:mb-0">{mentionify(children)}</p>
           ),
           // Bold / italic
           strong: ({ children }) => (
-            <strong className="font-semibold" style={{ color: 'var(--on-surface)' }}>{children}</strong>
+            <strong className="font-semibold" style={{ color: 'var(--on-surface)' }}>{mentionify(children)}</strong>
           ),
           em: ({ children }) => (
-            <em className="italic" style={{ color: 'var(--ib-200)' }}>{children}</em>
+            <em className="italic" style={{ color: 'var(--ib-200)' }}>{mentionify(children)}</em>
           ),
           // Inline code vs block code
           code: ({ children, className }) => {
@@ -416,7 +322,7 @@ function AgentMarkdown({ content, streaming = false }: { content: string; stream
                     style={{ background: 'var(--ib-500)' }}
                   />
                 )}
-                {children}
+                {mentionify(children)}
               </li>
             );
           },
@@ -429,7 +335,7 @@ function AgentMarkdown({ content, streaming = false }: { content: string; stream
                 color: 'var(--ib-400)',
               }}
             >
-              {children}
+              {mentionify(children)}
             </blockquote>
           ),
           // Horizontal rule
@@ -470,7 +376,7 @@ function AgentMarkdown({ content, streaming = false }: { content: string; stream
               className="px-4 py-2.5"
               style={{ color: 'var(--ib-100)', borderTop: '1px solid var(--outline-variant)' }}
             >
-              {children}
+              {mentionify(children)}
             </td>
           ),
           // Checkboxes in task lists
@@ -538,7 +444,9 @@ function getToolLabel(tc: ToolCallDetail): string {
 function ToolLog({ calls, live = false }: { calls: ToolCallDetail[]; live?: boolean }) {
   const [expanded, setExpanded] = useState(live);
 
-  useEffect(() => { if (live) setExpanded(true); }, [live]);
+  // Keep expanded whenever the live prop flips on (e.g. new tool call arrives).
+  // Using a layout effect keeps it synchronous and avoids the react-hooks/set-state-in-effect lint rule.
+  if (live && !expanded) setExpanded(true);
 
   if (calls.length === 0) return null;
 
@@ -1798,6 +1706,13 @@ export function ChatScreen() {
                               {msg.content}
                             </p>
                           )}
+
+                          {/* Inline todos from todowrite calls in this message */}
+                          {isAgent && !failure && (() => {
+                            const tc = toolCalls.find((t) => t.toolName === 'todowrite');
+                            const raw = (tc?.structuredOutput as { todos?: AgentTodo[] } | undefined)?.todos;
+                            return raw && raw.length > 0 ? <InlineTodos todos={raw} /> : null;
+                          })()}
                         </div>
                       </div>
                     );
@@ -1878,23 +1793,15 @@ export function ChatScreen() {
                               </div>
                             )
                           )}
+
+                          {/* Inline todos — shown inside the bubble when agent has an active task list */}
+                          {(() => { const tl = agentTodos.get(stream.agentId); return tl && tl.todos.length > 0 ? <InlineTodos todos={tl.todos} /> : null; })()}
                         </div>
                       </div>
                     );
                   })}
                 </div>
               </section>
-
-              {/* ── Agent task panel ───────────────────────────────────── */}
-              {agentTodos.size > 0 && (
-                <div className="shrink-0" style={{ borderTop: '1px solid var(--outline-variant)' }}>
-                  <AgentTaskPanel
-                    agents={agents}
-                    lists={Array.from(agentTodos.values())}
-                    onDismiss={(agentId) => setAgentTodos((cur) => { const n = new Map(cur); n.delete(agentId); return n; })}
-                  />
-                </div>
-              )}
 
               {/* Composer */}
               <div
