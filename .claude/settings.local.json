@@ -15,7 +15,10 @@
       "Bash(powershell -Command \"Stop-Process -Id 16116 -Force\")",
       "Bash(powershell -Command \"Get-Process -Id 16116 -ErrorAction SilentlyContinue\")",
       "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue | Select-Object LocalPort, OwningProcess\")",
-      "Bash(pnpm --filter @nextgenchat/web add react-markdown remark-gfm)"
+      "Bash(pnpm --filter @nextgenchat/web add react-markdown remark-gfm)",
+      "Bash(pnpm --filter @nextgenchat/types build)",
+      "Bash(pnpm --filter @nextgenchat/backend exec tsc --noEmit)",
+      "Bash(npx tsc:*)"
     ]
   }
 }

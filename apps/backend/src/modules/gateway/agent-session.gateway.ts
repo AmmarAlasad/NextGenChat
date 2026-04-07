@@ -223,6 +223,9 @@ export class AgentSessionGateway {
         return;
       }
 
+      const agentMeta = await prisma.agent.findUnique({ where: { id: agentId }, select: { name: true } });
+      const agentName = agentMeta?.name ?? 'Agent';
+
       const provider = await providerRegistry.get(agentId);
       const context = await contextBuilder.build(agentId, channelId, messageId);
       const providerTools = await toolRegistryService.getProviderTools(agentId);
@@ -411,6 +414,16 @@ export class AgentSessionGateway {
           if (success && [TODO_WRITE_TOOL_NAME, WRITE_TOOL_NAME, BASH_TOOL_NAME, SEND_REPLY_TOOL_NAME].includes(toolCall.name)) {
             taskMode = taskMode || [TODO_WRITE_TOOL_NAME, SEND_REPLY_TOOL_NAME].includes(toolCall.name);
             taskState = await readPersistedTaskState(agentId);
+
+            // Broadcast the updated todo list so the frontend can render a live task panel.
+            if (toolCall.name === TODO_WRITE_TOOL_NAME) {
+              chatNamespace.to(getChannelRoom(channelId)).emit('agent:todos:update', {
+                agentId,
+                channelId,
+                agentName,
+                todos: taskState.todos,
+              });
+            }
           }
 
           messages.push({

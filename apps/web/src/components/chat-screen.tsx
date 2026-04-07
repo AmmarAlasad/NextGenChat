@@ -48,6 +48,11 @@ interface SlashSuggestion { label: string; value: string; hint: string; }
 interface AgentStream { agentId: string; text: string }
 type ToolCallStatus = 'running' | 'success' | 'failed';
 
+type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
+type TodoPriority = 'high' | 'medium' | 'low';
+interface AgentTodo { content: string; status: TodoStatus; priority: TodoPriority; }
+interface AgentTodoList { agentId: string; agentName: string; todos: AgentTodo[]; }
+
 interface ToolCallDetail {
   toolCallId?: string;
   toolName?: string;
@@ -92,6 +97,180 @@ function formatToolData(value: unknown): string {
 function getToolCallStatus(tc: ToolCallDetail): ToolCallStatus {
   if (tc.status) return tc.status;
   return tc.success ? 'success' : 'failed';
+}
+
+// ── Agent task panel ──────────────────────────────────────────────────────────
+
+const TODO_STATUS_CONFIG: Record<TodoStatus, { icon: string; color: string; label: string }> = {
+  pending:     { icon: '○', color: 'var(--ib-600)',  label: 'Pending'     },
+  in_progress: { icon: '◎', color: 'var(--ib-400)',  label: 'In progress' },
+  completed:   { icon: '●', color: '#22c55e',         label: 'Done'        },
+  cancelled:   { icon: '×', color: 'var(--sr-600)',   label: 'Cancelled'   },
+};
+
+const TODO_PRIORITY_CONFIG: Record<TodoPriority, { color: string }> = {
+  high:   { color: 'var(--sr-400)'  },
+  medium: { color: 'var(--ib-400)'  },
+  low:    { color: 'var(--ib-700)'  },
+};
+
+function AgentTaskPanel({
+  lists,
+  agents,
+  onDismiss,
+}: {
+  lists: AgentTodoList[];
+  agents: AgentSummary[];
+  onDismiss: (agentId: string) => void;
+}) {
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  if (lists.length === 0) return null;
+
+  const activeLists = lists.filter((l) => l.todos.some((t) => t.status === 'pending' || t.status === 'in_progress'));
+  const doneLists   = lists.filter((l) => l.todos.length > 0 && l.todos.every((t) => t.status === 'completed' || t.status === 'cancelled'));
+
+  // If agent is done, auto-dismiss after 4s
+  useEffect(() => {
+    for (const list of doneLists) {
+      const timer = setTimeout(() => onDismiss(list.agentId), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [doneLists, onDismiss]);
+
+  const visibleLists = [...activeLists, ...doneLists];
+  if (visibleLists.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-2 px-4 py-2">
+      {visibleLists.map((list) => {
+        const agentColor = avatarColor(list.agentName);
+        const isCollapsed = collapsed[list.agentId] ?? false;
+        const doneCount = list.todos.filter((t) => t.status === 'completed').length;
+        const total = list.todos.length;
+        const allDone = doneCount === total && total > 0;
+        const progressPct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+
+        return (
+          <div
+            className="overflow-hidden rounded-xl"
+            key={list.agentId}
+            style={{
+              background: 'var(--ti-950)',
+              border: `1px solid ${allDone ? 'rgba(34,197,94,0.2)' : 'var(--outline-variant)'}`,
+              boxShadow: allDone ? '0 0 12px rgba(34,197,94,0.06)' : 'none',
+            }}
+          >
+            {/* Header */}
+            <button
+              className="flex w-full items-center gap-2.5 px-3 py-2.5 transition-colors hover:bg-white/[0.02]"
+              onClick={() => setCollapsed((c) => ({ ...c, [list.agentId]: !c[list.agentId] }))}
+              type="button"
+            >
+              {/* Agent avatar */}
+              <div
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[8px] font-bold text-white"
+                style={{ background: agentColor }}
+              >
+                {list.agentName.slice(0, 2).toUpperCase()}
+              </div>
+
+              <span className="text-[12px] font-semibold" style={{ color: allDone ? '#22c55e' : 'var(--on-surface)' }}>
+                {list.agentName}
+              </span>
+              <span className="text-[11px]" style={{ color: 'var(--ib-600)' }}>
+                {allDone ? 'All done' : `${doneCount}/${total}`}
+              </span>
+
+              {/* Progress bar */}
+              <div className="h-1 flex-1 overflow-hidden rounded-full" style={{ background: 'var(--ti-800)' }}>
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{
+                    width: `${progressPct}%`,
+                    background: allDone ? '#22c55e' : 'var(--primary)',
+                  }}
+                />
+              </div>
+
+              <span
+                className="shrink-0 text-[10px] transition-transform"
+                style={{
+                  color: 'var(--ib-600)',
+                  transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+                }}
+              >
+                ▾
+              </span>
+
+              {/* Dismiss */}
+              <span
+                className="shrink-0 rounded px-1 py-0.5 text-[10px] transition-colors hover:text-on-surface"
+                onClick={(e) => { e.stopPropagation(); onDismiss(list.agentId); }}
+                style={{ color: 'var(--ib-700)' }}
+              >
+                ✕
+              </span>
+            </button>
+
+            {/* Todo list */}
+            {!isCollapsed && (
+              <div
+                className="border-t px-3 py-2 space-y-1"
+                style={{ borderColor: 'var(--outline-variant)' }}
+              >
+                {list.todos.map((todo, i) => {
+                  const sc = TODO_STATUS_CONFIG[todo.status];
+                  const pc = TODO_PRIORITY_CONFIG[todo.priority];
+                  const isDone = todo.status === 'completed' || todo.status === 'cancelled';
+                  return (
+                    <div
+                      className="flex items-start gap-2.5 rounded-lg px-2 py-1.5"
+                      key={i}
+                      style={{
+                        background: todo.status === 'in_progress' ? 'rgba(114,137,192,0.06)' : 'transparent',
+                        borderLeft: todo.status === 'in_progress' ? '2px solid var(--primary)' : '2px solid transparent',
+                      }}
+                    >
+                      {/* Status icon */}
+                      <span
+                        className="mt-[2px] shrink-0 text-[13px] font-bold leading-none"
+                        style={{
+                          color: sc.color,
+                          animation: todo.status === 'in_progress' ? 'typing 2s ease-in-out infinite' : 'none',
+                        }}
+                      >
+                        {sc.icon}
+                      </span>
+
+                      {/* Content */}
+                      <span
+                        className="flex-1 text-[12px] leading-5"
+                        style={{
+                          color: isDone ? 'var(--ib-600)' : 'var(--ib-100)',
+                          textDecoration: todo.status === 'cancelled' ? 'line-through' : 'none',
+                          opacity: isDone ? 0.6 : 1,
+                        }}
+                      >
+                        {todo.content}
+                      </span>
+
+                      {/* Priority dot */}
+                      <span
+                        className="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full"
+                        style={{ background: pc.color, opacity: isDone ? 0.3 : 1 }}
+                        title={`${todo.priority} priority`}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 // ── Code block with language label + copy button ─────────────────────────────
@@ -994,6 +1173,7 @@ export function ChatScreen() {
   const [agentStreams, setAgentStreams] = useState<Map<string, AgentStream>>(new Map());
   const [liveToolCalls, setLiveToolCalls] = useState<Map<string, LiveToolCall[]>>(new Map());
   const [agentState, setAgentState] = useState<AgentState>('idle');
+  const [agentTodos, setAgentTodos] = useState<Map<string, AgentTodoList>>(new Map());
 
   const [showNewAgent, setShowNewAgent]           = useState(false);
   const [showNewGroup, setShowNewGroup]           = useState(false);
@@ -1154,6 +1334,15 @@ export function ChatScreen() {
       if (p.selectedCount === 0) { clearRoutingTimeout(); setAgentState('idle'); setAgentStreams(new Map()); setLiveToolCalls(new Map()); }
     };
 
+    const onTodosUpdate = (p: { agentId: string; channelId: string; agentName: string; todos: AgentTodo[] }) => {
+      if (p.channelId !== selectedChannelId) return;
+      setAgentTodos((cur) => {
+        const n = new Map(cur);
+        n.set(p.agentId, { agentId: p.agentId, agentName: p.agentName, todos: p.todos });
+        return n;
+      });
+    };
+
     socket.connect();
     socket.emit('channel:join', { channelId: selectedChannelId });
     socket.on('message:new', onMsg);
@@ -1162,13 +1351,14 @@ export function ChatScreen() {
     socket.on('message:routing:complete', onRouting);
     socket.on('agent:tool:start', onToolStart);
     socket.on('agent:tool:end', onToolEnd);
+    socket.on('agent:todos:update', onTodosUpdate);
     socket.on('disconnect', onDisconnect);
     socket.on('error', (p: { message: string }) => { clearRoutingTimeout(); setAgentState('error'); setError(p.message); });
 
     return () => {
       socket.emit('channel:leave', { channelId: selectedChannelId });
       (['message:new','message:stream:chunk','message:stream:end','message:routing:complete',
-       'agent:tool:start','agent:tool:end','disconnect','error'] as const).forEach((e) => socket.off(e));
+       'agent:tool:start','agent:tool:end','agent:todos:update','disconnect','error'] as const).forEach((e) => socket.off(e));
     };
   }, [accessToken, clearRoutingTimeout, loadChannelSession, selectedChannelId]);
 
@@ -1694,6 +1884,17 @@ export function ChatScreen() {
                   })}
                 </div>
               </section>
+
+              {/* ── Agent task panel ───────────────────────────────────── */}
+              {agentTodos.size > 0 && (
+                <div className="shrink-0" style={{ borderTop: '1px solid var(--outline-variant)' }}>
+                  <AgentTaskPanel
+                    agents={agents}
+                    lists={Array.from(agentTodos.values())}
+                    onDismiss={(agentId) => setAgentTodos((cur) => { const n = new Map(cur); n.delete(agentId); return n; })}
+                  />
+                </div>
+              )}
 
               {/* Composer */}
               <div

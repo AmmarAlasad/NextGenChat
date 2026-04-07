@@ -160,6 +160,19 @@ export interface ServerToClientEvents {
     structuredOutput?: Record<string, unknown>;
   }) => void;
 
+  // Emitted when an agent calls todowrite — carries the full updated list so
+  // the frontend can render a live task panel without polling.
+  'agent:todos:update': (data: {
+    agentId: string;
+    channelId: string;
+    agentName: string;
+    todos: Array<{
+      content: string;
+      status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+      priority: 'high' | 'medium' | 'low';
+    }>;
+  }) => void;
+
   'error': (data: {
     code: string;
     message: string;
