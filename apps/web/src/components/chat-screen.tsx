@@ -73,6 +73,30 @@ const emptyAgentForm: CreateAgentInput = {
   name: '', persona: '', systemPrompt: '', voiceTone: '', triggerMode: 'AUTO',
 };
 
+const SELECTED_CHANNEL_STORAGE_KEY = 'nextgenchat:selected-channel-id';
+const UNREAD_COUNTS_STORAGE_KEY = 'nextgenchat:unread-counts';
+
+function readStoredSelectedChannelId() {
+  if (typeof window === 'undefined') return null;
+  return window.localStorage.getItem(SELECTED_CHANNEL_STORAGE_KEY);
+}
+
+function readStoredUnreadCounts() {
+  if (typeof window === 'undefined') return {} as Record<string, number>;
+
+  try {
+    const raw = window.localStorage.getItem(UNREAD_COUNTS_STORAGE_KEY);
+    if (!raw) return {};
+
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && entry[1] > 0),
+    );
+  } catch {
+    return {};
+  }
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function formatTime(value: string) {
@@ -87,6 +111,17 @@ function getMessageToolCalls(message: MessageRecord): ToolCallDetail[] {
   const raw = message.metadata?.toolCalls;
   if (!Array.isArray(raw)) return [];
   return raw.filter((entry): entry is ToolCallDetail => typeof entry === 'object' && entry !== null);
+}
+
+function getScheduledMessageKind(message: MessageRecord): 'ONCE' | 'CRON' | null {
+  const raw = message.metadata?.schedule;
+  if (!raw || typeof raw !== 'object') return null;
+
+  const source = 'source' in raw ? raw.source : null;
+  const kind = 'kind' in raw ? raw.kind : null;
+
+  if (source !== 'agent-cron') return null;
+  return kind === 'ONCE' || kind === 'CRON' ? kind : 'CRON';
 }
 
 function formatToolData(value: unknown): string {
@@ -766,8 +801,26 @@ function SidebarSection({ label, children, onAdd, addLabel }: {
 
 // ── Sidebar items ─────────────────────────────────────────────────────────────
 
-function DMItem({ channel, active, onClick, agent }: {
-  channel: ChannelSummary; active: boolean; onClick: () => void; agent: AgentSummary;
+function UnreadBadge({ count, active }: { count: number; active: boolean }) {
+  if (count <= 0) return null;
+
+  return (
+    <span
+      className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none"
+      style={{
+        background: active ? 'var(--ib-300)' : 'var(--primary)',
+        color: active ? 'var(--ib-950)' : '#fff',
+        minWidth: count > 9 ? '22px' : '18px',
+        textAlign: 'center',
+      }}
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
+
+function DMItem({ channel, active, onClick, agent, unreadCount }: {
+  channel: ChannelSummary; active: boolean; onClick: () => void; agent: AgentSummary; unreadCount: number;
 }) {
   const name   = channel.participantAgentNames[0] ?? channel.name;
   const color  = avatarColor(name);
@@ -819,20 +872,23 @@ function DMItem({ channel, active, onClick, agent }: {
       </div>
 
       {/* AI badge */}
-      <span
-        className="shrink-0 rounded px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide"
-        style={{
-          background: active ? 'rgba(114,137,192,0.25)' : 'rgba(114,137,192,0.1)',
-          color: active ? 'var(--ib-200)' : 'var(--ib-500)',
-        }}
-      >
-        AI
-      </span>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <UnreadBadge active={active} count={unreadCount} />
+        <span
+          className="rounded px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide"
+          style={{
+            background: active ? 'rgba(114,137,192,0.25)' : 'rgba(114,137,192,0.1)',
+            color: active ? 'var(--ib-200)' : 'var(--ib-500)',
+          }}
+        >
+          AI
+        </span>
+      </div>
     </button>
   );
 }
 
-function ChannelItem({ channel, active, onClick }: { channel: ChannelSummary; active: boolean; onClick: () => void }) {
+function ChannelItem({ channel, active, onClick, unreadCount }: { channel: ChannelSummary; active: boolean; onClick: () => void; unreadCount: number }) {
   return (
     <button
       className="flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-left transition-all"
@@ -852,18 +908,23 @@ function ChannelItem({ channel, active, onClick }: { channel: ChannelSummary; ac
       >
         {channel.name}
       </span>
+      <div className="ml-auto">
+        <UnreadBadge active={active} count={unreadCount} />
+      </div>
     </button>
   );
 }
 
-function ProjectItem({ project, subChannels, activeChannelId, activeProjectId, onSelectChannel, onSelectProject, onAddChannel }: {
+function ProjectItem({ project, subChannels, activeChannelId, activeProjectId, onSelectChannel, onSelectProject, onAddChannel, unreadCounts }: {
   project: ProjectSummary; subChannels: ChannelSummary[];
   activeChannelId: string | null; activeProjectId: string | null;
   onSelectChannel: (id: string) => void; onSelectProject: (id: string) => void;
   onAddChannel: (projectId: string) => void;
+  unreadCounts: Record<string, number>;
 }) {
   const [open, setOpen] = useState(true);
   const pa = activeProjectId === project.id && !activeChannelId;
+  const unreadTotal = subChannels.reduce((sum, channel) => sum + (unreadCounts[channel.id] ?? 0), 0);
 
   return (
     <div>
@@ -897,6 +958,7 @@ function ProjectItem({ project, subChannels, activeChannelId, activeProjectId, o
           >
             {project.name}
           </span>
+          <UnreadBadge active={pa} count={unreadTotal} />
         </button>
         <button
           className="ml-0.5 flex h-6 w-6 items-center justify-center rounded-lg transition-colors hover:bg-white/10"
@@ -926,7 +988,10 @@ function ProjectItem({ project, subChannels, activeChannelId, activeProjectId, o
               type="button"
             >
               <span style={{ color: 'var(--ib-600)', fontWeight: 700 }}>#</span>
-              {ch.name}
+              <span className="truncate">{ch.name}</span>
+              <div className="ml-auto">
+                <UnreadBadge active={activeChannelId === ch.id} count={unreadCounts[ch.id] ?? 0} />
+              </div>
             </button>
           ))}
         </div>
@@ -1075,13 +1140,14 @@ export function ChatScreen() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [messages, setMessages] = useState<MessageRecord[]>([]);
   const [channelSession, setChannelSession] = useState<ChannelSessionSummary | null>(null);
-  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
+  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(() => readStoredSelectedChannelId());
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [navView, setNavView] = useState<NavView>('chat');
   const [agentStreams, setAgentStreams] = useState<Map<string, AgentStream>>(new Map());
   const [liveToolCalls, setLiveToolCalls] = useState<Map<string, LiveToolCall[]>>(new Map());
   const [agentState, setAgentState] = useState<AgentState>('idle');
   const [agentTodos, setAgentTodos] = useState<Map<string, AgentTodoList>>(new Map());
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>(() => readStoredUnreadCounts());
 
   const [showNewAgent, setShowNewAgent]           = useState(false);
   const [showNewGroup, setShowNewGroup]           = useState(false);
@@ -1112,6 +1178,16 @@ export function ChatScreen() {
     if (routingTimeoutRef.current) { clearTimeout(routingTimeoutRef.current); routingTimeoutRef.current = null; }
   }, []);
 
+  const markChannelAsRead = useCallback((channelId: string) => {
+    setUnreadCounts((current) => {
+      if (!current[channelId]) return current;
+
+      const next = { ...current };
+      delete next[channelId];
+      return next;
+    });
+  }, []);
+
   const workspace             = workspaces[0] ?? null;
   const selectedChannel       = channels.find((ch) => ch.id === selectedChannelId) ?? null;
   const selectedProject       = projects.find((p) => p.id === selectedProjectId) ?? null;
@@ -1130,6 +1206,26 @@ export function ChatScreen() {
 
   useEffect(() => { setSelectedChannelAgentIds(selectedChannel?.participantAgentIds ?? []); },
     [selectedChannel?.id, selectedChannel?.participantAgentIds]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    if (selectedChannelId) {
+      window.localStorage.setItem(SELECTED_CHANNEL_STORAGE_KEY, selectedChannelId);
+    } else {
+      window.localStorage.removeItem(SELECTED_CHANNEL_STORAGE_KEY);
+    }
+  }, [selectedChannelId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(UNREAD_COUNTS_STORAGE_KEY, JSON.stringify(unreadCounts));
+  }, [unreadCounts]);
+
+  useEffect(() => {
+    const totalUnread = Object.values(unreadCounts).reduce((sum, count) => sum + count, 0);
+    document.title = totalUnread > 0 ? `(${totalUnread}) NextGenChat` : 'NextGenChat';
+  }, [unreadCounts]);
 
   const loadBootstrap = useCallback(async (token: string) => {
     const h = { Authorization: `Bearer ${token}` };
@@ -1159,13 +1255,26 @@ export function ChatScreen() {
       startTransition(() => {
         setWorkspaces(data.workspaces); setChannels(data.channels);
         setAgents(data.agents); setProjects(data.projects);
+        const storedChannelId = readStoredSelectedChannelId();
+        const storedChannel = storedChannelId ? data.channels.find((channel) => channel.id === storedChannelId) : null;
         const first = data.channels.find((c) => c.type !== 'DIRECT') ?? data.channels[0];
-        setSelectedChannelId((cur) => cur ?? first?.id ?? null);
+        setSelectedChannelId((cur) => {
+          const currentChannel = cur ? data.channels.find((channel) => channel.id === cur) : null;
+          return currentChannel?.id ?? storedChannel?.id ?? first?.id ?? null;
+        });
         setLoading(false);
       });
     }).catch((e) => { if (cancelled) return; setError(e instanceof Error ? e.message : 'Failed to load.'); setLoading(false); });
     return () => { cancelled = true; };
   }, [accessToken, loadBootstrap, ready, refresh, router, setupRequired, user]);
+
+  useEffect(() => {
+    if (channels.length === 0 || !selectedChannelId) return;
+    if (channels.some((channel) => channel.id === selectedChannelId)) return;
+
+    const fallback = channels.find((channel) => channel.type !== 'DIRECT') ?? channels[0] ?? null;
+    setSelectedChannelId(fallback?.id ?? null);
+  }, [channels, selectedChannelId]);
 
   useEffect(() => {
     if (!accessToken || !selectedChannelId) return;
@@ -1179,13 +1288,24 @@ export function ChatScreen() {
   }, [accessToken, clearRoutingTimeout, loadChannelSession, loadMessages, selectedChannelId]);
 
   useEffect(() => {
-    if (!accessToken || !selectedChannelId) return;
+    if (!selectedChannelId) return;
+    markChannelAsRead(selectedChannelId);
+  }, [markChannelAsRead, selectedChannelId]);
+
+  useEffect(() => {
+    if (!accessToken || channels.length === 0) return;
     const socket = getChatSocket(accessToken);
 
     const onMsg = (m: MessageRecord) => {
       if (m.channelId === selectedChannelId) {
         setMessages((cur) => cur.some((x) => x.id === m.id) ? cur : [...cur, m]);
         if (isAgentFailure(m)) setAgentState('error');
+        markChannelAsRead(m.channelId);
+      } else if (m.senderId !== user?.id) {
+        setUnreadCounts((current) => ({
+          ...current,
+          [m.channelId]: (current[m.channelId] ?? 0) + 1,
+        }));
       }
       setChannels((cur) => cur.map((ch) => ch.id === m.channelId ? { ...ch, lastMessageAt: m.createdAt } : ch));
       if (m.channelId === selectedChannelId && accessToken && (m.senderType === 'AGENT' || m.metadata?.compaction)) {
@@ -1252,7 +1372,9 @@ export function ChatScreen() {
     };
 
     socket.connect();
-    socket.emit('channel:join', { channelId: selectedChannelId });
+    channels.forEach((channel) => {
+      socket.emit('channel:join', { channelId: channel.id });
+    });
     socket.on('message:new', onMsg);
     socket.on('message:stream:chunk', onChunk);
     socket.on('message:stream:end', onEnd);
@@ -1264,11 +1386,13 @@ export function ChatScreen() {
     socket.on('error', (p: { message: string }) => { clearRoutingTimeout(); setAgentState('error'); setError(p.message); });
 
     return () => {
-      socket.emit('channel:leave', { channelId: selectedChannelId });
+      channels.forEach((channel) => {
+        socket.emit('channel:leave', { channelId: channel.id });
+      });
       (['message:new','message:stream:chunk','message:stream:end','message:routing:complete',
        'agent:tool:start','agent:tool:end','agent:todos:update','disconnect','error'] as const).forEach((e) => socket.off(e));
     };
-  }, [accessToken, clearRoutingTimeout, loadChannelSession, selectedChannelId]);
+  }, [accessToken, channels, clearRoutingTimeout, loadChannelSession, markChannelAsRead, selectedChannelId, user?.id]);
 
   const handleScroll = useCallback(() => {
     const c = scrollContainerRef.current;
@@ -1308,7 +1432,12 @@ export function ChatScreen() {
     setDraft('');
   }, [accessToken, canSend, clearRoutingTimeout, draft, runCompactCommand, selectedChannelId]);
 
-  function selectChannel(id: string) { setSelectedChannelId(id); setSelectedProjectId(null); setNavView('chat'); }
+  function selectChannel(id: string) {
+    markChannelAsRead(id);
+    setSelectedChannelId(id);
+    setSelectedProjectId(null);
+    setNavView('chat');
+  }
   function selectProject(id: string)  { setSelectedProjectId(id); setSelectedChannelId(null); setNavView('project-detail'); }
 
   const createAgent = useCallback(async () => {
@@ -1433,6 +1562,7 @@ export function ChatScreen() {
                     channel={dm ?? { id: '', workspaceId: '', name: agent.name, type: 'DIRECT', participantAgentIds: [agent.id], participantAgentNames: [agent.name] }}
                     key={agent.id}
                     onClick={() => void openDirectChat(agent.id)}
+                    unreadCount={dm ? (unreadCounts[dm.id] ?? 0) : 0}
                   />
                 );
               })}
@@ -1440,7 +1570,7 @@ export function ChatScreen() {
 
             <SidebarSection label="Channels" addLabel="New channel" onAdd={() => setShowNewGroup(true)}>
               {groupChannels.map((ch) => (
-                <ChannelItem active={selectedChannelId === ch.id} channel={ch} key={ch.id} onClick={() => selectChannel(ch.id)} />
+                <ChannelItem active={selectedChannelId === ch.id} channel={ch} key={ch.id} onClick={() => selectChannel(ch.id)} unreadCount={unreadCounts[ch.id] ?? 0} />
               ))}
             </SidebarSection>
 
@@ -1455,6 +1585,7 @@ export function ChatScreen() {
                   onSelectProject={selectProject}
                   project={project}
                   subChannels={channels.filter((ch) => ch.projectId === project.id)}
+                  unreadCounts={unreadCounts}
                 />
               ))}
             </SidebarSection>
@@ -1601,11 +1732,12 @@ export function ChatScreen() {
                 ref={scrollContainerRef}
               >
                 <div className="mx-auto flex w-full max-w-3xl flex-col px-5 py-6 pb-40">
-                  {messages.map((msg, idx) => {
-                    const failure  = isAgentFailure(msg);
-                    const isAgent  = msg.senderType === 'AGENT';
-                    const isSystem = msg.contentType === 'SYSTEM';
-                    const toolCalls = getMessageToolCalls(msg);
+	                  {messages.map((msg, idx) => {
+	                    const failure  = isAgentFailure(msg);
+	                    const isAgent  = msg.senderType === 'AGENT';
+	                    const isSystem = msg.contentType === 'SYSTEM';
+	                    const toolCalls = getMessageToolCalls(msg);
+	                    const scheduledKind = getScheduledMessageKind(msg);
 
                     const prev = messages[idx - 1];
                     const grouped = prev
@@ -1668,16 +1800,24 @@ export function ChatScreen() {
                               >
                                 {msg.senderName ?? (isAgent ? 'Agent' : user?.username ?? 'You')}
                               </span>
-                              {isAgent && (
-                                <span
-                                  className="rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
-                                  style={{ background: 'rgba(114,137,192,0.15)', color: 'var(--ib-400)', border: '1px solid var(--ib-700)' }}
-                                >
-                                  AI
-                                </span>
-                              )}
-                              {failure && (
-                                <span
+	                              {isAgent && (
+	                                <span
+	                                  className="rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
+	                                  style={{ background: 'rgba(114,137,192,0.15)', color: 'var(--ib-400)', border: '1px solid var(--ib-700)' }}
+	                                >
+	                                  AI
+	                                </span>
+	                              )}
+	                              {scheduledKind && (
+	                                <span
+	                                  className="rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
+	                                  style={{ background: 'rgba(245,158,11,0.12)', color: '#fbbf24', border: '1px solid rgba(245,158,11,0.24)' }}
+	                                >
+	                                  {scheduledKind === 'CRON' ? 'Cron' : 'Reminder'}
+	                                </span>
+	                              )}
+	                              {failure && (
+	                                <span
                                   className="rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
                                   style={{ background: 'var(--sr-950)', color: 'var(--sr-300)', border: '1px solid var(--sr-800)' }}
                                 >

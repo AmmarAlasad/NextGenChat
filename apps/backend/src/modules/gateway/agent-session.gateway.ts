@@ -212,7 +212,7 @@ export class AgentSessionGateway {
 
       const triggeringMessage = await prisma.message.findUnique({
         where: { id: messageId },
-        select: { content: true, createdAt: true },
+        select: { content: true, createdAt: true, metadata: true },
       });
 
       // Reject stale jobs — e.g. Redis retries for messages from a previous session.
@@ -232,6 +232,14 @@ export class AgentSessionGateway {
       const messages = [...context.messages];
       const toolExecutionSummaries: TaskToolExecutionSummary[] = [];
       const triggerContent = triggeringMessage?.content ?? '';
+      const triggerMetadata = (triggeringMessage?.metadata as Record<string, unknown> | null) ?? null;
+      const scheduleTriggerMetadata = triggerMetadata?.source === 'agent-cron'
+        ? {
+            source: 'agent-cron',
+            scheduleId: typeof triggerMetadata.scheduleId === 'string' ? triggerMetadata.scheduleId : null,
+            kind: typeof triggerMetadata.kind === 'string' ? triggerMetadata.kind : null,
+          }
+        : null;
       const initialTaskState = await readPersistedTaskState(agentId);
 
       const writeToolRequired = requestLikelyNeedsWriteTool(triggerContent);
@@ -542,6 +550,7 @@ export class AgentSessionGateway {
             incompleteTodos: taskState.incompleteTodos.map((todo) => todo.content),
             hasInProgress: taskState.hasInProgress,
           },
+          schedule: scheduleTriggerMetadata,
           relayedChannels: relayCommands.length > 0 ? relayCommands.map((cmd) => cmd.channelName) : undefined,
         }),
       );

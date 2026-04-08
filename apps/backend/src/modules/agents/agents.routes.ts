@@ -11,7 +11,8 @@ import type { FastifyPluginAsync } from 'fastify';
 
 import { AgentCreatorChatInputSchema } from '@nextgenchat/types';
 
-import { CreateAgentSchema, UpdateAgentBrowserMcpSchema, UpdateAgentSchema } from '@/modules/agents/agents.schema.js';
+import { agentCronService } from '@/modules/agents/agent-cron.service.js';
+import { CreateAgentSchema, UpdateAgentBrowserMcpSchema, UpdateAgentScheduleSchema, UpdateAgentSchema } from '@/modules/agents/agents.schema.js';
 import { agentCreatorService } from '@/modules/agents/agent-creator.service.js';
 import { authenticateRequest, requireAuthUser } from '@/middleware/auth.js';
 import { agentsService } from '@/modules/agents/agents.service.js';
@@ -61,6 +62,32 @@ export const agentsRoutes: FastifyPluginAsync = async (fastify) => {
     const input = UpdateAgentBrowserMcpSchema.parse(request.body);
 
     return agentsService.setAgentBrowserMcpEnabled(authUser.id, params.id, input.enabled);
+  });
+
+  fastify.get('/agents/:id/schedules', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+
+    await workspaceService.assertAgentWorkspaceAccess(authUser.id, params.id);
+    return agentCronService.listAgentSchedules(params.id);
+  });
+
+  fastify.delete('/agents/:id/schedules/:scheduleId', { preHandler: authenticateRequest }, async (request, reply) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string; scheduleId: string };
+
+    await workspaceService.assertAgentWorkspaceAccess(authUser.id, params.id);
+    await agentCronService.deleteAgentSchedule(params.id, params.scheduleId);
+    return reply.status(204).send();
+  });
+
+  fastify.patch('/agents/:id/schedules/:scheduleId', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string; scheduleId: string };
+    const input = UpdateAgentScheduleSchema.parse(request.body);
+
+    await workspaceService.assertAgentWorkspaceAccess(authUser.id, params.id);
+    return agentCronService.updateAgentSchedule(params.id, params.scheduleId, input);
   });
 
   fastify.post('/agents/:id/creator/chat', { preHandler: authenticateRequest }, async (request) => {

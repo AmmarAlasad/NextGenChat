@@ -150,6 +150,11 @@ enum AgentSkillSourceType {
   URL
 }
 
+enum AgentCronJobKind {
+  ONCE
+  CRON
+}
+
 model SystemSetting {
   id        String   @id @default(uuid())
   key       String   @unique
@@ -294,6 +299,7 @@ model Channel {
   messages          Message[]
   summaries         ConversationSummary[]
   agentMemberships  AgentChannelMembership[]
+  cronJobs          AgentCronJob[]
 
   @@index([workspaceId])
   @@index([projectId])
@@ -439,16 +445,22 @@ model AgentTool {
 model AgentCronJob {
   id          String      @id @default(uuid())
   agentId      String
+  channelId    String
+  kind         AgentCronJobKind @default(CRON)
   schedule     String
   task         String
+  timezone     String
   lastRunAt    DateTime?
   nextRunAt    DateTime?
   status       AgentStatus @default(ACTIVE)
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
   agent        Agent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  channel      Channel     @relation(fields: [channelId], references: [id], onDelete: Cascade)
 
   @@index([agentId])
+  @@index([channelId])
+  @@index([status, nextRunAt])
 }
 
 model AgentChannelMembership {

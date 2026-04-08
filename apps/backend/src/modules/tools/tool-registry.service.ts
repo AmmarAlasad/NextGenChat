@@ -22,6 +22,7 @@ import { chatService } from '@/modules/chat/chat.service.js';
 import { mcpService } from '@/modules/mcp/mcp.service.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
 import { getChatNamespace, getChannelRoom } from '@/sockets/socket-server.js';
+import { agentCronService } from '../agents/agent-cron.service.js';
 import { NO_REPLY_TOKEN, sanitizeAgentVisibleContent } from '../agents/agent-output.js';
 const DEFAULT_READ_LIMIT = 2_000;
 const MAX_LINE_LENGTH = 2_000;
@@ -42,8 +43,12 @@ const TOOL_WEBFETCH = 'webfetch';
 const TOOL_SKILL_ACTIVATE = 'skill_activate';
 const TOOL_SKILL_LIST = 'skill_list';
 const TOOL_SKILL_INSTALL = 'skill_install';
+const TOOL_SCHEDULE_TASK = 'schedule_task';
+const TOOL_SCHEDULE_LIST = 'schedule_list';
+const TOOL_SCHEDULE_DELETE = 'schedule_delete';
 const TOOL_STATE_DIR = '.nextgenchat';
 const TODO_STATE_FILE = `${TOOL_STATE_DIR}/todo-state.json`;
+const SCHEDULE_STATE_FILE = `${TOOL_STATE_DIR}/schedules.json`;
 const DEFAULT_SEARCH_LIMIT = 200;
 const MESSAGE_WRAPPER_RE = /^<message\b[^>]*>\s*/i;
 const MESSAGE_WRAPPER_CLOSE_RE = /\s*<\/message>\s*$/i;
@@ -129,6 +134,20 @@ const SkillInstallToolSchema = z.object({
   name: z.string().min(1).max(50).regex(/^[a-z0-9-]+$/).optional().describe('Override the skill name (slug). Derived from URL or frontmatter if omitted.'),
   skill: z.string().min(1).max(100).optional().describe('Optional skill selector for multi-skill repositories, for example "obsidian-markdown". Also supported as ?skill=... or #skill=... in the URL.'),
   type: z.enum(['PASSIVE', 'ON_DEMAND', 'TOOL_BASED']).optional().describe('Override the skill type. Parsed from frontmatter if omitted, defaults to ON_DEMAND.'),
+});
+
+const ScheduleTaskToolSchema = z.object({
+  task: z.string().min(1).max(2_000).describe('The work to do when the schedule fires.'),
+  delayMinutes: z.number().positive().optional().describe('Use for one-time reminders relative to now, for example 60 for one hour from now.'),
+  runAt: z.string().min(1).optional().describe('Use for one-time reminders at a specific ISO timestamp.'),
+  cron: z.string().min(1).optional().describe('Use for recurring schedules, for example "0 */5 * * *" or "0 * * * 1".'),
+  timezone: z.string().min(1).optional().describe('Optional IANA timezone name. Defaults to the local machine timezone.'),
+});
+
+const ScheduleListToolSchema = z.object({});
+
+const ScheduleDeleteToolSchema = z.object({
+  scheduleId: z.string().uuid().describe('The id of the scheduled task to delete.'),
 });
 
 type ToolExecutionResult = {
@@ -252,7 +271,7 @@ async function runProcess(input: { command: string; args: string[]; cwd: string 
 }
 
 function shouldUseSearchFallback(error: unknown) {
-  return error instanceof Error && /ENOENT/i.test(error.message);
+  return error instanceof Error && /(ENOENT|EPERM)/i.test(error.message);
 }
 
 function escapeRegex(value: string) {
@@ -355,6 +374,10 @@ function truncateOutputLines(lines: string[], limit: number) {
 
 function getTodoStatePath(agentId: string) {
   return resolveAllowedPath(agentId, TODO_STATE_FILE);
+}
+
+function getScheduleStatePath(agentId: string) {
+  return resolveAllowedPath(agentId, SCHEDULE_STATE_FILE);
 }
 
 async function readTodoState(agentId: string) {
@@ -509,6 +532,9 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
     async execute(args, context) {
       const input = ReadToolSchema.parse(args);
       const filePath = resolveAllowedPath(context.agentId, input.filePath);
+      if (filePath === getScheduleStatePath(context.agentId)) {
+        await agentCronService.syncWorkspaceManifest(context.agentId);
+      }
       const displayPath = displayWorkspacePath(context.agentId, filePath);
       const fileStat = await stat(filePath).catch(() => null);
 
@@ -570,6 +596,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
     async execute(args, context) {
       const input = WriteToolSchema.parse(args);
       const filePath = resolveAllowedPath(context.agentId, input.filePath);
+      const scheduleFilePath = getScheduleStatePath(context.agentId);
 
       // Protect system-managed files from agent self-modification.
       // Only AgentCreatorAgent (admin API) may update these.
@@ -580,6 +607,25 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
       }
 
       const displayPath = displayWorkspacePath(context.agentId, filePath);
+
+      if (filePath === scheduleFilePath) {
+        const result = await agentCronService.syncManifestChanges(context.agentId, input.content);
+        return {
+          output: [
+            'Updated schedules manifest.',
+            result.updatedCount > 0 ? `Updated ${result.updatedCount} scheduled task(s).` : null,
+            result.deletedCount > 0 ? `Deleted ${result.deletedCount} scheduled task(s): ${result.deletedIds.join(', ')}` : null,
+            result.updatedCount === 0 && result.deletedCount === 0 ? 'No schedule changes were detected.' : null,
+          ].filter(Boolean).join(' '),
+          structuredOutput: {
+            filePath: displayPath,
+            updatedCount: result.updatedCount,
+            deletedCount: result.deletedCount,
+            deletedIds: result.deletedIds,
+          },
+        };
+      }
+
       await mkdir(path.dirname(filePath), { recursive: true });
       const existed = await pathExists(filePath);
       await writeFile(filePath, input.content, 'utf8');
@@ -1392,6 +1438,145 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
           action: installed.action,
           source: installed.resolvedFrom,
           sourceKind: installed.sourceKind,
+        },
+      };
+    },
+  },
+  [TOOL_SCHEDULE_TASK]: {
+    name: TOOL_SCHEDULE_TASK,
+    description: 'Create a scheduled wakeup for this agent. Use this for reminders and recurring work that should happen later, not for work that should start right now.',
+    usageGuidance: [
+      'Use `delayMinutes` for one-time reminders relative to now, such as 60 for one hour later.',
+      'Use `runAt` for a one-time task at an exact ISO timestamp.',
+      'Use `cron` for recurring work. Standard 5-field cron like `*/5 * * * *` is accepted and normalized automatically.',
+      'For scheduled posts, describe the message directly, for example `Send "hi" to #general`. Do not tell the future run to use `channel_send_message`.',
+      'Only schedule tasks that should happen later. If the task should happen now, do it in the current turn instead.',
+    ],
+    schema: ScheduleTaskToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        task: { type: 'string', description: 'The work to do when the schedule fires.' },
+        delayMinutes: { type: 'number', description: 'One-time reminder relative to now, in minutes.' },
+        runAt: { type: 'string', description: 'One-time reminder at a specific ISO timestamp.' },
+        cron: { type: 'string', description: 'Recurring cron expression.' },
+        timezone: { type: 'string', description: 'Optional IANA timezone name.' },
+      },
+      required: ['task'],
+    },
+    async execute(args, context) {
+      const input = ScheduleTaskToolSchema.parse(args);
+      const hasDelay = typeof input.delayMinutes === 'number';
+      const hasRunAt = typeof input.runAt === 'string';
+      const hasCron = typeof input.cron === 'string';
+      const modeCount = [hasDelay, hasRunAt, hasCron].filter(Boolean).length;
+
+      if (modeCount !== 1) {
+        throw new Error('Provide exactly one of delayMinutes, runAt, or cron when scheduling a task.');
+      }
+
+      const schedule = hasDelay
+        ? new Date(Date.now() + (input.delayMinutes ?? 0) * 60_000).toISOString()
+        : hasRunAt
+          ? input.runAt!.trim()
+          : input.cron!.trim();
+
+      const record = await agentCronService.createAgentSchedule(context.agentId, {
+        channelId: context.channelId,
+        kind: hasCron ? 'CRON' : 'ONCE',
+        schedule,
+        task: input.task,
+        timezone: input.timezone,
+      });
+
+      return {
+        output: [
+          `Scheduled task created: ${record.id}`,
+          `Kind: ${record.kind}`,
+          `Created from channel: ${record.channelName}`,
+          `Delivery: ${record.deliveryDescription}`,
+          `Task: ${record.task}`,
+          `Schedule: ${record.scheduleDescription}`,
+          `Raw schedule: ${record.schedule}`,
+          `Next run: ${record.nextRunAt ?? 'none'}`,
+          `Manifest file: ${displayWorkspacePath(context.agentId, getScheduleStatePath(context.agentId))}`,
+        ].join('\n'),
+        structuredOutput: record,
+      };
+    },
+  },
+  [TOOL_SCHEDULE_LIST]: {
+    name: TOOL_SCHEDULE_LIST,
+    description: 'List all scheduled tasks configured for this agent.',
+    usageGuidance: [
+      'Use this before deleting or confirming a reminder.',
+      'The same data is mirrored to `.nextgenchat/schedules.json` in the agent workspace.',
+    ],
+    schema: ScheduleListToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    async execute(_args, context) {
+      await agentCronService.syncWorkspaceManifest(context.agentId);
+      const schedules = await agentCronService.listAgentSchedules(context.agentId);
+
+      if (schedules.length === 0) {
+        return {
+          output: 'No scheduled tasks are currently configured for this agent.',
+          structuredOutput: {
+            schedules: [],
+            filePath: displayWorkspacePath(context.agentId, getScheduleStatePath(context.agentId)),
+          },
+        };
+      }
+
+      return {
+        output: schedules.map((schedule) => [
+          `- ${schedule.id}`,
+          `  kind: ${schedule.kind}`,
+          `  createdFromChannel: ${schedule.channelName}`,
+          `  delivery: ${schedule.deliveryDescription}`,
+          `  task: ${schedule.task}`,
+          `  schedule: ${schedule.scheduleDescription}`,
+          `  rawSchedule: ${schedule.schedule}`,
+          `  status: ${schedule.status}`,
+          `  nextRunAt: ${schedule.nextRunAt ?? 'none'}`,
+        ].join('\n')).join('\n'),
+        structuredOutput: {
+          schedules,
+          filePath: displayWorkspacePath(context.agentId, getScheduleStatePath(context.agentId)),
+        },
+      };
+    },
+  },
+  [TOOL_SCHEDULE_DELETE]: {
+    name: TOOL_SCHEDULE_DELETE,
+    description: 'Delete a scheduled task by id.',
+    usageGuidance: [
+      'Use `schedule_list` first if you do not know the schedule id.',
+      'You can also delete schedules by removing entries from `.nextgenchat/schedules.json` in the agent workspace.',
+    ],
+    schema: ScheduleDeleteToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        scheduleId: { type: 'string', description: 'The id of the scheduled task to delete.' },
+      },
+      required: ['scheduleId'],
+    },
+    async execute(args, context) {
+      const input = ScheduleDeleteToolSchema.parse(args);
+      await agentCronService.deleteAgentSchedule(context.agentId, input.scheduleId);
+
+      return {
+        output: `Deleted scheduled task ${input.scheduleId}.`,
+        structuredOutput: {
+          scheduleId: input.scheduleId,
+          filePath: displayWorkspacePath(context.agentId, getScheduleStatePath(context.agentId)),
         },
       };
     },

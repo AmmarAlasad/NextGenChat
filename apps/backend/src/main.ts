@@ -26,6 +26,7 @@ import { chatRoutes } from '@/modules/chat/chat.routes.js';
 import { workspaceRoutes } from '@/modules/workspace/workspace.routes.js';
 import { projectRoutes } from '@/modules/project/project.routes.js';
 import { createAgentProcessorWorker } from '@/queues/agent.processor.js';
+import { createCronProcessorWorker } from '@/queues/cron.processor.js';
 import { createSocketServer } from '@/sockets/socket-server.js';
 
 export async function buildServer() {
@@ -117,8 +118,10 @@ async function start() {
   const fastify = await buildServer();
   createSocketServer(fastify.server);
   const agentWorker = createAgentProcessorWorker();
+  const cronWorker = createCronProcessorWorker();
 
   const shutdown = async () => {
+    await cronWorker.close();
     await agentWorker.close();
     await fastify.close();
     await prisma.$disconnect();

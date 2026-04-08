@@ -21,6 +21,7 @@ const state = vi.hoisted(() => ({
   approvedTools: [] as string[],
   emittedEvents: [] as Array<{ room: string; event: string; payload: unknown }>,
   relayedMessages: [] as Array<Record<string, unknown>>,
+  schedules: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock('@/db/client.js', () => ({
@@ -94,6 +95,54 @@ vi.mock('@/modules/agents/skill-installer.service.js', () => ({
   },
 }));
 
+vi.mock('@/modules/mcp/mcp.service.js', () => ({
+  mcpService: {
+    executeToolCall: vi.fn(),
+  },
+}));
+
+vi.mock('../agents/agent-cron.service.js', () => ({
+  agentCronService: {
+    getManifestRelativePath: vi.fn(() => '.nextgenchat/schedules.json'),
+    syncWorkspaceManifest: vi.fn(async () => undefined),
+    listAgentSchedules: vi.fn(async () => state.schedules),
+    createAgentSchedule: vi.fn(async (_agentId: string, input: { channelId: string; kind: 'ONCE' | 'CRON'; schedule: string; task: string; timezone?: string }) => {
+      const record = {
+        id: `schedule-${state.schedules.length + 1}`,
+        agentId: 'agent-1',
+        channelId: input.channelId,
+        channelName: 'general',
+        kind: input.kind,
+        schedule: input.schedule,
+        scheduleDescription: input.kind === 'ONCE' ? 'Once later' : 'Every 5 minutes',
+        task: input.task,
+        deliveryDescription: `Wake the agent in #general to do: ${input.task}`,
+        timezone: input.timezone ?? 'UTC',
+        status: 'ACTIVE',
+        lastRunAt: null,
+        nextRunAt: input.kind === 'ONCE' ? input.schedule : new Date('2026-04-08T12:00:00.000Z').toISOString(),
+        createdAt: new Date('2026-04-08T10:00:00.000Z').toISOString(),
+        updatedAt: new Date('2026-04-08T10:00:00.000Z').toISOString(),
+      };
+      state.schedules.push(record);
+      return record;
+    }),
+    deleteAgentSchedule: vi.fn(async (_agentId: string, scheduleId: string) => {
+      state.schedules = state.schedules.filter((schedule) => schedule.id !== scheduleId);
+    }),
+    syncManifestChanges: vi.fn(async (_agentId: string, content: string) => {
+      const parsed = JSON.parse(content) as { schedules: Array<{ id: string }> };
+      const keepIds = new Set(parsed.schedules.map((schedule) => schedule.id));
+      const deletedIds = state.schedules
+        .map((schedule) => String(schedule.id))
+        .filter((id) => !keepIds.has(id));
+      state.schedules = state.schedules.filter((schedule) => keepIds.has(String(schedule.id)));
+      return { updatedCount: 0, deletedCount: deletedIds.length, deletedIds };
+    }),
+    triggerDueSchedules: vi.fn(async () => undefined),
+  },
+}));
+
 import { toolRegistryService } from './tool-registry.service.js';
 
 describe('toolRegistryService', () => {
@@ -105,6 +154,7 @@ describe('toolRegistryService', () => {
     state.approvedTools = ['workspace_glob', 'workspace_grep', 'todowrite', 'todoread', 'send_reply'];
     state.emittedEvents = [];
     state.relayedMessages = [];
+    state.schedules = [];
 
     await mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
     await mkdir(path.join(workspaceRoot, 'docs'), { recursive: true });
@@ -189,5 +239,44 @@ describe('toolRegistryService', () => {
     expect(summary).toContain('### workspace_grep');
     expect(summary).toContain('### send_reply');
     expect(summary).toContain('Use `todoread` if you need to inspect the current task list before updating it.');
+  });
+
+  it('creates and deletes schedules with the scheduling tools', async () => {
+    state.approvedTools = ['schedule_task', 'schedule_list', 'schedule_delete', 'workspace_write_file'];
+
+    const created = await toolRegistryService.executeToolCall({
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      toolName: 'schedule_task',
+      args: JSON.stringify({
+        task: 'Remind the user to review the draft',
+        delayMinutes: 60,
+      }),
+    });
+
+    expect(created.output).toContain('Scheduled task created: schedule-1');
+
+    const listed = await toolRegistryService.executeToolCall({
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      toolName: 'schedule_list',
+      args: '{}',
+    });
+
+    expect(listed.output).toContain('schedule-1');
+    expect(listed.output).toContain('Remind the user to review the draft');
+
+    const deletedFromManifest = await toolRegistryService.executeToolCall({
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      toolName: 'workspace_write_file',
+      args: JSON.stringify({
+        filePath: '.nextgenchat/schedules.json',
+        content: JSON.stringify({ schedules: [] }, null, 2),
+      }),
+    });
+
+    expect(deletedFromManifest.output).toContain('Deleted 1 scheduled task');
+    expect(state.schedules).toHaveLength(0);
   });
 });

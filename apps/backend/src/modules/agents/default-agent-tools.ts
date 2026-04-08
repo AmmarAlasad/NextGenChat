@@ -121,6 +121,30 @@ export function buildDefaultAgentTools() {
       },
       requiresApproval: false,
     },
+    {
+      toolName: 'schedule_task',
+      config: {
+        description: 'Schedule a one-time or recurring task for this agent. Direct "send/post" tasks can be delivered into the named channel without a future tool call.',
+        access: 'workspace-state',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'schedule_list',
+      config: {
+        description: 'List all scheduled tasks configured for this agent.',
+        access: 'workspace-state',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'schedule_delete',
+      config: {
+        description: 'Delete a scheduled task by id.',
+        access: 'workspace-state',
+      },
+      requiresApproval: false,
+    },
   ];
 }
 

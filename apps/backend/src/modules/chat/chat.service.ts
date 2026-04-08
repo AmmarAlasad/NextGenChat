@@ -90,6 +90,15 @@ export function serializeMessage(message: {
   };
 }
 
+function isInternalMessage(metadata: unknown) {
+  return Boolean(
+    metadata
+    && typeof metadata === 'object'
+    && 'internal' in metadata
+    && (metadata as Record<string, unknown>).internal === true,
+  );
+}
+
 async function ensureWorkspaceMembership(userId: string, workspaceId: string) {
   const membership = await prisma.workspaceMembership.findFirst({
     where: { userId, workspaceId },
@@ -455,7 +464,7 @@ export class ChatService {
       beforeCursor = beforeMessage?.createdAt;
     }
 
-    const messages = await prisma.message.findMany({
+    const rawMessages = await prisma.message.findMany({
       where: {
         channelId,
         ...(beforeCursor
@@ -467,8 +476,12 @@ export class ChatService {
           : {}),
       },
       orderBy: [{ createdAt: 'desc' }],
-      take: pagination.limit,
+      take: pagination.limit * 3,
     });
+
+    const messages = rawMessages
+      .filter((message) => !isInternalMessage(message.metadata))
+      .slice(0, pagination.limit);
 
     const userSenderIds = Array.from(new Set(messages.filter((message) => message.senderType === 'USER').map((message) => message.senderId)));
     const agentSenderIds = Array.from(new Set(messages.filter((message) => message.senderType === 'AGENT').map((message) => message.senderId)));

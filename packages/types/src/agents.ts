@@ -118,6 +118,46 @@ export const AgentCronSchema = z.object({
 });
 export type AgentCronInput = z.infer<typeof AgentCronSchema>;
 
+export const AgentScheduleKind = z.enum(['ONCE', 'CRON']);
+export type AgentScheduleKind = z.infer<typeof AgentScheduleKind>;
+
+export const AgentScheduleRecordSchema = z.object({
+  id: z.string().uuid(),
+  agentId: z.string().uuid(),
+  channelId: z.string().uuid(),
+  channelName: z.string(),
+  kind: AgentScheduleKind,
+  schedule: z.string().min(1),
+  scheduleDescription: z.string().min(1),
+  task: z.string().min(1).max(2_000),
+  deliveryDescription: z.string().min(1),
+  timezone: z.string().min(1),
+  status: AgentStatus,
+  lastRunAt: z.string().nullable(),
+  nextRunAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type AgentScheduleRecord = z.infer<typeof AgentScheduleRecordSchema>;
+
+export const CreateAgentScheduleSchema = z.object({
+  channelId: z.string().uuid(),
+  kind: AgentScheduleKind,
+  schedule: z.string().min(1).max(200),
+  task: z.string().min(1).max(2_000),
+  timezone: z.string().min(1).max(100).optional(),
+});
+export type CreateAgentScheduleInput = z.infer<typeof CreateAgentScheduleSchema>;
+
+export const UpdateAgentScheduleSchema = z.object({
+  schedule: z.string().min(1).max(200).optional(),
+  task: z.string().min(1).max(2_000).optional(),
+  timezone: z.string().min(1).max(100).optional(),
+}).refine((value) => value.schedule !== undefined || value.task !== undefined || value.timezone !== undefined, {
+  message: 'At least one schedule field must be provided.',
+});
+export type UpdateAgentScheduleInput = z.infer<typeof UpdateAgentScheduleSchema>;
+
 // ── Agent Skills ────────────────────────────────────────
 
 export const AgentSkillType = z.enum(['PASSIVE', 'ON_DEMAND', 'TOOL_BASED']);

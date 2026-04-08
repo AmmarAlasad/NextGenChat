@@ -27,6 +27,7 @@ import type {
   AgentCreatorChatResponse,
   AgentDetail,
   AgentDocRecord,
+  AgentScheduleRecord,
   AgentSkill,
   AgentSkillType,
   CreateSkillInput,
@@ -64,6 +65,14 @@ const DOC_ICONS: Record<DocTab, string> = {
 const PROTECTED_DOCS: DocTab[] = ['soul.md', 'identity.md', 'Agent.md', 'pickup.md'];
 
 type CenterView = 'settings' | 'doc' | 'skill' | 'agency';
+type ScheduleEditorMode = 'everyMinutes' | 'everyHours' | 'daily' | 'weekdays' | 'custom';
+type ScheduleEditorState = {
+  mode: ScheduleEditorMode;
+  interval: string;
+  hour: string;
+  minute: string;
+  raw: string;
+};
 
 function avatarColor(name: string): string {
   const palette = ['#7289c0', '#5e6ca1', '#766f90', '#5e5973', '#7e89b4', '#4f6cb0', '#918ca6'];
@@ -79,6 +88,72 @@ function triggerLabel(mode: string): string {
 function statusDot(status: string) {
   const color = { ACTIVE: '#22c55e', PAUSED: '#f59e0b', ARCHIVED: 'rgba(255,255,255,0.2)' }[status] ?? 'rgba(255,255,255,0.2)';
   return <span className="inline-block h-2 w-2 rounded-full" style={{ background: color, boxShadow: status === 'ACTIVE' ? `0 0 6px ${color}` : 'none' }} />;
+}
+
+function formatScheduleTime(value: string | null) {
+  if (!value) return 'Not scheduled';
+  return new Date(value).toLocaleString();
+}
+
+function padTwo(value: string) {
+  return value.padStart(2, '0');
+}
+
+function toLocalDateTimeInput(value: string) {
+  const date = new Date(value);
+  const localValue = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return localValue.toISOString().slice(0, 16);
+}
+
+function fromLocalDateTimeInput(value: string) {
+  return new Date(value).toISOString();
+}
+
+function parseCronEditor(schedule: string): ScheduleEditorState {
+  const normalized = schedule.trim().replace(/\s+/g, ' ');
+  const fields = normalized.split(' ');
+  const cron = fields.length === 5 ? `0 ${normalized}` : normalized;
+  const [seconds, minutes, hours, dayOfMonth, month, dayOfWeek] = cron.split(' ');
+
+  if (seconds === '0' && minutes.startsWith('*/') && hours === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+    return { mode: 'everyMinutes', interval: minutes.slice(2), hour: '09', minute: '00', raw: cron };
+  }
+
+  if (seconds === '0' && minutes === '0' && hours.startsWith('*/') && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+    return { mode: 'everyHours', interval: hours.slice(2), hour: '09', minute: '00', raw: cron };
+  }
+
+  if (seconds === '0' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+    return { mode: 'daily', interval: '1', hour: hours, minute: minutes, raw: cron };
+  }
+
+  if (seconds === '0' && dayOfMonth === '*' && month === '*' && dayOfWeek === '1-5') {
+    return { mode: 'weekdays', interval: '1', hour: hours, minute: minutes, raw: cron };
+  }
+
+  return { mode: 'custom', interval: '5', hour: '09', minute: '00', raw: cron };
+}
+
+function buildCronFromEditor(editor: ScheduleEditorState) {
+  if (editor.mode === 'everyMinutes') {
+    const interval = Math.max(1, Number.parseInt(editor.interval || '1', 10) || 1);
+    return `0 */${interval} * * * *`;
+  }
+
+  if (editor.mode === 'everyHours') {
+    const interval = Math.max(1, Number.parseInt(editor.interval || '1', 10) || 1);
+    return `0 0 */${interval} * * *`;
+  }
+
+  if (editor.mode === 'daily') {
+    return `0 ${padTwo(editor.minute || '00')} ${padTwo(editor.hour || '09')} * * *`;
+  }
+
+  if (editor.mode === 'weekdays') {
+    return `0 ${padTwo(editor.minute || '00')} ${padTwo(editor.hour || '09')} * * 1-5`;
+  }
+
+  return editor.raw.trim();
 }
 
 // ── Form primitives ───────────────────────────────────────────────────────────
@@ -178,6 +253,14 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
   const [agencySavedAt, setAgencySavedAt] = useState<string | null>(null);
   const [browserMcp, setBrowserMcp] = useState<AgentBrowserMcpState | null>(null);
   const [savingBrowserMcp, setSavingBrowserMcp] = useState(false);
+  const [schedules, setSchedules] = useState<AgentScheduleRecord[]>([]);
+  const [deletingScheduleId, setDeletingScheduleId] = useState<string | null>(null);
+  const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null);
+  const [savingScheduleId, setSavingScheduleId] = useState<string | null>(null);
+  const [scheduleTaskDraft, setScheduleTaskDraft] = useState('');
+  const [scheduleTimezoneDraft, setScheduleTimezoneDraft] = useState('');
+  const [scheduleOnceDraft, setScheduleOnceDraft] = useState('');
+  const [scheduleCronDraft, setScheduleCronDraft] = useState<ScheduleEditorState>({ mode: 'everyMinutes', interval: '5', hour: '09', minute: '00', raw: '0 */5 * * * *' });
 
   useEffect(() => {
     if (!ready) return;
@@ -192,12 +275,13 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
       setLoading(true); setError(null);
       try {
         const headers = { Authorization: `Bearer ${accessToken}` };
-        const [nextAgent, nextDocs, nextAgency, nextSkills, nextBrowserMcp] = await Promise.all([
+        const [nextAgent, nextDocs, nextAgency, nextSkills, nextBrowserMcp, nextSchedules] = await Promise.all([
           apiJson<AgentDetail>(`/agents/${agentId}`, { headers }),
           apiJson<AgentDocRecord[]>(`/agents/${agentId}/docs`, { headers }),
           apiJson<WorkspaceDocRecord>('/workspace/agency', { headers }),
           apiJson<AgentSkill[]>(`/agents/${agentId}/skills`, { headers }),
           apiJson<AgentBrowserMcpState>(`/agents/${agentId}/browser-mcp`, { headers }),
+          apiJson<AgentScheduleRecord[]>(`/agents/${agentId}/schedules`, { headers }),
         ]);
         if (!active) return;
         setAgent(nextAgent);
@@ -215,6 +299,7 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
         setAgencySavedAt(nextAgency.updatedAt);
         setSkills(nextSkills);
         setBrowserMcp(nextBrowserMcp);
+        setSchedules(nextSchedules);
       } catch (loadError) {
         if (active) setError(loadError instanceof Error ? loadError.message : 'Failed to load agent workspace.');
       } finally {
@@ -307,6 +392,67 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
     } catch (toggleError) {
       setError(toggleError instanceof Error ? toggleError.message : 'Failed to update Browser MCP.');
     } finally { setSavingBrowserMcp(false); }
+  }
+
+  async function deleteSchedule(scheduleId: string) {
+    if (!accessToken || deletingScheduleId) return;
+    setDeletingScheduleId(scheduleId);
+    setError(null);
+    try {
+      await apiJson(`/agents/${agentId}/schedules/${scheduleId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      setSchedules((current) => current.filter((schedule) => schedule.id !== scheduleId));
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete scheduled task.');
+    } finally {
+      setDeletingScheduleId(null);
+    }
+  }
+
+  function startEditingSchedule(schedule: AgentScheduleRecord) {
+    setEditingScheduleId(schedule.id);
+    setScheduleTaskDraft(schedule.task);
+    setScheduleTimezoneDraft(schedule.timezone);
+    if (schedule.kind === 'ONCE') {
+      setScheduleOnceDraft(toLocalDateTimeInput(schedule.schedule));
+    } else {
+      setScheduleCronDraft(parseCronEditor(schedule.schedule));
+    }
+  }
+
+  function cancelEditingSchedule() {
+    setEditingScheduleId(null);
+    setSavingScheduleId(null);
+  }
+
+  async function saveSchedule(schedule: AgentScheduleRecord) {
+    if (!accessToken || savingScheduleId) return;
+    setSavingScheduleId(schedule.id);
+    setError(null);
+    try {
+      const nextSchedule = schedule.kind === 'ONCE'
+        ? fromLocalDateTimeInput(scheduleOnceDraft)
+        : buildCronFromEditor(scheduleCronDraft);
+
+      const updated = await apiJson<AgentScheduleRecord>(`/agents/${agentId}/schedules/${schedule.id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          task: scheduleTaskDraft,
+          timezone: scheduleTimezoneDraft,
+          schedule: nextSchedule,
+        }),
+      });
+
+      setSchedules((current) => current.map((entry) => entry.id === updated.id ? updated : entry));
+      setEditingScheduleId(null);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Failed to update scheduled task.');
+    } finally {
+      setSavingScheduleId(null);
+    }
   }
 
   async function sendCreatorMessage() {
@@ -845,6 +991,171 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
                           : 'No Browser MCP tools are assigned to this agent.'}
                       </div>
                     </div>
+                  </div>
+
+                  <div
+                    className="rounded-xl p-5 space-y-4"
+                    style={{ background: 'var(--surface-container-lowest)', border: '1px solid var(--outline-variant)' }}
+                  >
+                    <div>
+                      <h3 className="font-headline text-sm font-semibold text-on-surface">Scheduled Jobs</h3>
+                      <p className="mt-1 text-[11px] text-on-surface-variant/40">
+                        Active and archived wakeups for this agent, including the chat each job replies into.
+                      </p>
+                    </div>
+
+                    {schedules.length === 0 ? (
+                      <div className="rounded-md px-3 py-3 text-[11px] text-on-surface-variant/55" style={{ ...fieldBase, background: 'rgba(255,255,255,0.02)' }}>
+                        No scheduled jobs yet.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {schedules.map((schedule) => (
+                          <div
+                            className="rounded-lg px-3 py-3"
+                            key={schedule.id}
+                            style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--outline-variant)' }}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-mono text-[11px] text-on-surface">{schedule.id}</span>
+                                  <span
+                                    className="rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
+                                    style={{
+                                      background: schedule.kind === 'CRON' ? 'rgba(114,137,192,0.15)' : 'rgba(245,158,11,0.12)',
+                                      color: schedule.kind === 'CRON' ? 'var(--primary)' : '#fbbf24',
+                                      border: schedule.kind === 'CRON' ? '1px solid rgba(114,137,192,0.25)' : '1px solid rgba(245,158,11,0.24)',
+                                    }}
+                                  >
+                                    {schedule.kind}
+                                  </span>
+                                  <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: 'rgba(255,255,255,0.03)', color: 'var(--on-surface-variant)', border: '1px solid var(--outline-variant)' }}>
+                                    {statusDot(schedule.status)}
+                                    {schedule.status}
+                                  </span>
+                                </div>
+
+                                <div className="mt-2 space-y-1.5 text-[12px] leading-5">
+                                  <div><span className="text-on-surface-variant/55">Delivery:</span> <span className="text-on-surface">{schedule.deliveryDescription}</span></div>
+                                  <div><span className="text-on-surface-variant/55">Task:</span> <span className="text-on-surface">{schedule.task}</span></div>
+                                  <div><span className="text-on-surface-variant/55">Created from:</span> <span className="text-on-surface">#{schedule.channelName}</span></div>
+                                  <div><span className="text-on-surface-variant/55">Schedule:</span> <span className="text-on-surface">{schedule.scheduleDescription}</span></div>
+                                  <div><span className="text-on-surface-variant/55">Raw cron/date:</span> <span className="font-mono text-on-surface">{schedule.schedule}</span></div>
+                                  <div><span className="text-on-surface-variant/55">Timezone:</span> <span className="text-on-surface">{schedule.timezone}</span></div>
+                                  <div><span className="text-on-surface-variant/55">Next run:</span> <span className="text-on-surface">{formatScheduleTime(schedule.nextRunAt)}</span></div>
+                                  <div><span className="text-on-surface-variant/55">Last run:</span> <span className="text-on-surface">{formatScheduleTime(schedule.lastRunAt)}</span></div>
+                                </div>
+                                {editingScheduleId === schedule.id && (
+                                  <div
+                                    className="mt-3 space-y-3 rounded-lg p-3"
+                                    style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--outline-variant)' }}
+                                  >
+                                    <Field label="Task">
+                                      <FTextarea rows={3} value={scheduleTaskDraft} onChange={setScheduleTaskDraft} />
+                                    </Field>
+                                    <Field label="Timezone">
+                                      <FInput value={scheduleTimezoneDraft} onChange={setScheduleTimezoneDraft} placeholder="Europe/Berlin" />
+                                    </Field>
+                                    {schedule.kind === 'ONCE' ? (
+                                      <Field label="Run at">
+                                        <input
+                                          className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                                          onChange={(e) => setScheduleOnceDraft(e.target.value)}
+                                          style={fieldBase}
+                                          type="datetime-local"
+                                          value={scheduleOnceDraft}
+                                        />
+                                      </Field>
+                                    ) : (
+                                      <>
+                                        <Field label="Repeat">
+                                          <FSelect value={scheduleCronDraft.mode} onChange={(value) => setScheduleCronDraft((current) => ({ ...current, mode: value as ScheduleEditorMode }))}>
+                                            <option value="everyMinutes">Every N minutes</option>
+                                            <option value="everyHours">Every N hours</option>
+                                            <option value="daily">Every day at a time</option>
+                                            <option value="weekdays">Weekdays at a time</option>
+                                            <option value="custom">Custom cron</option>
+                                          </FSelect>
+                                        </Field>
+                                        {scheduleCronDraft.mode === 'everyMinutes' && (
+                                          <Field label="Minutes">
+                                            <FInput value={scheduleCronDraft.interval} onChange={(value) => setScheduleCronDraft((current) => ({ ...current, interval: value }))} placeholder="5" />
+                                          </Field>
+                                        )}
+                                        {scheduleCronDraft.mode === 'everyHours' && (
+                                          <Field label="Hours">
+                                            <FInput value={scheduleCronDraft.interval} onChange={(value) => setScheduleCronDraft((current) => ({ ...current, interval: value }))} placeholder="1" />
+                                          </Field>
+                                        )}
+                                        {(scheduleCronDraft.mode === 'daily' || scheduleCronDraft.mode === 'weekdays') && (
+                                          <div className="grid grid-cols-2 gap-3">
+                                            <Field label="Hour">
+                                              <FInput value={scheduleCronDraft.hour} onChange={(value) => setScheduleCronDraft((current) => ({ ...current, hour: value }))} placeholder="09" />
+                                            </Field>
+                                            <Field label="Minute">
+                                              <FInput value={scheduleCronDraft.minute} onChange={(value) => setScheduleCronDraft((current) => ({ ...current, minute: value }))} placeholder="00" />
+                                            </Field>
+                                          </div>
+                                        )}
+                                        {scheduleCronDraft.mode === 'custom' && (
+                                          <Field label="Cron">
+                                            <FInput value={scheduleCronDraft.raw} onChange={(value) => setScheduleCronDraft((current) => ({ ...current, raw: value }))} placeholder="*/5 * * * *" />
+                                          </Field>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="flex shrink-0 flex-col gap-2">
+                                {editingScheduleId === schedule.id ? (
+                                  <>
+                                    <button
+                                      className="rounded-md px-3 py-1.5 text-[11px] font-medium transition disabled:cursor-not-allowed disabled:opacity-30"
+                                      disabled={savingScheduleId === schedule.id}
+                                      onClick={() => void saveSchedule(schedule)}
+                                      style={{ border: '1px solid rgba(114,137,192,0.35)', color: 'var(--on-surface)', background: 'rgba(114,137,192,0.14)' }}
+                                      type="button"
+                                    >
+                                      {savingScheduleId === schedule.id ? 'Saving...' : 'Save'}
+                                    </button>
+                                    <button
+                                      className="rounded-md px-3 py-1.5 text-[11px] font-medium transition"
+                                      onClick={cancelEditingSchedule}
+                                      style={{ border: '1px solid var(--outline)', color: 'var(--on-surface-variant)', background: 'transparent' }}
+                                      type="button"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    className="rounded-md px-3 py-1.5 text-[11px] font-medium transition"
+                                    onClick={() => startEditingSchedule(schedule)}
+                                    style={{ border: '1px solid rgba(114,137,192,0.35)', color: 'var(--primary)', background: 'transparent' }}
+                                    type="button"
+                                  >
+                                    Edit
+                                  </button>
+                                )}
+                              </div>
+
+                              <button
+                                className="rounded-md px-3 py-1.5 text-[11px] font-medium transition disabled:cursor-not-allowed disabled:opacity-30"
+                                disabled={deletingScheduleId === schedule.id}
+                                onClick={() => void deleteSchedule(schedule.id)}
+                                style={{ border: '1px solid rgba(255, 0, 51, 0.25)', color: 'rgba(255, 102, 133, 0.75)', background: 'transparent' }}
+                                type="button"
+                              >
+                                {deletingScheduleId === schedule.id ? 'Removing…' : 'Remove'}
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
