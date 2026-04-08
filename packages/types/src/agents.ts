@@ -92,6 +92,24 @@ export const AgentToolSchema = z.object({
 });
 export type AgentToolInput = z.infer<typeof AgentToolSchema>;
 
+export const BrowserMcpServerStatus = z.enum(['STOPPED', 'STARTING', 'RUNNING', 'UNHEALTHY', 'FAILED', 'NOT_CONFIGURED']);
+export type BrowserMcpServerStatus = z.infer<typeof BrowserMcpServerStatus>;
+
+export const AgentBrowserMcpStateSchema = z.object({
+  enabled: z.boolean(),
+  serverId: z.string().uuid().nullable(),
+  serverName: z.string().nullable(),
+  serverStatus: BrowserMcpServerStatus,
+  toolCount: z.number().int().nonnegative(),
+  toolNames: z.array(z.string()),
+});
+export type AgentBrowserMcpState = z.infer<typeof AgentBrowserMcpStateSchema>;
+
+export const UpdateAgentBrowserMcpSchema = z.object({
+  enabled: z.boolean(),
+});
+export type UpdateAgentBrowserMcpInput = z.infer<typeof UpdateAgentBrowserMcpSchema>;
+
 // ── Agent Cron ─────────────────────────────────────────
 
 export const AgentCronSchema = z.object({

@@ -12,6 +12,7 @@
  * - Workspace agency.md: shared across all agents, editable in the right sidebar
  * - AgentCreatorAgent chat panel: replaces the writing assistant; edits any agent file via natural-language chat
  * - Skills panel: list/create/edit/delete passive, on-demand, and tool-based skills
+ * - Browser MCP toggle: enables or removes workspace Browser MCP tools for the current agent
  */
 
 'use client';
@@ -21,6 +22,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 import type {
+  AgentBrowserMcpState,
   AgentCreatorChatMessage,
   AgentCreatorChatResponse,
   AgentDetail,
@@ -174,6 +176,8 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
   const [agencyDraft, setAgencyDraft] = useState('');
   const [savingAgency, setSavingAgency] = useState(false);
   const [agencySavedAt, setAgencySavedAt] = useState<string | null>(null);
+  const [browserMcp, setBrowserMcp] = useState<AgentBrowserMcpState | null>(null);
+  const [savingBrowserMcp, setSavingBrowserMcp] = useState(false);
 
   useEffect(() => {
     if (!ready) return;
@@ -188,11 +192,12 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
       setLoading(true); setError(null);
       try {
         const headers = { Authorization: `Bearer ${accessToken}` };
-        const [nextAgent, nextDocs, nextAgency, nextSkills] = await Promise.all([
+        const [nextAgent, nextDocs, nextAgency, nextSkills, nextBrowserMcp] = await Promise.all([
           apiJson<AgentDetail>(`/agents/${agentId}`, { headers }),
           apiJson<AgentDocRecord[]>(`/agents/${agentId}/docs`, { headers }),
           apiJson<WorkspaceDocRecord>('/workspace/agency', { headers }),
           apiJson<AgentSkill[]>(`/agents/${agentId}/skills`, { headers }),
+          apiJson<AgentBrowserMcpState>(`/agents/${agentId}/browser-mcp`, { headers }),
         ]);
         if (!active) return;
         setAgent(nextAgent);
@@ -209,6 +214,7 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
         setAgencyDraft(nextAgency.content);
         setAgencySavedAt(nextAgency.updatedAt);
         setSkills(nextSkills);
+        setBrowserMcp(nextBrowserMcp);
       } catch (loadError) {
         if (active) setError(loadError instanceof Error ? loadError.message : 'Failed to load agent workspace.');
       } finally {
@@ -286,6 +292,21 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Failed to save workspace agency.');
     } finally { setSavingAgency(false); }
+  }
+
+  async function toggleBrowserMcp(enabled: boolean) {
+    if (!accessToken || savingBrowserMcp) return;
+    setSavingBrowserMcp(true); setError(null);
+    try {
+      const updated = await apiJson<AgentBrowserMcpState>(`/agents/${agentId}/browser-mcp`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ enabled }),
+      });
+      setBrowserMcp(updated);
+    } catch (toggleError) {
+      setError(toggleError instanceof Error ? toggleError.message : 'Failed to update Browser MCP.');
+    } finally { setSavingBrowserMcp(false); }
   }
 
   async function sendCreatorMessage() {
@@ -772,6 +793,58 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
                     <Field label="System Prompt">
                       <FTextarea value={agentForm.systemPrompt ?? ''} onChange={(v) => setAgentForm((c) => ({ ...c, systemPrompt: v }))} placeholder="System prompt override…" rows={4} />
                     </Field>
+                  </div>
+
+                  <div
+                    className="rounded-xl p-5 space-y-4"
+                    style={{ background: 'var(--surface-container-lowest)', border: '1px solid var(--outline-variant)' }}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h3 className="font-headline text-sm font-semibold text-on-surface">Browser MCP</h3>
+                        <p className="mt-1 text-[11px] text-on-surface-variant/40">
+                          Exposes Browser MCP tools to this agent only. The workspace keeps one shared Browser MCP server, and this switch grants or removes its tools for the current agent.
+                        </p>
+                      </div>
+                      <button
+                        className="rounded-md px-3 py-1.5 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-30"
+                        disabled={savingBrowserMcp}
+                        onClick={() => void toggleBrowserMcp(!(browserMcp?.enabled ?? false))}
+                        style={{
+                          background: browserMcp?.enabled ? 'rgba(34, 197, 94, 0.16)' : 'rgba(255,255,255,0.04)',
+                          color: browserMcp?.enabled ? '#86efac' : 'var(--on-surface-variant)',
+                          border: browserMcp?.enabled ? '1px solid rgba(34, 197, 94, 0.28)' : '1px solid var(--outline-variant)',
+                        }}
+                        type="button"
+                      >
+                        {savingBrowserMcp ? 'Updating…' : browserMcp?.enabled ? 'Disable' : 'Enable'}
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <Field label="Server">
+                        <div className="rounded-md px-3 py-2 text-sm" style={fieldBase}>
+                          {browserMcp?.serverName ?? 'Not configured yet'}
+                        </div>
+                      </Field>
+                      <Field label="Status">
+                        <div className="rounded-md px-3 py-2 text-sm" style={fieldBase}>
+                          {browserMcp?.serverStatus ?? 'NOT_CONFIGURED'}
+                        </div>
+                      </Field>
+                    </div>
+
+                    <div className="rounded-md px-3 py-3 text-[11px] leading-5" style={{ ...fieldBase, background: 'rgba(255,255,255,0.02)' }}>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-on-surface-variant/70">Granted tools</span>
+                        <span className="font-mono text-on-surface">{browserMcp?.toolCount ?? 0}</span>
+                      </div>
+                      <div className="mt-2 text-on-surface-variant/55">
+                        {browserMcp?.toolNames?.length
+                          ? browserMcp.toolNames.join(', ')
+                          : 'No Browser MCP tools are assigned to this agent.'}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>

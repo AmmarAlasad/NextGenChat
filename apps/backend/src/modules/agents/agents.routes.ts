@@ -11,7 +11,7 @@ import type { FastifyPluginAsync } from 'fastify';
 
 import { AgentCreatorChatInputSchema } from '@nextgenchat/types';
 
-import { CreateAgentSchema, UpdateAgentSchema } from '@/modules/agents/agents.schema.js';
+import { CreateAgentSchema, UpdateAgentBrowserMcpSchema, UpdateAgentSchema } from '@/modules/agents/agents.schema.js';
 import { agentCreatorService } from '@/modules/agents/agent-creator.service.js';
 import { authenticateRequest, requireAuthUser } from '@/middleware/auth.js';
 import { agentsService } from '@/modules/agents/agents.service.js';
@@ -46,6 +46,21 @@ export const agentsRoutes: FastifyPluginAsync = async (fastify) => {
     const input = UpdateAgentSchema.parse(request.body);
 
     return agentsService.updateAgent(authUser.id, params.id, input);
+  });
+
+  fastify.get('/agents/:id/browser-mcp', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+
+    return agentsService.getAgentBrowserMcpState(authUser.id, params.id);
+  });
+
+  fastify.put('/agents/:id/browser-mcp', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+    const input = UpdateAgentBrowserMcpSchema.parse(request.body);
+
+    return agentsService.setAgentBrowserMcpEnabled(authUser.id, params.id, input.enabled);
   });
 
   fastify.post('/agents/:id/creator/chat', { preHandler: authenticateRequest }, async (request) => {

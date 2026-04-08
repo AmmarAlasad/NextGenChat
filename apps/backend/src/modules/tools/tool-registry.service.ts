@@ -19,6 +19,7 @@ import { prisma } from '@/db/client.js';
 import { skillService } from '@/modules/agents/skill.service.js';
 import { skillInstallerService } from '@/modules/agents/skill-installer.service.js';
 import { chatService } from '@/modules/chat/chat.service.js';
+import { mcpService } from '@/modules/mcp/mcp.service.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
 import { getChatNamespace, getChannelRoom } from '@/sockets/socket-server.js';
 import { NO_REPLY_TOKEN, sanitizeAgentVisibleContent } from '../agents/agent-output.js';
@@ -1401,16 +1402,48 @@ export class ToolRegistryService {
   async getApprovedTools(agentId: string) {
     const tools = await prisma.agentTool.findMany({
       where: { agentId },
+      include: {
+        mcpServerTool: {
+          include: {
+            server: {
+              select: {
+                id: true,
+                name: true,
+                status: true,
+              },
+            },
+          },
+        },
+      },
       orderBy: { toolName: 'asc' },
     });
 
-    return tools.filter((tool) => builtInTools[tool.toolName] && (!tool.requiresApproval || tool.approvedAt));
+    return tools.filter((tool) => {
+      const approved = !tool.requiresApproval || Boolean(tool.approvedAt);
+      if (!approved) {
+        return false;
+      }
+
+      return Boolean(builtInTools[tool.toolName] || tool.mcpServerTool);
+    });
   }
 
   async getProviderTools(agentId: string): Promise<LLMTool[]> {
     const tools = await this.getApprovedTools(agentId);
 
     return tools.map((tool) => {
+      if (tool.mcpServerTool) {
+        return {
+          name: tool.toolName,
+          description: tool.mcpServerTool.description ?? `MCP tool from ${tool.mcpServerTool.server.name}.`,
+          parameters: (tool.mcpServerTool.inputSchema as Record<string, unknown>) ?? {
+            type: 'object',
+            additionalProperties: true,
+            properties: {},
+          },
+        };
+      }
+
       const definition = builtInTools[tool.toolName];
 
       return {
@@ -1429,6 +1462,15 @@ export class ToolRegistryService {
     }
 
     return tools.map((tool) => {
+      if (tool.mcpServerTool) {
+        return [
+          `### ${tool.toolName}`,
+          tool.mcpServerTool.description ?? `MCP tool from ${tool.mcpServerTool.server.name}.`,
+          `- Provided by MCP server: ${tool.mcpServerTool.server.name}`,
+          `- Current server status: ${tool.mcpServerTool.server.status}`,
+        ].join('\n');
+      }
+
       const definition = builtInTools[tool.toolName];
       return [
         `### ${tool.toolName}`,
@@ -1446,13 +1488,18 @@ export class ToolRegistryService {
       throw new Error(`Tool is not approved for this agent: ${input.toolName}`);
     }
 
+    const parsedArgs = input.args.trim() ? JSON.parse(input.args) : {};
+
+    if (match.mcpServerTool) {
+      return mcpService.executeToolCall(match.mcpServerTool.serverId, match.mcpServerTool.name, parsedArgs as Record<string, unknown>);
+    }
+
     const definition = builtInTools[input.toolName];
 
     if (!definition) {
       throw new Error(`Unsupported built-in tool: ${input.toolName}`);
     }
 
-    const parsedArgs = input.args.trim() ? JSON.parse(input.args) : {};
     return definition.execute(parsedArgs, { agentId: input.agentId, channelId: input.channelId });
   }
 }

@@ -8,13 +8,14 @@
  * - Future phases will expand tools, cron, analytics, and deeper routing controls.
  */
 
-import type { AgentDetail, AgentSummary, CreateAgentInput, UpdateAgentInput } from '@nextgenchat/types';
+import type { AgentBrowserMcpState, AgentDetail, AgentSummary, CreateAgentInput, UpdateAgentInput } from '@nextgenchat/types';
 
 import { DEFAULT_AGENT_MODEL } from '@/config/constants.js';
 import { prisma } from '@/db/client.js';
 import { encryptJson } from '@/lib/crypto.js';
 import { env } from '@/config/env.js';
 import { buildDefaultAgentTools, ensureDefaultAgentTools } from '@/modules/agents/default-agent-tools.js';
+import { mcpService } from '@/modules/mcp/mcp.service.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
 
 function serializeAgent(agent: {
@@ -253,6 +254,14 @@ export class AgentsService {
     await workspaceService.ensureAgentDocs(agentId);
 
     return serializeAgent(updated);
+  }
+
+  async getAgentBrowserMcpState(userId: string, agentId: string): Promise<AgentBrowserMcpState> {
+    return mcpService.getAgentBrowserMcpState(agentId, userId);
+  }
+
+  async setAgentBrowserMcpEnabled(userId: string, agentId: string, enabled: boolean): Promise<AgentBrowserMcpState> {
+    return mcpService.setAgentBrowserMcpEnabled(agentId, userId, enabled);
   }
 }
 
