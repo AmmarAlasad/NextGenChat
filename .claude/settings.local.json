@@ -22,7 +22,15 @@
       "Bash(pnpm typecheck:*)",
       "Bash(pnpm lint:*)",
       "Bash(pnpm --filter @nextgenchat/backend test)",
-      "Bash(grep -v \"^$\")"
+      "Bash(grep -v \"^$\")",
+      "Bash(java -jar plantuml.jar -tpdf architecture.puml)",
+      "Bash(java -jar plantuml.jar -tpng architecture.puml)",
+      "Bash(java -jar plantuml.jar -tpng -verbose architecture.puml)",
+      "Bash(ls \"C:\\\\Users\\\\ASAPro\\\\Desktop\\\\NextGenChat\"/*.png)",
+      "Bash(python -c \"from PIL import Image; print\\('PIL ok'\\)\")",
+      "Bash(python -c \"import reportlab; print\\('reportlab ok'\\)\")",
+      "Bash(python -c ':*)",
+      "Bash(ls \"C:\\\\Users\\\\ASAPro\\\\Desktop\\\\NextGenChat\"/*.png \"C:\\\\Users\\\\ASAPro\\\\Desktop\\\\NextGenChat\"/*.svg \"C:\\\\Users\\\\ASAPro\\\\Desktop\\\\NextGenChat\"/SystemOverview*)"
     ]
   }
 }

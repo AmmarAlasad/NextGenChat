@@ -1,252 +1,881 @@
 /' ============================================================
-   NextGenChat — Current Architecture Diagrams
+   NextGenChat — Architecture Diagrams (Phases 1–5)
 
-   These diagrams document the current implemented application behavior.
-   They intentionally describe the app as it exists today in local mode,
-   while leaving room for later shared, multi-agent, and tool-enabled phases.
+   Eight diagrams documenting the current implemented system:
+   1.  SystemOverview      — all subsystems and their connections
+   2.  ProductMap          — pages, routes, and seeded objects
+   3.  SevenFileAgent      — agent workspace file architecture
+   4.  MessagePipeline     — end-to-end message → streamed reply
+   5.  AgentRouting        — three-stage pre-LLM routing filter
+   6.  ContextAssembly     — 12-step prompt injection order
+   7.  DomainModel         — full persisted entity model
+   8.  LLMProviders        — five providers and their auth mechanisms
    ============================================================ '/
 
+
 @startuml SystemOverview
-title <b>NextGenChat — System Overview</b>\n<size:10>Current local-first runtime and major subsystems</size>
-start
+title <b>NextGenChat — System Overview</b>\n<size:11>Phases 1–5 · Local-first AI agent chat platform</size>
+left to right direction
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam defaultFontName Helvetica
+skinparam ArrowColor #555555
+skinparam componentBackgroundColor #FAFAFA
+skinparam packageBackgroundColor #F4F4F4
+skinparam noteBorderColor #AAAAAA
 
-partition "Operator" {
-  :Owner / admin uses browser UI;
+package "Browser Client" #EEF2FF {
+  [Next.js 15\nApp Router] as Web
+  note bottom of Web
+    Pages: /setup · /login
+    /chat · /agents/[id]
+    State: Zustand + TanStack Query
+    Design: Antimatter UI (Indigo)
+  end note
 }
 
-partition "Frontend" {
-  :Setup and login flow;
-  :Chat interface;
-  :Agent workspace editor;
+package "Backend · Fastify + TypeScript" #FFF8F0 {
+
+  package "HTTP API Routes" {
+    [Auth Routes\n/auth/*] as AuthR
+    [Chat Routes\n/channels/*] as ChatR
+    [Agent Routes\n/agents/*] as AgentR
+    [Project Routes\n/projects/*] as ProjR
+    [Workspace Routes\n/workspaces/*] as WsR
+    [MCP Routes\n/mcp/*] as McpR
+  }
+
+  package "Real-Time Layer" {
+    [Socket.io /chat\n(rooms: channel:{id})] as SIO
+    [Socket.io /presence] as Presence
+  }
+
+  package "Core Services" {
+    [Auth Service\n(Argon2id · JWT · httpOnly refresh)] as AuthS
+    [Chat Service\n(persist · trigger routing)] as ChatS
+    [Agents Service\n(CRUD · membership)] as AgentS
+    [Project Service\n(project.md in WorkspaceFile)] as ProjS
+    [Workspace Service\n(agent doc file CRUD)] as WsS
+    [MCP Service\n(Browser stdio client)] as McpS
+    [Skill Service\n(SKILL.md + scripts)] as SkillS
+    [Rules Service\n(stub — Phase 6)] as RulesS
+  }
+
+  package "Agent Execution Engine" {
+    [Agent Routing Service\n(3-stage pre-LLM filter)] as RoutingS
+    [Pickup LLM (gpt-4o-mini)\nper-agent · temp=0.0] as Wakeup
+    [AgentSessionGateway\n(tool loop · streaming · relay)] as Gateway
+    [SessionLaneRegistry\n(serial execution per agent:channel)] as Lanes
+    [Context Builder\n(12-step injection)] as CB
+    [Token Counter\n(tiktoken / Anthropic count API)] as TC
+    [Compaction Service\n(async LLM summarise)] as Compact
+    [Static Prefix Cache\n(5-min TTL · hash keyed)] as PCache
+    [Agent Output Sanitizer\n(strip wrappers · block tags · NO_REPLY)] as Sanitizer
+    [Agent Visibility Filter\n(mention-based scoping)] as Visibility
+    [Tool Registry\n(bash · read · write · send_reply · relay)] as Tools
+    [AgentCreatorAgent\n(protected file writer · safety validators)] as ACA
+    [Crypto Service\n(AES-256-GCM · provider keys)] as Crypto
+  }
+
+  package "Queue Workers (BullMQ)" {
+    queue "Agent Queue\n(agent:process)" as AQueue
+    [Agent Processor\n(thin shell → Gateway)] as AProc
+    queue "Compaction Queue" as CQueue
+    [Compaction Processor\n(async summarise overflow)] as CProc
+    queue "Cron Queue" as CronQ
+    [Cron Processor\n(heartbeat · resumable work)] as CronProc
+    [File Scanner Processor\n(workspace sync)] as FileScan
+  }
+
+  package "Infrastructure" {
+    [Auth Middleware\n(JWT verify · preHandler)] as AuthMW
+    [Rate Limiter\n(auth + message:send events)] as RateLimit
+  }
 }
 
-partition "Backend" {
-  :Fastify API;
-  :Socket.io /chat;
-  :Auth service;
-  :Chat service;
-  :Agents service;
-  :Workspace service;
-  :Agent processor (local in-process job);
-  :Context builder;
-  :Compaction service;
-  :OpenAI provider;
+package "LLM Provider Layer" #F0FFF4 {
+  [Provider Registry\n(hash-cached instances)] as ProvReg
+  [OpenAI Provider\n(tiktoken)] as OAI
+  [Anthropic Provider\n(exact count · prompt caching)] as ANT
+  [Kimi Provider\n(OpenAI-compat · Moonshot)] as KIMI
+  [OpenRouter Provider\n(dynamic model list)] as OR
+  [OpenAI Codex OAuth\n(OAuth 2.0 · auto-refresh)] as CODEX
 }
 
-partition "Storage" {
-  :SQLite database;
-  :Agent workspace docs via WorkspaceFile rows;
+package "Storage" #F5F5FF {
+  database "SQLite\n(Prisma ORM)" as DB
+  folder "Agent Workspaces\n$AGENT_WORKSPACES_DIR/{agentId}/" as Disk
+  [Redis (optional)\nBullMQ + model list cache] as Redis
 }
 
-partition "External" {
-  :OpenAI API;
+package "External APIs" #FFF0F0 {
+  cloud "OpenAI API" as OpenAICloud
+  cloud "Anthropic API" as AnthropicCloud
+  cloud "Moonshot API (Kimi)" as KimiCloud
+  cloud "OpenRouter API" as ORCloud
+  cloud "Browser MCP (stdio)" as MCPCloud
 }
 
-partition "Current product scope" {
-  :One local owner;
-  :One seeded workspace;
-  :One seeded channel;
-  :One seeded agent;
-}
+' Client ↔ Backend
+Web --> AuthR : HTTP REST
+Web --> ChatR : HTTP REST
+Web --> AgentR : HTTP REST
+Web --> ProjR : HTTP REST
+Web --> WsR : HTTP REST
+Web --> SIO : WebSocket · rooms
+Web --> Presence : WebSocket
 
-partition "Planned later" {
-  :Group chats;
-  :Shared workspaces;
-  :Repo and file tools;
-  :Heartbeat execution loop;
-}
+' Route → Service
+AuthR --> AuthS
+ChatR --> ChatS
+AgentR --> AgentS
+AgentR --> ACA
+ProjR --> ProjS
+WsR --> WsS
+McpR --> McpS
 
-stop
+' Real-time → Services
+SIO --> ChatS : persist message
+SIO --> RoutingS : trigger routing
+
+' Routing → Execution
+RoutingS --> Wakeup : pickup LLM vote (AUTO mode)
+RoutingS --> AQueue : enqueue agent job
+AQueue --> AProc
+AProc --> Gateway
+Gateway --> Lanes : acquire lane
+Gateway --> CB : build prompt
+Gateway --> ProvReg : stream / complete
+Gateway --> Tools : execute tool calls
+Gateway --> Sanitizer : clean output
+Gateway --> SIO : stream chunks + final
+CB --> TC : count tokens
+CB --> Compact : schedule if overflow
+CB --> PCache : cache static prefix
+CB --> Visibility : filter message history
+CB --> DB : load messages · summaries · files
+
+' Compaction
+CQueue --> CProc
+CProc --> ProvReg : summarise via LLM
+
+' Cron
+CronQ --> CronProc
+
+' Provider registry
+ProvReg --> OAI
+ProvReg --> ANT
+ProvReg --> KIMI
+ProvReg --> OR
+ProvReg --> CODEX
+AuthS --> Crypto
+ProvReg --> Crypto : decrypt credentials
+
+' Provider → External
+OAI --> OpenAICloud
+ANT --> AnthropicCloud
+KIMI --> KimiCloud
+OR --> ORCloud
+McpS --> MCPCloud
+
+' Storage
+AuthS --> DB
+ChatS --> DB
+AgentS --> DB
+ProjS --> DB
+WsS --> DB
+WsS --> Disk
+ACA --> Disk : write protected files
+Tools --> Disk : bash · read · write
+PCache --> Redis
+AQueue --> Redis
+CQueue --> Redis
+CronQ --> Redis
+
 @enduml
 
 
 @startuml ProductMap
-title <b>NextGenChat — Product Map</b>\n<size:10>What the operator sees and how the app is organized today</size>
+title <b>NextGenChat — Product Map</b>\n<size:11>Pages, routes, and seeded objects</size>
 top to bottom direction
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam defaultFontName Helvetica
 
-rectangle "Fresh Install" as Fresh #EAF8EA {
-  component "Health check\nsetupRequired=true" as HealthSetup
-  component "Setup page" as SetupPage
+rectangle "First Run" #EAF8EA {
+  component "GET /health\nsetupRequired=true" as Health
+  component "Setup Wizard\n/setup" as SetupPage
+  note right of SetupPage
+    Collects:
+    · Owner username + password
+    · Workspace name
+    · Agent name + description
+    After submit: calls AgentCreatorAgent
+    in background to generate 7 agent files
+  end note
 }
 
-rectangle "Authenticated App" as App #FFF8E8 {
-  component "Login page" as LoginPage
-  component "Home gate" as HomeGate
-  component "Chat page" as ChatPage
-  component "Agent workspace page" as AgentPage
+rectangle "Auth" #FFF0E8 {
+  component "Login Page\n/login" as LoginPage
+  component "Auth Provider\n(token refresh · memory only)" as AuthProv
+  note right of LoginPage
+    POST /auth/login
+    Access token → memory (JS)
+    Refresh token → httpOnly cookie
+    Auto-refresh via /auth/refresh
+  end note
 }
 
-rectangle "Seeded Local Objects" as Seeded #F5F5F5 {
-  component "Owner account" as OwnerAccount
-  component "Default workspace" as DefaultWorkspace
-  component "Default public channel" as DefaultChannel
-  component "Default agent" as DefaultAgent
-  component "Workspace docs" as WorkspaceDocs
+rectangle "Main App" #E8F0FF {
+  component "Home Gate\n/ (redirect)" as HomeGate
+  component "Chat Page\n/chat" as ChatPage
+  component "Agent Admin Page\n/agents/[id]" as AgentPage
+  note right of ChatPage
+    · Sidebar: workspaces · channels · DMs
+    · Message canvas (TanStack Virtual)
+    · Streaming live responses
+    · Tool call indicators (collapsed)
+    · Typing indicators
+    · Routing / queued state badges
+    · Auto-scroll (120 px threshold)
+  end note
+  note right of AgentPage
+    Tabs: soul · identity · Agent.md
+         user · memory · Heartbeat · pickup
+    · AgentCreatorAgent chat panel
+    · Agent settings (name · mode · status)
+    · Protected file indicators
+  end note
 }
 
-HealthSetup --> SetupPage
-SetupPage --> OwnerAccount
-SetupPage --> DefaultWorkspace
-SetupPage --> DefaultChannel
-SetupPage --> DefaultAgent
-DefaultAgent --> WorkspaceDocs
+rectangle "Seeded Local Objects (on setup)" #F5F5F5 {
+  component "Owner User" as Owner
+  component "Default Workspace" as Workspace
+  component "Default Project" as Project
+  component "Default Public Channel" as Channel
+  component "Default Agent" as Agent
+  component "Seven Workspace Files\n(soul · identity · Agent · user · memory\nHeartbeat · pickup)" as SevenFiles
+  component "Default ProviderConfig\n(OpenAI · gpt-4o-mini)" as ProvConf
+}
 
-LoginPage --> HomeGate
+Health --> SetupPage
+SetupPage --> Owner
+SetupPage --> Workspace
+SetupPage --> Project
+SetupPage --> Channel
+SetupPage --> Agent
+Agent --> SevenFiles : AgentCreatorAgent generates
+Agent --> ProvConf
+
+LoginPage --> AuthProv
+AuthProv --> HomeGate
 HomeGate --> ChatPage
-ChatPage --> AgentPage : manage agent docs
+HomeGate --> AgentPage
+ChatPage --> AgentPage : manage agent
+ChatPage --> Channel : view + send messages
 
-note right of ChatPage
-  Chat is focused on conversation.
-  It no longer acts as the editor for
-  the agent's raw system prompt.
-end note
+@enduml
 
-note right of AgentPage
-  The dedicated admin view is where
-  the operator manages:
-  identity.md
-  agency.md
-  agent.md
-  heartbeat.md
-  memory.md
-end note
 
-note bottom of Seeded
-  Current product scope is intentionally narrow:
-  one local owner, one seeded workspace,
-  one seeded channel, one seeded agent.
-end note
+@startuml SevenFileAgent
+title <b>NextGenChat — Seven-File Agent Architecture</b>\n<size:11>Workspace layout · write protection · context injection order</size>
+left to right direction
+skinparam packageStyle rectangle
+skinparam defaultFontName Helvetica
+skinparam noteBackgroundColor #FFFDE7
+
+package "Agent Workspace  $AGENT_WORKSPACES_DIR/{agentId}/" #F9F9FF {
+
+  package "Protected Files (AgentCreatorAgent only)" #FFE8E8 {
+    file "soul.md\n<size:9>Ethics · values · overrides everything</size>" as Soul
+    file "identity.md\n<size:9>Persona · tone · communication style</size>" as Identity
+    file "Agent.md\n<size:9>Operating manual · tool rules · multi-step rules</size>" as AgentMd
+    file "pickup.md\n<size:9>Pickup LLM decision instructions</size>" as Pickup
+  }
+
+  package "Agent-Writable Files (via workspace_write_file)" #E8F5E8 {
+    file "user.md\n<size:9>Evolving model of the user</size>" as UserMd
+    file "memory.md\n<size:9>Long-term patterns and learnings</size>" as MemoryMd
+    file "Heartbeat.md\n<size:9>Cron-driven resumable work log</size>" as HeartMd
+  }
+}
+
+package "Context Injection Order (inside ContextBuilder.build)" #FFFDE7 {
+  rectangle "1. runtime-context.md\n(channel · participants · constraints)" as R1
+  rectangle "2. soul.md  ← overrides everything" as R2
+  rectangle "3. identity.md" as R3
+  rectangle "4. Agent.md" as R4
+  rectangle "5. tools.md  (generated · not a file)" as R5
+  rectangle "6. user.md" as R6
+  rectangle "7. memory.md" as R7
+  rectangle "8. Heartbeat.md" as R8
+  rectangle "9. project.md  (if channel in project)" as R9
+  rectangle "10. agency.md  (workspace-level constitution)" as R10
+  rectangle "11. Conversation summary  (compacted history)" as R11
+  rectangle "12. Cross-channel context  (DM channels only)" as R12
+  rectangle "13. Recent fitting messages  (token budget)" as R13
+  rectangle "14. Trigger message (last)" as R14
+  R1 --> R2
+  R2 --> R3
+  R3 --> R4
+  R4 --> R5
+  R5 --> R6
+  R6 --> R7
+  R7 --> R8
+  R8 --> R9
+  R9 --> R10
+  R10 --> R11
+  R11 --> R12
+  R12 --> R13
+  R13 --> R14
+}
+
+package "Safety Validators (before every file write)" #FFF3E0 {
+  component "pickup.md — must be instruction markdown, not JSON\nAgent.md  — must reference send_reply, memory.md, user.md, workspace_write_file\nsoul.md   — minimum length, not a JSON blob\nAny file  — minimum viable length enforced\nRejected writes leave existing file untouched" as Validators
+}
+
+package "Write Access Control" #E8EAF6 {
+  component "AgentCreatorAgent\n(admin API only)" as ACA
+  component "workspace_write_file tool\n(agent-callable)" as WWT
+  ACA --> Soul : may write
+  ACA --> Identity : may write
+  ACA --> AgentMd : may write
+  ACA --> Pickup : may write
+  ACA --> UserMd : may write
+  ACA --> MemoryMd : may write
+  ACA --> HeartMd : may write
+  WWT --> UserMd : allowed
+  WWT --> MemoryMd : allowed
+  WWT --> HeartMd : allowed
+  WWT -[#red]-> Soul : BLOCKED
+  WWT -[#red]-> Identity : BLOCKED
+  WWT -[#red]-> AgentMd : BLOCKED
+  WWT -[#red]-> Pickup : BLOCKED
+}
 
 @enduml
 
 
 @startuml MessagePipeline
-title <b>NextGenChat — Agent Message Pipeline</b>\n<size:10>Current runtime path from user message to streamed reply</size>
+title <b>NextGenChat — Agent Message Pipeline</b>\n<size:11>End-to-end path from user message to streamed reply (Phases 1–5)</size>
+
+skinparam defaultFontName Helvetica
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
 
 actor User
-participant "Web UI" as Web
-participant "Socket.io /chat" as SIO
-participant "Chat service" as ChatSvc
+participant "Web UI\n(Next.js)" as Web
+participant "Socket.io\n/chat" as SIO
+participant "Chat Service" as ChatSvc
 database "SQLite" as DB
-participant "Agents service" as AgentSvc
-queue "Local job dispatch" as Queue
-participant "Agent processor" as Worker
-participant "Context builder" as CB
-participant "Workspace service" as WS
-participant "OpenAI provider" as OAI
+participant "Agent Routing\n(3-stage filter)" as Routing
+participant "Pickup LLM\n(gpt-4o-mini · temp=0)" as Pickup
+queue "BullMQ\nAgent Queue" as Queue
+participant "Agent Processor\n(thin shell)" as AProc
+participant "SessionLane\nRegistry" as Lanes
+participant "AgentSession\nGateway" as Gateway
+participant "Context\nBuilder" as CB
+participant "Agent Visibility\nFilter" as Visibility
+participant "LLM Provider\n(OpenAI · Anthropic · Kimi\nOpenRouter · Codex)" as LLM
+participant "Tool Registry\n(bash · read/write\nsend_reply · relay)" as Tools
+participant "Agent Output\nSanitizer" as Sanitize
 
-User -> Web : send message
-Web -> SIO : message:send
-SIO -> ChatSvc : validate + persist
-ChatSvc -> DB : insert user message
-ChatSvc -> SIO : emit message:new
-SIO -> AgentSvc : resolve triggered agents
-AgentSvc -> Queue : queue agent run
-Queue -> Worker : process(agent, channel, message)
+User -> Web : type + send message
+Web -> SIO : emit message:send
+SIO -> ChatSvc : validate (Zod) + persist
+ChatSvc -> DB : INSERT Message (senderType=USER)
+ChatSvc --> SIO : emit message:new (broadcast to room)
+SIO --> Web : display user message immediately
 
-Worker -> CB : build context
-CB -> WS : ensure agent docs exist
-CB -> DB : load memory, summary, recent messages
-CB -> CB : enforce token budget
-CB -> Queue : schedule compaction if needed
-CB --> Worker : final prompt payload
+ChatSvc -> Routing : triggerAgentsForMessage(channelId, messageId)
 
-Worker -> OAI : stream(messages)
-loop streaming chunks
-  OAI --> Worker : delta
-  Worker -> SIO : message:stream:chunk
-  SIO --> Web : render live response
+group Stage 1 — Mode Gate
+  Routing -> Routing : skip DISABLED agents
+  note right : ALWAYS → respond\nMENTIONS_ONLY → only if @mentioned\nAUTO → continue to Stage 2
 end
 
-OAI --> Worker : final usage
-Worker -> DB : insert agent message + metadata
-Worker -> SIO : message:stream:end
-Worker -> SIO : message:new
+group Stage 2 — Agent-Sender Guard
+  Routing -> Routing : if sender is agent AND isRelay=false\n→ only explicitly mentioned agents proceed
+  note right : Prevents infinite agent chains.\nRelay messages (isRelay=true) bypass this.
+end
 
-note right of CB
-  Build order today:
-  1. identity.md / agency.md / agent.md / heartbeat.md
-  2. structured memory
-  3. latest conversation summary
-  4. recent fitting messages
-  5. trigger message last
-end note
+group Stage 3 — Pickup LLM Vote (AUTO mode only)
+  Routing -> Pickup : per-agent parallel vote\n[pickup.md as system prompt\n+ named transcript\n+ "has agent replied recently?" flag]
+  Pickup --> Routing : YES / NO (default=NO)
+  note right : maxTokens=80 · temp=0.0\nFallback on error: silence (NO)
+end
+
+Routing -> Queue : enqueue job(s) for responding agents
+
+Queue -> AProc : process(agentId, channelId, messageId)
+AProc -> Lanes : acquireLane(agentId:channelId)
+note right of Lanes : Serial execution per agent:channel pair.\nPrevents concurrent context corruption.
+
+Lanes -> Gateway : runAgentTurn(agentId, channelId, messageId)
+
+Gateway -> CB : build(agentId, channelId, messageId)
+CB -> DB : load workspace files (soul→pickup)
+CB -> DB : load project.md (if applicable)
+CB -> DB : load ConversationSummary
+CB -> DB : load recent messages
+CB -> Visibility : filter messages by agent visibility rules
+note right of Visibility : Agent sees own replies always.\nOther agents' replies only if @mentioned.
+CB -> CB : count tokens (tiktoken / Anthropic API)
+CB -> CB : reserve RESPONSE_BUFFER (4096 tokens)
+alt history exceeds budget
+  CB -> DB : schedule compaction job
+  CB -> CB : drop oldest turns until fit
+end
+CB --> Gateway : final prompt payload + tool definitions
+
+Gateway -> LLM : stream(messages, tools, model)
+note right of LLM : Provider selected per agent ProviderConfig.\nCredentials decrypted AES-256-GCM.
+
+loop streaming chunks
+  LLM --> Gateway : delta chunk
+  Gateway -> SIO : emit message:stream:chunk
+  SIO --> Web : render live typing
+end
+
+alt tool call requested
+  LLM --> Gateway : tool_call (name, args)
+  Gateway -> Tools : executeToolCall(name, args, agentId, channelId)
+
+  alt send_reply (mid-turn message)
+    Tools -> DB : INSERT Message (interim)
+    Tools -> SIO : emit message:new
+    SIO --> Web : display intermediate message
+  end
+
+  alt channel_send_message (cross-channel relay)
+    Tools -> DB : INSERT Message (isRelay=true)
+    Tools -> Routing : triggerAgentsForMessage (target channel)
+  end
+
+  Tools --> Gateway : tool_result
+  Gateway -> LLM : stream(messages + tool_result, tools)
+  loop streaming chunks
+    LLM --> Gateway : delta chunk
+    Gateway -> SIO : emit message:stream:chunk
+    SIO --> Web : render live typing
+  end
+end
+
+LLM --> Gateway : final response + usage metadata
+
+Gateway -> Sanitize : stripMessageWrapper(content)
+note right of Sanitize : Strips <message speaker="..."> XML wrappers.\nRemoves <thinking>, <scratchpad>, prompt leaks.\nIf output == [[NO_REPLY]] → discard silently.
+
+alt sanitized output is [[NO_REPLY]]
+  Gateway -> Gateway : discard — no DB insert, no socket event
+else normal response
+  Gateway -> DB : INSERT Message (senderType=AGENT, metadata=usage)
+  Gateway -> SIO : emit message:stream:end
+  Gateway -> SIO : emit message:new
+  SIO --> Web : finalize message display
+  Gateway -> SIO : emit message:routing:complete
+  note right : Sent even when 0 agents responded.\nFrontend exits routing/queued state.
+end
 
 @enduml
 
 
-@startuml ContextModel
-title <b>NextGenChat — Context Model</b>\n<size:10>How prompt assembly, compaction, and cache-sensitive structure work today</size>
+@startuml AgentRouting
+title <b>NextGenChat — Agent Routing (Three-Stage Filter)</b>\n<size:11>Pre-LLM decision: which agents respond to a given message</size>
+skinparam defaultFontName Helvetica
+skinparam ActivityBackgroundColor #FAFAFA
+skinparam ActivityBorderColor #888888
+
 start
 
-:Resolve provider + model limit;
-:Reserve response buffer;
-:Ensure agent docs exist;
-:Load identity.md, agency.md, agent.md, heartbeat.md;
-:Load structured agent memory;
-:Load latest conversation summary;
-:Load recent channel messages;
-:Load trigger message;
-:Assemble stable prefix first;
-:Estimate tokens;
+:Receive triggerAgentsForMessage(channelId, messageId);
+:Load all channel member agents;
 
-if (Within budget?) then (yes)
-  :Use fitting recent window;
-else (no)
-  :Drop oldest turns until fit;
-  :Schedule async compaction for overflow;
-endif
+partition "Stage 1 — Mode Gate" {
+  if (agent.status == DISABLED?) then (yes)
+    :Skip — DISABLED;
+    stop
+  elseif (triggerMode == MENTIONS_ONLY\nAND message does NOT mention agent?) then (yes)
+    :Skip — not mentioned;
+    stop
+  else (pass)
+    :Continue;
+  endif
+}
 
-:Compute static prefix hash;
-:Send prompt to provider;
-:Persist usage metadata with agent message;
+partition "Stage 2 — Agent-Sender Guard" {
+  if (sender is AGENT\nAND isRelay == false\nAND agent not explicitly @mentioned?) then (yes)
+    :Skip — agent-to-agent chain suppressed;
+    note right
+      Relay messages (isRelay=true) bypass
+      this guard entirely and proceed to
+      Stage 3 as normal.
+    end note
+    stop
+  else (pass or relay)
+    :Continue;
+  endif
+}
+
+partition "Stage 3 — Pickup LLM Vote (AUTO mode)" {
+  if (triggerMode == ALL_MESSAGES\nOR triggerMode == MENTIONS_ONLY with match?) then (yes)
+    :Respond — mode explicitly allows it;
+  else (AUTO mode)
+    :Call gpt-4o-mini pickup vote;
+    note right
+      System prompt = agent's pickup.md
+      User content  = last 5 messages (named transcript)
+      maxTokens=80 · temperature=0.0
+      Includes "has agent replied recently?" flag
+      Default answer = NO
+    end note
+    if (pickup returns YES?) then (yes)
+      :Respond;
+    else (NO or error)
+      :Skip — pickup said no;
+      stop
+    endif
+  endif
+}
+
+:Enqueue BullMQ job (agent:process);
+:AgentSessionGateway.runAgentTurn();
 stop
 
-note right
-  Current important behavior:
-  compaction is scheduled before hard overflow,
-  but it does not block the current reply.
+@enduml
 
-  Memory survives compaction because it is stored
-  outside the raw transcript and reloaded each run.
-end note
+
+@startuml ContextAssembly
+title <b>NextGenChat — Context Assembly</b>\n<size:11>Token budget management · 12-step injection · compaction · prefix caching</size>
+skinparam defaultFontName Helvetica
+skinparam ActivityBackgroundColor #FAFAFA
+
+start
+
+:ContextBuilder.build(agentId, channelId, messageId);
+:Resolve ProviderConfig → model token limit;
+:Reserve RESPONSE_BUFFER (default 4096 tokens);
+:Compute available budget = limit − buffer;
+
+group "Static Context (cached)" {
+  :Ensure all seven agent files exist (create defaults if missing);
+
+  :1. runtime-context.md — channel, participants, constraints;
+  :2. soul.md — ethics first, overrides everything;
+  :3. identity.md — persona and voice;
+  :4. Agent.md — operating manual;
+  :5. tools.md — generated approved tool list (not a file);
+  :6. user.md — agent's model of the user;
+  :7. memory.md — long-term learnings;
+  :8. Heartbeat.md — resumable work state;
+  :9. project.md — if channel belongs to a project;
+  :10. agency.md — workspace-level constitution;
+  :Compute static prefix hash;
+  if (hash matches cache AND not expired (5 min TTL)?) then (yes)
+    :Load static prefix from Redis cache;
+  else (no)
+    :Build static prefix from files;
+    :Store in Redis with TTL;
+    note right
+      Anthropic: inject cache_control: { type: "ephemeral" }
+      after static block to enable prompt caching.
+      Track cache_read vs cache_creation tokens in metadata.
+    end note
+  endif
+}
+
+group "Dynamic Context" {
+  :11. Load latest ConversationSummary (compacted history);
+  :12. Cross-channel context (DM-only: other DM channels with same user);
+  :Load recent channel messages;
+  :Apply AgentVisibilityFilter;
+  note right
+    Agent sees own replies always.
+    Other agents' replies only if reply @mentions this agent
+    (by @slug or name). Prevents agents from seeing
+    unrelated parallel conversation threads.
+  end note
+}
+
+:Token count current total (tiktoken or Anthropic count API);
+
+if (Within budget (with 1.2× safety margin)?) then (yes)
+  :Include all recent messages;
+else (no)
+  :Drop oldest turns until within budget;
+  if (No ConversationSummary exists yet?) then (yes)
+    :Schedule async compaction job on CQueue;
+    note right
+      Compaction does NOT block current reply.
+      It summarises overflow history for the next turn.
+    end note
+  endif
+endif
+
+:Append trigger message last (highest priority);
+:Inject tool definitions (bash · read · write · send_reply · relay);
+:Return assembled prompt payload to AgentSessionGateway;
+stop
 
 @enduml
 
 
 @startuml DomainModel
-title <b>NextGenChat — Current Domain Model</b>\n<size:10>Core persisted entities in the running app</size>
-start
+title <b>NextGenChat — Domain Model</b>\n<size:11>All persisted entities · Prisma / SQLite</size>
+skinparam defaultFontName Helvetica
+skinparam classBackgroundColor #FAFAFA
+skinparam classBorderColor #888888
+skinparam packageBackgroundColor #F5F5F5
 
-partition "Identity and access" {
-  :User\nusername, passwordHash;
-  :Workspace\nname, slug;
+package "Identity & Access" {
+  class User {
+    id : String (cuid)
+    username : String (unique)
+    passwordHash : String (Argon2id)
+    createdAt : DateTime
+  }
+  class WorkspaceMembership {
+    userId : String
+    workspaceId : String
+    role : String
+    joinedAt : DateTime
+  }
+  class OAuthToken {
+    userId : String
+    provider : String
+    accessToken : String (encrypted)
+    refreshToken : String (encrypted)
+    expiresAt : DateTime
+  }
 }
 
-partition "Conversation model" {
-  :Channel\nworkspaceId, name, type;
-  :Message\nchannelId, senderType, content, metadata;
-  :ConversationSummary\nchannelId, agentId, summary, tokenCount;
+package "Workspace & Conversation" {
+  class Workspace {
+    id : String (cuid)
+    name : String
+    slug : String (unique)
+    createdAt : DateTime
+  }
+  class Project {
+    id : String (cuid)
+    workspaceId : String
+    name : String
+    description : String?
+  }
+  class Channel {
+    id : String (cuid)
+    workspaceId : String
+    projectId : String?
+    name : String
+    type : ChannelType
+    note: PUBLIC | PRIVATE | DIRECT
+  }
+  class Message {
+    id : String (cuid)
+    channelId : String
+    senderId : String?
+    senderType : SenderType
+    note: USER | AGENT
+    content : String
+    isRelay : Boolean
+    metadata : JSON?
+    createdAt : DateTime
+  }
+  class ConversationSummary {
+    id : String (cuid)
+    channelId : String
+    agentId : String
+    summary : String
+    tokenCount : Int
+    fromMessageId : String
+    toMessageId : String
+    createdAt : DateTime
+  }
 }
 
-partition "Agent model" {
-  :Agent\nworkspaceId, name, slug, triggerMode, primaryChannelId;
-  :AgentIdentity\npersona, voiceTone, systemPrompt;
-  :AgentMemory\nscope, key, value;
-  :ProviderConfig\nproviderName, model, encrypted credentials;
+package "Agent Model" {
+  class Agent {
+    id : String (cuid)
+    workspaceId : String
+    name : String
+    slug : String (unique)
+    status : AgentStatus
+    note: ACTIVE | DISABLED
+    triggerMode : TriggerMode
+    note: ALL_MESSAGES | MENTIONS_ONLY | AUTO
+    primaryChannelId : String?
+    createdAt : DateTime
+  }
+  class AgentMembership {
+    agentId : String
+    channelId : String
+    joinedAt : DateTime
+  }
+  class AgentIdentity {
+    agentId : String (1:1)
+    persona : String?
+    voiceTone : String?
+    systemPrompt : String?
+  }
+  class AgentMemory {
+    id : String (cuid)
+    agentId : String
+    scope : String
+    key : String
+    value : String
+    updatedAt : DateTime
+  }
+  class AgentSkill {
+    id : String (cuid)
+    agentId : String
+    name : String
+    type : SkillType
+    toolNames : String[]
+    rootPath : String
+    enabled : Boolean
+  }
+  class ProviderConfig {
+    id : String (cuid)
+    agentId : String
+    providerName : String
+    model : String
+    encryptedApiKey : String (AES-256-GCM)
+    isDefault : Boolean
+  }
 }
 
-partition "Agent workspace docs" {
-  :WorkspaceFile\ndocType, fileName, content, version;
-  :Current docs = agent.md, identity.md, agency.md, heartbeat.md, memory.md;
+package "Agent Workspace Files" {
+  class WorkspaceFile {
+    id : String (cuid)
+    agentId : String?
+    workspaceId : String?
+    docType : String
+    note: soul | identity | agent | user |\nmemory | heartbeat | pickup | project | agency
+    fileName : String
+    content : String
+    version : Int
+    updatedAt : DateTime
+  }
 }
 
-partition "Relationship summary" {
-  :Workspace contains channels and agents;
-  :Channels store messages;
-  :Agents own identity, memory, summaries, docs, and provider config;
-  :memory.md is the readable projection of AgentMemory;
+package "MCP Integration" {
+  class McpServerTool {
+    id : String (cuid)
+    agentId : String
+    serverName : String
+    toolName : String
+    description : String
+    inputSchema : JSON
+    enabled : Boolean
+  }
 }
 
-stop
+' Relationships
+User "1" -- "0..*" WorkspaceMembership
+Workspace "1" -- "0..*" WorkspaceMembership
+Workspace "1" -- "0..*" Project
+Workspace "1" -- "0..*" Channel
+Workspace "1" -- "0..*" Agent
+Project "1" -- "0..*" Channel
+Channel "1" -- "0..*" Message
+Channel "1" -- "0..*" ConversationSummary
+Channel "1" -- "0..*" AgentMembership
+Agent "1" -- "0..*" AgentMembership
+Agent "1" -- "1" AgentIdentity
+Agent "1" -- "0..*" AgentMemory
+Agent "1" -- "0..*" AgentSkill
+Agent "1" -- "0..*" ProviderConfig
+Agent "1" -- "0..*" WorkspaceFile
+Agent "1" -- "0..*" McpServerTool
+Agent "1" -- "0..*" ConversationSummary
+
+@enduml
+
+
+@startuml LLMProviders
+title <b>NextGenChat — LLM Provider Layer</b>\n<size:11>Five providers · credential encryption · token counting · prompt caching</size>
+left to right direction
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam defaultFontName Helvetica
+
+package "Provider Registry" #E8F0FF {
+  [ProviderRegistry\n(instantiate + cache by config hash)] as Reg
+  note bottom of Reg
+    Resolves provider for an agent based on ProviderConfig.
+    Caches live instances keyed by hash(providerName + model + key).
+    All credentials decrypted via CryptoService (AES-256-GCM).
+  end note
+}
+
+package "Implemented Providers" #F0FFF4 {
+
+  package "OpenAI Provider" #FAFFFE {
+    [openai.provider.ts\nModel: gpt-4o · gpt-4o-mini · etc.\nToken counting: tiktoken\nStreaming: real provider.stream()] as OAI
+  }
+
+  package "Anthropic Provider" #FAFFFE {
+    [anthropic.provider.ts\nModel: claude-opus-4-6 · claude-sonnet-4-6\nclaude-haiku-4-5 · etc.\nToken counting: /v1/messages/count_tokens\nPrompt caching: cache_control ephemeral\nTracks cache_read vs cache_creation tokens] as ANT
+  }
+
+  package "Kimi Provider" #FAFFFE {
+    [kimi.provider.ts\nExtends: OpenAI provider\nBase URL: api.moonshot.cn\nModel: moonshot-v1-*\nAuth: API key (same flow as OpenAI)] as KIMI
+  }
+
+  package "OpenRouter Provider" #FAFFFE {
+    [openrouter.provider.ts\nExtends: OpenAI-compatible\nModel list: fetched from OpenRouter + cached in Redis\nSupports: hundreds of hosted models\nAuth: OpenRouter API key] as OR
+  }
+
+  package "OpenAI Codex OAuth" #FAFFFE {
+    [openai-codex-oauth.provider.ts\nAuth: OAuth 2.0 flow\nTokens stored in: OAuthToken table (encrypted)\nAuto-refresh: before each request if expired\nModel: code-specific Codex endpoints] as CODEX
+  }
+}
+
+package "Shared Interface (LLMProvider)" #FFF8E0 {
+  component "LLMProvider Interface\n(@nextgenchat/types)\n─────────────────────────────\nstream(messages, tools): AsyncIterable<delta>\ncomplete(messages, tools): Promise<response>\ncountTokens(messages): Promise<number>\ngetModelLimit(): number\n─────────────────────────────\nAgentSessionGateway calls only this interface.\nNever imports a concrete provider directly." as LLMProvider
+}
+
+package "External APIs" #FFF0F0 {
+  cloud "api.openai.com" as OpenAICloud
+  cloud "api.anthropic.com" as AnthropicCloud
+  cloud "api.moonshot.cn" as KimiCloud
+  cloud "openrouter.ai/api" as ORCloud
+  cloud "api.openai.com\n(Codex OAuth)" as CodexCloud
+}
+
+package "Token Counting Strategy" #F5F5FF {
+  note as TCNote
+    OpenAI / Kimi / OpenRouter:
+    · tiktoken (local, fast, exact for GPT-family models)
+
+    Anthropic:
+    · POST /v1/messages/count_tokens (exact, API call)
+    · Adds cache_control: { type: "ephemeral" } after static prefix
+    · cache_read_input_tokens tracked in message.metadata
+    · cache_creation_input_tokens tracked in message.metadata
+
+    All providers:
+    · Always reserve RESPONSE_BUFFER = 4096 tokens
+    · budget = modelLimit − responseBuffer
+  end note
+}
+
+Reg --> OAI
+Reg --> ANT
+Reg --> KIMI
+Reg --> OR
+Reg --> CODEX
+
+OAI --> LLMProvider : implements
+ANT --> LLMProvider : implements
+KIMI --> LLMProvider : implements
+OR --> LLMProvider : implements
+CODEX --> LLMProvider : implements
+
+OAI --> OpenAICloud
+ANT --> AnthropicCloud
+KIMI --> KimiCloud
+OR --> ORCloud
+CODEX --> CodexCloud
+
 @enduml
