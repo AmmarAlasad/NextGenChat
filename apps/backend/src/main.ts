@@ -140,7 +140,7 @@ async function start() {
 
   await fastify.listen({
     port: env.PORT,
-    host: '0.0.0.0',
+    host: '::',
   });
 }
 
