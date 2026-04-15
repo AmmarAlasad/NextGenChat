@@ -385,7 +385,7 @@ function SetupScreen() {
             className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl shadow-lg"
             style={{ background: 'var(--primary)', boxShadow: '0 8px 24px color-mix(in srgb, var(--primary) 30%, transparent)' }}
           >
-            <Image alt="NextGenChat" className="h-full w-full object-cover" height={40} priority src="/nextgenchat-brand-mark.png" width={40} />
+            <Image alt="NextGenChat" className="h-full w-full object-cover" height={40} priority src="/nextgenchat-brand-mark.svg" width={40} />
           </div>
           <div className="text-center">
             <h1 className="font-headline text-xl font-bold tracking-tight text-on-surface">

@@ -250,8 +250,9 @@ export class AgentCronService {
     return SCHEDULE_MANIFEST_RELATIVE_PATH;
   }
 
-  getManifestAbsolutePath(agentId: string) {
-    return path.join(workspaceService.getAgentWorkspaceDir(agentId), SCHEDULE_MANIFEST_RELATIVE_PATH);
+  async getManifestAbsolutePath(agentId: string) {
+    const slug = await workspaceService.fetchSlug(agentId);
+    return path.join(workspaceService.getAgentWorkspaceDir(slug), SCHEDULE_MANIFEST_RELATIVE_PATH);
   }
 
   async listAgentSchedules(agentId: string): Promise<AgentScheduleRecord[]> {
@@ -275,7 +276,7 @@ export class AgentCronService {
   }
 
   async syncWorkspaceManifest(agentId: string) {
-    const manifestPath = this.getManifestAbsolutePath(agentId);
+    const manifestPath = await this.getManifestAbsolutePath(agentId);
     const schedules = await this.listAgentSchedules(agentId);
     const manifest = {
       generatedAt: new Date().toISOString(),

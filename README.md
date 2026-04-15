@@ -87,12 +87,18 @@ This local bootstrap:
 
 - clones or updates the repo
 - creates a local `.env`
-- asks where agent workspaces should live and stores that path in `.env`
+- stores all local installation data under `~/.nextgenchat` by default
 - generates local secrets
 - uses SQLite for persistence
 - syncs Prisma
 - installs a user-level `systemd` service
 - starts the frontend and backend through that service
+
+Local data layout:
+
+- `~/.nextgenchat/dev.db` — SQLite database
+- `~/.nextgenchat/agent-workspaces/` — agent workspaces
+- `~/.nextgenchat/install/` — install state used by the update/install script
 
 Running the install script again will:
 
@@ -101,10 +107,10 @@ Running the install script again will:
 - refresh the `systemd` unit
 - restart the service when the repo state changed
 
-For unattended installs, preconfigure the workspace location:
+For unattended installs, you can override the data root if needed:
 
 ```bash
-NEXTGENCHAT_AGENT_WORKSPACES_DIR="$HOME/.nextgenchat/agent-workspaces" \
+NEXTGENCHAT_HOME="$HOME/.nextgenchat" \
 curl -fsSL https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install.sh | bash
 ```
 
@@ -117,7 +123,7 @@ pnpm setup:local
 pnpm dev:local
 ```
 
-`pnpm setup:local` will prompt for an agent workspace directory the first time it runs.
+`pnpm setup:local` now uses `~/.nextgenchat` automatically for local runtime data and warns if it detects an existing or legacy local installation.
 
 Tool-call budget can be configured in `.env`:
 

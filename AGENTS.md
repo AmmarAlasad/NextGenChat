@@ -26,9 +26,10 @@ Compact repo guide for OpenCode sessions in `NextGenChat`.
 - `apps/web` currently has no test script, and backend `test` runs Vitest with `--passWithNoTests`. A green `pnpm test` is weaker evidence than usual.
 
 ## Verified Local Mode Behavior
-- `scripts/setup.sh` forces local defaults into `.env`: `DEPLOYMENT_MODE=local`, `DATABASE_URL=file:./dev.db`, `REDIS_ENABLED=false`.
+- `scripts/setup.sh` forces local defaults into `.env`: `DEPLOYMENT_MODE=local`, `DATABASE_URL=file:$HOME/.nextgenchat/dev.db`, `REDIS_ENABLED=false`.
 - Root `.env` is the source file; setup/dev scripts copy it to `apps/backend/.env` for Prisma.
-- `AGENT_WORKSPACES_DIR` is chosen during setup and stored outside the repo by default (`~/.nextgenchat/agent-workspaces`). Do not assume agent files live under the project tree.
+- Local runtime data defaults to `~/.nextgenchat/`: SQLite DB at `~/.nextgenchat/dev.db`, agent workspaces at `~/.nextgenchat/agent-workspaces`, install state at `~/.nextgenchat/install/`.
+- `scripts/setup.sh` no longer prompts for a workspace directory. It warns when it detects existing `~/.nextgenchat` data or legacy repo-local data that will not be reused automatically.
 - `.env.example` sets `OPENAI_API_KEY=disabled-local-key`. The server can boot without a real provider key, but agent-doc assistance, creator generation, and some provider-backed flows degrade or fall back until a real key is configured.
 
 ## Verification Order

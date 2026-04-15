@@ -256,8 +256,9 @@ export function formatTaskStateContext(state: PersistedTaskState) {
   return lines.join('\n');
 }
 
-export async function readPersistedTaskState(agentId: string): Promise<PersistedTaskState> {
-  const workspaceRoot = workspaceService.getAgentWorkspaceDir(agentId);
+export async function readPersistedTaskState(agentId: string, agentSlug?: string): Promise<PersistedTaskState> {
+  const slug = agentSlug ?? await workspaceService.fetchSlug(agentId);
+  const workspaceRoot = workspaceService.getAgentWorkspaceDir(slug);
   const filePath = path.resolve(workspaceRoot, TODO_STATE_RELATIVE_PATH);
 
   try {

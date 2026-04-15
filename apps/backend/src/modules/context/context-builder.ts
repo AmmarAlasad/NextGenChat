@@ -68,6 +68,16 @@ export interface ContextBuildResult {
   staticPrefixCacheHit?: boolean;
 }
 
+function buildCurrentDateTimeContext(now = new Date()) {
+  return [
+    '## Current Date And Time',
+    '',
+    `Current local date/time: ${now.toString()}`,
+    `Current ISO timestamp: ${now.toISOString()}`,
+    `Current timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown'}`,
+  ].join('\n');
+}
+
 interface MessageTextBlock {
   type: 'text';
   text: string;
@@ -397,7 +407,7 @@ export class ContextBuilder {
         skillService.getPassiveContent(agentId),
       ]);
 
-      const workspaceRoot = workspaceService.getAgentWorkspaceDir(agentId);
+      const workspaceRoot = workspaceService.getAgentWorkspaceDir(agent.slug);
       const docMap = new Map(docs.map((d) => [d.docType, d.content ?? '']));
 
       // ── Message 1: Runtime identity + tooling (OpenClaw: hardcoded sections) ─
@@ -417,6 +427,10 @@ export class ContextBuilder {
           toolGuidance,
           maxToolRounds: env.agentMaxToolRounds === 0 ? 'unlimited' : env.agentMaxToolRounds,
         }),
+      });
+      prefixMessages.push({
+        role: 'system',
+        content: buildCurrentDateTimeContext(),
       });
 
       // ── Message 2: Project Context (OpenClaw: buildProjectContextSection) ───
@@ -474,7 +488,7 @@ export class ContextBuilder {
       }
     }
 
-    const persistedTaskState = await readPersistedTaskState(agentId);
+    const persistedTaskState = await readPersistedTaskState(agentId, agent.slug);
     const taskStateText = formatTaskStateContext(persistedTaskState);
     if (taskStateText) {
       dynamicMessages.push({ role: 'system', content: taskStateText });

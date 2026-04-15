@@ -36,6 +36,9 @@ const syne = Syne({
 export const metadata: Metadata = {
   title: "NextGenChat",
   description: "Collaborative chat platform for humans and AI agents.",
+  icons: {
+    icon: "/LOGO.png",
+  },
 };
 
 export default function RootLayout({

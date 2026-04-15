@@ -13,12 +13,39 @@ YELLOW="\033[33m"
 CYAN="\033[36m"
 RESET="\033[0m"
 
+NEXTGENCHAT_HOME_DEFAULT="${NEXTGENCHAT_HOME:-$HOME/.nextgenchat}"
+NEXTGENCHAT_DB_PATH_DEFAULT="$NEXTGENCHAT_HOME_DEFAULT/dev.db"
+NEXTGENCHAT_AGENT_WORKSPACES_DEFAULT="$NEXTGENCHAT_HOME_DEFAULT/agent-workspaces"
+
 step() { echo -e "\n${BOLD}${CYAN}▸ $1${RESET}"; }
 ok() { echo -e "  ${GREEN}✓ $1${RESET}"; }
 warn() { echo -e "  ${YELLOW}! $1${RESET}"; }
 
 generate_secret() {
   node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+}
+
+notify_existing_local_data() {
+  local data_dir="$1"
+  local legacy_workspace_dir="apps/backend/agent-workspaces"
+  local legacy_db_paths=("apps/backend/dev.db" "apps/backend/prisma/dev.db" "dev.db")
+
+  if [ -d "$data_dir" ] && [ -n "$(ls -A "$data_dir" 2>/dev/null)" ]; then
+    warn "Found existing NextGenChat local data at $data_dir"
+    warn "Setup will reuse that existing installation data."
+  fi
+
+  if [ -d "$legacy_workspace_dir" ] && [ -n "$(ls -A "$legacy_workspace_dir" 2>/dev/null)" ]; then
+    warn "Found legacy repo-local agent workspaces at $legacy_workspace_dir"
+    warn "They will not be used automatically. Move anything you still need into $NEXTGENCHAT_AGENT_WORKSPACES_DEFAULT"
+  fi
+
+  for legacy_db in "${legacy_db_paths[@]}"; do
+    if [ -f "$legacy_db" ]; then
+      warn "Found legacy repo-local SQLite data at $legacy_db"
+      warn "It will not be used automatically. Move it to $NEXTGENCHAT_DB_PATH_DEFAULT if you need it."
+    fi
+  done
 }
 
 sync_backend_env() {
@@ -51,35 +78,6 @@ set_env_value() {
   fi
 }
 
-choose_agent_workspaces_dir() {
-  local configured_value="${NEXTGENCHAT_AGENT_WORKSPACES_DIR:-}"
-  local existing_value
-  existing_value="$(get_env_value "AGENT_WORKSPACES_DIR")"
-  local default_value="${existing_value:-$HOME/.nextgenchat/agent-workspaces}"
-
-  if [ -n "$configured_value" ]; then
-    printf '%s' "$configured_value"
-    return 0
-  fi
-
-  if [ -t 0 ]; then
-    printf '\n%sChoose agent workspace directory%s\n' "$BOLD" "$RESET" >&2
-    printf '  This folder stores each agent workspace outside the repo so reinstalling\n' >&2
-    printf '  or updating the project does not wipe the agent files.\n\n' >&2
-    printf '  Path [%s]: ' "$default_value" >&2
-
-    local response
-    IFS= read -r response
-
-    if [ -n "$response" ]; then
-      printf '%s' "$response"
-      return 0
-    fi
-  fi
-
-  printf '%s' "$default_value"
-}
-
 echo -e "\n${BOLD}NextGenChat — Local setup${RESET}"
 
 step "Checking prerequisites"
@@ -98,6 +96,8 @@ command -v pnpm >/dev/null 2>&1 && ok "pnpm $(pnpm --version)" || {
 
 step "Creating local environment"
 
+notify_existing_local_data "$NEXTGENCHAT_HOME_DEFAULT"
+
 if [ ! -f .env ]; then
   cp .env.example .env
   set_env_value "JWT_SECRET" "$(generate_secret)"
@@ -113,15 +113,17 @@ else
   warn "Using existing .env"
 fi
 
+mkdir -p "$NEXTGENCHAT_HOME_DEFAULT"
+mkdir -p "$NEXTGENCHAT_AGENT_WORKSPACES_DEFAULT"
+
 set_env_value "DEPLOYMENT_MODE" "local"
-set_env_value "DATABASE_URL" "file:./dev.db"
+set_env_value "DATABASE_URL" "file:$NEXTGENCHAT_DB_PATH_DEFAULT"
 set_env_value "REDIS_ENABLED" "false"
 set_env_value "REDIS_URL" ""
-
-AGENT_WORKSPACES_DIR_VALUE="$(choose_agent_workspaces_dir)"
-mkdir -p "$AGENT_WORKSPACES_DIR_VALUE"
-set_env_value "AGENT_WORKSPACES_DIR" "$AGENT_WORKSPACES_DIR_VALUE"
-ok "Agent workspaces will be stored in $AGENT_WORKSPACES_DIR_VALUE"
+set_env_value "AGENT_WORKSPACES_DIR" "$NEXTGENCHAT_AGENT_WORKSPACES_DEFAULT"
+ok "Local installation data root: $NEXTGENCHAT_HOME_DEFAULT"
+ok "SQLite database will be stored at $NEXTGENCHAT_DB_PATH_DEFAULT"
+ok "Agent workspaces will be stored at $NEXTGENCHAT_AGENT_WORKSPACES_DEFAULT"
 
 sync_backend_env
 ok "Synced backend Prisma env"

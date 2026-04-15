@@ -8,7 +8,8 @@ set -euo pipefail
 
 REPO_URL="${NEXTGENCHAT_REPO_URL:-https://github.com/AmmarAlasad/NextGenChat.git}"
 INSTALL_DIR="${NEXTGENCHAT_DIR:-$HOME/NextGenChat}"
-STATE_FILE_NAME=".nextgenchat-install-state"
+NEXTGENCHAT_HOME_DIR="${NEXTGENCHAT_HOME:-$HOME/.nextgenchat}"
+STATE_FILE_NAME="$NEXTGENCHAT_HOME_DIR/install/install-state"
 
 compute_install_state() {
   local head tracked staged untracked env_hash
@@ -48,6 +49,8 @@ REPO_DIR="$(ensure_repo)"
 cd "$REPO_DIR"
 
 PREVIOUS_STATE=""
+mkdir -p "$(dirname "$STATE_FILE_NAME")"
+
 if [ -f "$STATE_FILE_NAME" ]; then
   PREVIOUS_STATE="$(cat "$STATE_FILE_NAME")"
 fi

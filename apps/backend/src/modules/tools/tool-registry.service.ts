@@ -157,6 +157,7 @@ type ToolExecutionResult = {
 
 type ToolExecutionContext = {
   agentId: string;
+  agentSlug: string;
   channelId: string;
 };
 
@@ -189,8 +190,8 @@ function normalizeWorkspacePath(root: string, value: string) {
   return path.resolve(root, value);
 }
 
-function displayWorkspacePath(agentId: string, filePath: string) {
-  const root = path.resolve(workspaceService.getAgentWorkspaceDir(agentId));
+function displayWorkspacePath(agentSlug: string, filePath: string) {
+  const root = path.resolve(workspaceService.getAgentWorkspaceDir(agentSlug));
   const relative = path.relative(root, path.resolve(filePath));
 
   if (!relative || relative === '') {
@@ -372,16 +373,16 @@ function truncateOutputLines(lines: string[], limit: number) {
   };
 }
 
-function getTodoStatePath(agentId: string) {
-  return resolveAllowedPath(agentId, TODO_STATE_FILE);
+function getTodoStatePath(agentSlug: string) {
+  return resolveAllowedPath(agentSlug, TODO_STATE_FILE);
 }
 
-function getScheduleStatePath(agentId: string) {
-  return resolveAllowedPath(agentId, SCHEDULE_STATE_FILE);
+function getScheduleStatePath(agentSlug: string) {
+  return resolveAllowedPath(agentSlug, SCHEDULE_STATE_FILE);
 }
 
-async function readTodoState(agentId: string) {
-  const filePath = getTodoStatePath(agentId);
+async function readTodoState(agentSlug: string) {
+  const filePath = getTodoStatePath(agentSlug);
   if (!(await pathExists(filePath))) {
     return [] as Array<z.infer<typeof TodoItemSchema>>;
   }
@@ -390,8 +391,8 @@ async function readTodoState(agentId: string) {
   return z.array(TodoItemSchema).parse(JSON.parse(raw));
 }
 
-async function writeTodoState(agentId: string, todos: Array<z.infer<typeof TodoItemSchema>>) {
-  const filePath = getTodoStatePath(agentId);
+async function writeTodoState(agentSlug: string, todos: Array<z.infer<typeof TodoItemSchema>>) {
+  const filePath = getTodoStatePath(agentSlug);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(todos, null, 2)}\n`, 'utf8');
 }
@@ -450,8 +451,8 @@ async function readTextFile(filePath: string, offset: number, limit: number) {
   return [`<path>${filePath}</path>`, '<type>file</type>', '<content>', ...numbered, '', footer, '</content>'].join('\n');
 }
 
-function resolveAllowedPath(agentId: string, value: string) {
-  const root = path.resolve(workspaceService.getAgentWorkspaceDir(agentId));
+function resolveAllowedPath(agentSlug: string, value: string) {
+  const root = path.resolve(workspaceService.getAgentWorkspaceDir(agentSlug));
   const candidate = normalizeWorkspacePath(root, value);
   const relative = path.relative(root, candidate);
 
@@ -462,12 +463,12 @@ function resolveAllowedPath(agentId: string, value: string) {
   return candidate;
 }
 
-function resolveAllowedDirectory(agentId: string, value: string | undefined) {
+function resolveAllowedDirectory(agentSlug: string, value: string | undefined) {
   if (!value) {
-    return path.resolve(workspaceService.getAgentWorkspaceDir(agentId));
+    return path.resolve(workspaceService.getAgentWorkspaceDir(agentSlug));
   }
 
-  return resolveAllowedPath(agentId, value);
+  return resolveAllowedPath(agentSlug, value);
 }
 
 function stripHtmlTags(html: string) {
@@ -531,11 +532,11 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
     },
     async execute(args, context) {
       const input = ReadToolSchema.parse(args);
-      const filePath = resolveAllowedPath(context.agentId, input.filePath);
-      if (filePath === getScheduleStatePath(context.agentId)) {
+      const filePath = resolveAllowedPath(context.agentSlug, input.filePath);
+      if (filePath === getScheduleStatePath(context.agentSlug)) {
         await agentCronService.syncWorkspaceManifest(context.agentId);
       }
-      const displayPath = displayWorkspacePath(context.agentId, filePath);
+      const displayPath = displayWorkspacePath(context.agentSlug, filePath);
       const fileStat = await stat(filePath).catch(() => null);
 
       if (!fileStat) {
@@ -595,8 +596,8 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
     },
     async execute(args, context) {
       const input = WriteToolSchema.parse(args);
-      const filePath = resolveAllowedPath(context.agentId, input.filePath);
-      const scheduleFilePath = getScheduleStatePath(context.agentId);
+      const filePath = resolveAllowedPath(context.agentSlug, input.filePath);
+      const scheduleFilePath = getScheduleStatePath(context.agentSlug);
 
       // Protect system-managed files from agent self-modification.
       // Only AgentCreatorAgent (admin API) may update these.
@@ -606,7 +607,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
         throw new Error(`The file "${path.basename(filePath)}" is managed by AgentCreatorAgent and cannot be modified by agents directly. You can update user.md, memory.md, and heartbeat.md freely.`);
       }
 
-      const displayPath = displayWorkspacePath(context.agentId, filePath);
+      const displayPath = displayWorkspacePath(context.agentSlug, filePath);
 
       if (filePath === scheduleFilePath) {
         const result = await agentCronService.syncManifestChanges(context.agentId, input.content);
@@ -662,8 +663,8 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
     },
     async execute(args, context) {
       const input = BashToolSchema.parse(args);
-      const workdir = resolveAllowedDirectory(context.agentId, input.workdir);
-      const displayWorkdir = displayWorkspacePath(context.agentId, workdir);
+      const workdir = resolveAllowedDirectory(context.agentSlug, input.workdir);
+      const displayWorkdir = displayWorkspacePath(context.agentSlug, workdir);
       const timeout = input.timeout ?? DEFAULT_BASH_TIMEOUT_MS;
 
       const result = await new Promise<{ output: string; exitCode: number | null; timedOut: boolean }>((resolve, reject) => {
@@ -740,7 +741,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
     },
     async execute(args, context) {
       const input = GlobToolSchema.parse(args);
-      const searchRoot = resolveAllowedDirectory(context.agentId, input.path);
+      const searchRoot = resolveAllowedDirectory(context.agentSlug, input.path);
       let relativeMatches: string[];
 
       try {
@@ -767,7 +768,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
       }
 
       const matches = relativeMatches
-        .map((line) => displayWorkspacePath(context.agentId, path.resolve(searchRoot, line)))
+        .map((line) => displayWorkspacePath(context.agentSlug, path.resolve(searchRoot, line)))
         .sort((a, b) => a.localeCompare(b));
 
       if (matches.length === 0) {
@@ -775,7 +776,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
           output: `No files matched pattern: ${input.pattern}`,
           structuredOutput: {
             pattern: input.pattern,
-            path: displayWorkspacePath(context.agentId, searchRoot),
+            path: displayWorkspacePath(context.agentSlug, searchRoot),
             returnedMatches: 0,
           },
         };
@@ -785,7 +786,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
       return {
         output: [
           `<pattern>${input.pattern}</pattern>`,
-          `<path>${displayWorkspacePath(context.agentId, searchRoot)}</path>`,
+          `<path>${displayWorkspacePath(context.agentSlug, searchRoot)}</path>`,
           '<matches>',
           truncated.lines.join('\n'),
           truncated.truncated ? `\n(Showing ${truncated.lines.length} of ${truncated.total} matches. Narrow the pattern or path to refine results.)` : `\n(${truncated.total} matches)`,
@@ -793,7 +794,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
         ].join('\n'),
         structuredOutput: {
           pattern: input.pattern,
-          path: displayWorkspacePath(context.agentId, searchRoot),
+          path: displayWorkspacePath(context.agentSlug, searchRoot),
           returnedMatches: truncated.lines.length,
           totalMatches: truncated.total,
           truncated: truncated.truncated,
@@ -822,7 +823,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
     },
     async execute(args, context) {
       const input = GrepToolSchema.parse(args);
-      const searchRoot = resolveAllowedDirectory(context.agentId, input.path);
+      const searchRoot = resolveAllowedDirectory(context.agentSlug, input.path);
       let rawMatches: string[];
 
       try {
@@ -855,7 +856,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
         }
 
         const [, filePath, lineNumber, content] = match;
-        const displayPath = displayWorkspacePath(context.agentId, path.resolve(searchRoot, filePath));
+        const displayPath = displayWorkspacePath(context.agentSlug, path.resolve(searchRoot, filePath));
         return `${displayPath}:${lineNumber}: ${content}`;
       });
 
@@ -864,7 +865,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
           output: `No matches found for pattern: ${input.pattern}`,
           structuredOutput: {
             pattern: input.pattern,
-            path: displayWorkspacePath(context.agentId, searchRoot),
+            path: displayWorkspacePath(context.agentSlug, searchRoot),
             include: input.include ?? null,
             returnedMatches: 0,
           },
@@ -875,7 +876,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
       return {
         output: [
           `<pattern>${input.pattern}</pattern>`,
-          `<path>${displayWorkspacePath(context.agentId, searchRoot)}</path>`,
+          `<path>${displayWorkspacePath(context.agentSlug, searchRoot)}</path>`,
           input.include ? `<include>${input.include}</include>` : '',
           '<matches>',
           truncated.lines.join('\n'),
@@ -884,7 +885,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
         ].filter(Boolean).join('\n'),
         structuredOutput: {
           pattern: input.pattern,
-          path: displayWorkspacePath(context.agentId, searchRoot),
+          path: displayWorkspacePath(context.agentSlug, searchRoot),
           include: input.include ?? null,
           returnedMatches: truncated.lines.length,
           totalMatches: truncated.total,
@@ -1055,13 +1056,13 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
     },
     async execute(args, context) {
       const input = TodoWriteToolSchema.parse(args);
-      await writeTodoState(context.agentId, input.todos);
+      await writeTodoState(context.agentSlug, input.todos);
       return {
         output: JSON.stringify(input.todos, null, 2),
         structuredOutput: {
           todoCount: input.todos.length,
           pendingCount: input.todos.filter((todo) => todo.status !== 'completed').length,
-          filePath: displayWorkspacePath(context.agentId, getTodoStatePath(context.agentId)),
+          filePath: displayWorkspacePath(context.agentSlug, getTodoStatePath(context.agentSlug)),
         },
       };
     },
@@ -1081,12 +1082,12 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
       properties: {},
     },
     async execute(_args, context) {
-      const todos = await readTodoState(context.agentId);
+      const todos = await readTodoState(context.agentSlug);
       return {
         output: JSON.stringify(todos, null, 2),
         structuredOutput: {
           todoCount: todos.length,
-          filePath: displayWorkspacePath(context.agentId, getTodoStatePath(context.agentId)),
+          filePath: displayWorkspacePath(context.agentSlug, getTodoStatePath(context.agentSlug)),
         },
       };
     },
@@ -1500,7 +1501,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
           `Schedule: ${record.scheduleDescription}`,
           `Raw schedule: ${record.schedule}`,
           `Next run: ${record.nextRunAt ?? 'none'}`,
-          `Manifest file: ${displayWorkspacePath(context.agentId, getScheduleStatePath(context.agentId))}`,
+          `Manifest file: ${displayWorkspacePath(context.agentSlug, getScheduleStatePath(context.agentSlug))}`,
         ].join('\n'),
         structuredOutput: record,
       };
@@ -1528,7 +1529,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
           output: 'No scheduled tasks are currently configured for this agent.',
           structuredOutput: {
             schedules: [],
-            filePath: displayWorkspacePath(context.agentId, getScheduleStatePath(context.agentId)),
+            filePath: displayWorkspacePath(context.agentSlug, getScheduleStatePath(context.agentSlug)),
           },
         };
       }
@@ -1547,7 +1548,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
         ].join('\n')).join('\n'),
         structuredOutput: {
           schedules,
-          filePath: displayWorkspacePath(context.agentId, getScheduleStatePath(context.agentId)),
+          filePath: displayWorkspacePath(context.agentSlug, getScheduleStatePath(context.agentSlug)),
         },
       };
     },
@@ -1576,7 +1577,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
         output: `Deleted scheduled task ${input.scheduleId}.`,
         structuredOutput: {
           scheduleId: input.scheduleId,
-          filePath: displayWorkspacePath(context.agentId, getScheduleStatePath(context.agentId)),
+          filePath: displayWorkspacePath(context.agentSlug, getScheduleStatePath(context.agentSlug)),
         },
       };
     },
@@ -1665,7 +1666,7 @@ export class ToolRegistryService {
     }).join('\n\n');
   }
 
-  async executeToolCall(input: { agentId: string; channelId: string; toolName: string; args: string }) {
+  async executeToolCall(input: { agentId: string; agentSlug: string; channelId: string; toolName: string; args: string }) {
     const approved = await this.getApprovedTools(input.agentId);
     const match = approved.find((tool) => tool.toolName === input.toolName);
 
@@ -1685,7 +1686,7 @@ export class ToolRegistryService {
       throw new Error(`Unsupported built-in tool: ${input.toolName}`);
     }
 
-    return definition.execute(parsedArgs, { agentId: input.agentId, channelId: input.channelId });
+    return definition.execute(parsedArgs, { agentId: input.agentId, agentSlug: input.agentSlug, channelId: input.channelId });
   }
 }
 

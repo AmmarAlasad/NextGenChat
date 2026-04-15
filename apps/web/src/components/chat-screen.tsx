@@ -1689,7 +1689,7 @@ export function ChatScreen() {
 
         {/* ── Sidebar ──────────────────────────────────────────────────────── */}
         <aside
-          className="flex w-[240px] shrink-0 flex-col"
+          className="flex w-[272px] shrink-0 flex-col"
           style={{ background: sdBg, borderRight: sdBdr }}
         >
           {/* Workspace header */}
@@ -1701,10 +1701,10 @@ export function ChatScreen() {
               className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-lg shadow-md"
               style={{ background: 'var(--ib-500)' }}
             >
-              <Image alt="NextGenChat" className="h-full w-full object-cover" height={28} priority src="/nextgenchat-brand-mark.png" width={28} />
+              <Image alt="NextGenChat" className="h-full w-full object-cover" height={28} priority src="/nextgenchat-brand-mark.svg" width={28} />
             </div>
             <span
-              className="font-headline flex-1 truncate text-[14px] font-semibold"
+              className="font-headline flex-1 truncate text-[16px] font-semibold"
               style={{ color: 'var(--ib-100)' }}
             >
               {workspace?.name ?? 'NextGenChat'}
@@ -1759,12 +1759,12 @@ export function ChatScreen() {
           >
             <div className="mt-3 flex items-center gap-2 rounded-xl px-2 py-2">
               <div
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[12px] font-bold"
                 style={{ background: avatarColor(user?.username ?? 'U'), color: '#fff' }}
               >
                 {user?.username.slice(0, 1).toUpperCase()}
               </div>
-              <span className="flex-1 truncate text-[12px] font-medium" style={{ color: 'var(--ib-300)' }}>
+              <span className="flex-1 truncate text-[14px] font-medium" style={{ color: 'var(--ib-300)' }}>
                 {user?.username}
               </span>
               <button
@@ -1780,7 +1780,7 @@ export function ChatScreen() {
               </button>
             </div>
             <button
-              className="mt-1.5 w-full rounded-xl py-2 text-[12px] font-medium transition-colors hover:bg-white/10"
+              className="mt-1.5 w-full rounded-xl py-2.5 text-[14px] font-medium transition-colors hover:bg-white/10"
               onClick={() => setShowNewAgent(true)}
               style={{ border: '1px solid var(--ib-800)', color: 'var(--ib-500)' }}
               type="button"
@@ -1788,7 +1788,7 @@ export function ChatScreen() {
               + New Agent
             </button>
             <Link
-              className="mt-1.5 block w-full rounded-xl py-2 text-center text-[12px] font-medium transition-colors hover:bg-white/10"
+              className="mt-1.5 block w-full rounded-xl py-2.5 text-center text-[14px] font-medium transition-colors hover:bg-white/10"
               href="/settings"
               style={{ border: '1px solid var(--ib-800)', color: 'var(--ib-500)' }}
             >
@@ -1825,7 +1825,7 @@ export function ChatScreen() {
                       {selectedChannel.type !== 'DIRECT' && (
                         <span className="font-bold" style={{ color: 'var(--ib-600)', fontSize: '16px' }}>#</span>
                       )}
-                      <span className="font-headline text-[14px] font-semibold" style={{ color: 'var(--ib-100)' }}>
+                      <span className="font-headline text-[16px] font-semibold" style={{ color: 'var(--ib-100)' }}>
                         {selectedChannel.type === 'DIRECT'
                           ? (selectedChannel.participantAgentNames[0] ?? selectedChannel.name)
                           : selectedChannel.name}
@@ -1869,11 +1869,11 @@ export function ChatScreen() {
                         animation: (agentState === 'streaming' || agentState === 'queued') ? 'typing 1.4s ease-in-out infinite' : undefined,
                       }}
                     />
-                    <span className="text-[11px]" style={{ color: 'var(--ib-600)' }}>{agentStateLabel}</span>
+                    <span className="text-[12px]" style={{ color: 'var(--ib-600)' }}>{agentStateLabel}</span>
                   </div>
                   {selectedChannel?.type === 'DIRECT' && activeAgents[0] && (
                     <Link
-                      className="rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors hover:bg-white/10"
+                      className="rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors hover:bg-white/10"
                       href={`/agents/${activeAgents[0].id}`}
                       style={{ border: '1px solid var(--ib-800)', color: 'var(--ib-400)' }}
                     >
@@ -1882,7 +1882,7 @@ export function ChatScreen() {
                   )}
                   {selectedChannelIsGroup && selectedChannel && (
                     <button
-                      className="rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors hover:bg-white/10"
+                      className="rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors hover:bg-white/10"
                       onClick={() => setShowMembers(true)}
                       style={{ border: '1px solid var(--ib-800)', color: 'var(--ib-400)' }}
                       type="button"
@@ -1918,7 +1918,7 @@ export function ChatScreen() {
                       return (
                         <div className="flex justify-center py-4" key={msg.id}>
                           <span
-                            className="rounded-full px-3 py-1 text-[11px]"
+                            className="rounded-full px-3 py-1 text-[12px]"
                             style={{ background: 'var(--ti-800)', color: 'var(--ib-500)', border: '1px solid var(--ib-700)' }}
                           >
                             {msg.content}
@@ -1940,7 +1940,7 @@ export function ChatScreen() {
                         <div className="w-9 shrink-0 pt-0.5">
                           {!grouped ? (
                             <div
-                              className="flex h-9 w-9 items-center justify-center rounded-full text-[12px] font-bold"
+                              className="flex h-10 w-10 items-center justify-center rounded-full text-[13px] font-bold"
                               style={{
                                 background: senderColor,
                                 color: '#fff',
@@ -1964,7 +1964,7 @@ export function ChatScreen() {
                           {!grouped && (
                             <div className="mb-1 flex items-center gap-2">
                               <span
-                                className="text-[14px] font-semibold leading-none"
+                                className="text-[16px] font-semibold leading-none"
                                 style={{ color: senderColor }}
                               >
                                 {msg.senderName ?? (isAgent ? 'Agent' : user?.username ?? 'You')}
@@ -1993,7 +1993,7 @@ export function ChatScreen() {
                                   Failed
                                 </span>
                               )}
-                              <span className="text-[11px]" style={{ color: 'var(--ib-700)' }}>
+                              <span className="text-[12px]" style={{ color: 'var(--ib-700)' }}>
                                 {formatTime(msg.createdAt)}
                               </span>
                             </div>
@@ -2010,7 +2010,7 @@ export function ChatScreen() {
                               <AgentMarkdown content={msg.content} />
                             ) : (
                               <p
-                                className="whitespace-pre-wrap text-[14px] leading-[1.8]"
+                                className="whitespace-pre-wrap text-[16px] leading-[1.85]"
                                 style={{ color: failure ? 'var(--sr-300)' : 'var(--ib-100)' }}
                               >
                                 {msg.content}
@@ -2022,7 +2022,7 @@ export function ChatScreen() {
                             <div className="mt-3 space-y-2">
                               {attachments.map((attachment) => (
                                 <div
-                                  className="rounded-xl px-3 py-2 text-[12px]"
+                                  className="rounded-xl px-3 py-2.5 text-[13px]"
                                   key={attachment.id ?? `${msg.id}:${attachment.fileName}`}
                                   style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid var(--ib-800)', color: 'var(--ib-200)' }}
                                 >
@@ -2067,7 +2067,7 @@ export function ChatScreen() {
                         {/* Avatar with pulsing ring */}
                         <div className="w-9 shrink-0 pt-0.5">
                           <div
-                            className="flex h-9 w-9 items-center justify-center rounded-full text-[12px] font-bold"
+                            className="flex h-10 w-10 items-center justify-center rounded-full text-[13px] font-bold"
                             style={{
                               background: color,
                               color: '#fff',
@@ -2081,7 +2081,7 @@ export function ChatScreen() {
                         <div className="min-w-0 flex-1">
                           {/* Header */}
                           <div className="mb-2 flex items-center gap-2">
-                            <span className="text-[14px] font-semibold leading-none" style={{ color }}>
+                            <span className="text-[16px] font-semibold leading-none" style={{ color }}>
                               {label}
                             </span>
                             <span
@@ -2091,7 +2091,7 @@ export function ChatScreen() {
                               AI
                             </span>
                             <span
-                              className="flex items-center gap-1 text-[11px]"
+                              className="flex items-center gap-1 text-[12px]"
                               style={{ color: hasText ? 'var(--ib-500)' : liveCalls.length > 0 ? 'var(--warning)' : 'var(--success)' }}
                             >
                               <span
@@ -2205,7 +2205,7 @@ export function ChatScreen() {
                     </div>
                   )}
                   <textarea
-                    className="min-h-[72px] w-full resize-none bg-transparent px-4 pt-3 text-[14px] leading-relaxed outline-none"
+                    className="min-h-[88px] w-full resize-none bg-transparent px-4 pt-3 text-[16px] leading-relaxed outline-none"
                     onChange={(e) => setDraft(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submitMessage(); }
@@ -2230,7 +2230,7 @@ export function ChatScreen() {
                   <div className="flex items-center justify-between px-4 pb-3">
                     <div className="flex items-center gap-3">
                       <button
-                        className="rounded-xl px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-white/10"
+                        className="rounded-xl px-3 py-2 text-[13px] font-medium transition-colors hover:bg-white/10"
                         onClick={() => attachmentInputRef.current?.click()}
                         style={{ border: '1px solid var(--ib-800)', color: 'var(--ib-400)' }}
                         type="button"
@@ -2238,7 +2238,7 @@ export function ChatScreen() {
                         Add file
                       </button>
                       <span
-                        className="text-[11px]"
+                        className="text-[12px]"
                         style={{
                           color: agentState === 'error' ? 'var(--sr-400)' : 'var(--ib-700)',
                         }}
@@ -2250,7 +2250,7 @@ export function ChatScreen() {
                       </span>
                     </div>
                     <button
-                      className="font-headline rounded-xl px-5 py-1.5 text-[13px] font-semibold transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-30"
+                      className="font-headline rounded-xl px-5 py-2 text-[14px] font-semibold transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-30"
                       disabled={!canSend}
                       onClick={() => { void submitMessage(); }}
                       style={{ background: 'var(--ib-500)', color: 'var(--ib-50)', boxShadow: canSend ? '0 0 16px rgba(79,108,176,0.3)' : undefined }}

@@ -47,16 +47,13 @@ function classifyInventoryKind(relativePath: string): AgentSkillFile['kind'] {
 }
 
 export class SkillService {
-  skillsDir(agentId: string): string {
-    return path.join(workspaceService.getAgentWorkspaceDir(agentId), 'skills');
+  private skillsDirBySlug(slug: string): string {
+    return path.join(workspaceService.getAgentWorkspaceDir(slug), 'skills');
   }
 
-  skillRootPath(agentId: string, name: string): string {
-    return path.join(this.skillsDir(agentId), name);
-  }
-
-  skillFilePath(agentId: string, name: string): string {
-    return path.join(this.skillRootPath(agentId, name), 'SKILL.md');
+  private async resolveSkillsDir(agentId: string): Promise<string> {
+    const slug = await workspaceService.fetchSlug(agentId);
+    return this.skillsDirBySlug(slug);
   }
 
   private parseToolNames(raw: string | null): string[] {
@@ -88,21 +85,21 @@ export class SkillService {
     return skill.rootPath?.trim() || skill.name;
   }
 
-  private async readContentByRoot(agentId: string, rootPath: string, name: string): Promise<string> {
-    const primaryPath = path.join(this.skillsDir(agentId), rootPath, 'SKILL.md');
+  private async readContentByRoot(skillsDir: string, rootPath: string, name: string): Promise<string> {
+    const primaryPath = path.join(skillsDir, rootPath, 'SKILL.md');
     try {
       return await readFile(primaryPath, 'utf8');
     } catch {
       try {
-        return await readFile(path.join(this.skillsDir(agentId), `${name}.md`), 'utf8');
+        return await readFile(path.join(skillsDir, `${name}.md`), 'utf8');
       } catch {
         return '';
       }
     }
   }
 
-  private async writeInstalledFiles(agentId: string, rootPath: string, input: { content: string; files?: Array<{ path: string; content: string }> }) {
-    const skillRoot = path.join(this.skillsDir(agentId), rootPath);
+  private async writeInstalledFiles(skillsDir: string, rootPath: string, input: { content: string; files?: Array<{ path: string; content: string }> }) {
+    const skillRoot = path.join(skillsDir, rootPath);
     await rm(skillRoot, { recursive: true, force: true });
     await mkdir(skillRoot, { recursive: true });
 
@@ -139,25 +136,28 @@ export class SkillService {
   }
 
   async list(agentId: string): Promise<AgentSkill[]> {
+    const skillsDir = await this.resolveSkillsDir(agentId);
     const skills = await prisma.agentSkill.findMany({
       where: { agentId },
       orderBy: [{ type: 'asc' }, { name: 'asc' }],
     });
-    return Promise.all(skills.map(async (skill) => this.toRecord(skill, await this.readContentByRoot(agentId, this.resolveRootPath(skill), skill.name))));
+    return Promise.all(skills.map(async (skill) => this.toRecord(skill, await this.readContentByRoot(skillsDir, this.resolveRootPath(skill), skill.name))));
   }
 
   async get(agentId: string, name: string): Promise<AgentSkill | null> {
+    const skillsDir = await this.resolveSkillsDir(agentId);
     const skill = await prisma.agentSkill.findUnique({
       where: { agentId_name: { agentId, name } },
     });
     if (!skill) return null;
-    return this.toRecord(skill, await this.readContentByRoot(agentId, this.resolveRootPath(skill), skill.name));
+    return this.toRecord(skill, await this.readContentByRoot(skillsDir, this.resolveRootPath(skill), skill.name));
   }
 
   async create(
     agentId: string,
     input: CreateSkillInput & { files?: Array<{ path: string; content: string }>; rootPath?: string },
   ): Promise<AgentSkill> {
+    const skillsDir = await this.resolveSkillsDir(agentId);
     const parsed = CreateSkillSchema.parse(input);
     const existing = await prisma.agentSkill.findUnique({
       where: { agentId_name: { agentId, name: parsed.name } },
@@ -165,8 +165,8 @@ export class SkillService {
     if (existing) throw new Error(`Skill "${parsed.name}" already exists for this agent.`);
 
     const rootPath = (input.rootPath?.trim() || parsed.name).replace(/^\/+|\/+$/g, '');
-    await mkdir(this.skillsDir(agentId), { recursive: true });
-    await this.writeInstalledFiles(agentId, rootPath, { content: parsed.content, files: input.files });
+    await mkdir(skillsDir, { recursive: true });
+    await this.writeInstalledFiles(skillsDir, rootPath, { content: parsed.content, files: input.files });
 
     const skill = await prisma.agentSkill.create({
       data: {
@@ -193,6 +193,7 @@ export class SkillService {
     name: string,
     input: UpdateSkillInput & { files?: Array<{ path: string; content: string }>; rootPath?: string },
   ): Promise<AgentSkill> {
+    const skillsDir = await this.resolveSkillsDir(agentId);
     const parsed = UpdateSkillSchema.parse(input);
     const existing = await prisma.agentSkill.findUnique({
       where: { agentId_name: { agentId, name } },
@@ -200,16 +201,16 @@ export class SkillService {
     if (!existing) throw new Error(`Skill "${name}" not found.`);
 
     const rootPath = (input.rootPath?.trim() || this.resolveRootPath(existing)).replace(/^\/+|\/+$/g, '');
-    const currentContent = await this.readContentByRoot(agentId, this.resolveRootPath(existing), name);
+    const currentContent = await this.readContentByRoot(skillsDir, this.resolveRootPath(existing), name);
     if (parsed.content !== undefined || input.files !== undefined || rootPath !== this.resolveRootPath(existing)) {
-      await this.writeInstalledFiles(agentId, rootPath, {
+      await this.writeInstalledFiles(skillsDir, rootPath, {
         content: parsed.content ?? currentContent,
         files: input.files,
       });
       if (rootPath !== this.resolveRootPath(existing)) {
-        await rm(path.join(this.skillsDir(agentId), this.resolveRootPath(existing)), { recursive: true, force: true });
+        await rm(path.join(skillsDir, this.resolveRootPath(existing)), { recursive: true, force: true });
         try {
-          await unlink(path.join(this.skillsDir(agentId), `${name}.md`));
+          await unlink(path.join(skillsDir, `${name}.md`));
         } catch {
           // Legacy file already absent.
         }
@@ -232,7 +233,7 @@ export class SkillService {
     });
 
     if (updated.type === 'PASSIVE' || existing.type === 'PASSIVE') staticPrefixCache.invalidate(agentId);
-    return this.toRecord(updated, parsed.content ?? await this.readContentByRoot(agentId, this.resolveRootPath(updated), name));
+    return this.toRecord(updated, parsed.content ?? await this.readContentByRoot(skillsDir, this.resolveRootPath(updated), name));
   }
 
   async upsert(
@@ -261,15 +262,16 @@ export class SkillService {
   }
 
   async delete(agentId: string, name: string): Promise<void> {
+    const skillsDir = await this.resolveSkillsDir(agentId);
     const existing = await prisma.agentSkill.findUnique({
       where: { agentId_name: { agentId, name } },
     });
     if (!existing) throw new Error(`Skill "${name}" not found.`);
 
     await prisma.agentSkill.delete({ where: { agentId_name: { agentId, name } } });
-    await rm(path.join(this.skillsDir(agentId), this.resolveRootPath(existing)), { recursive: true, force: true });
+    await rm(path.join(skillsDir, this.resolveRootPath(existing)), { recursive: true, force: true });
     try {
-      await unlink(path.join(this.skillsDir(agentId), `${name}.md`));
+      await unlink(path.join(skillsDir, `${name}.md`));
     } catch {
       // Legacy file already absent.
     }
@@ -278,6 +280,7 @@ export class SkillService {
   }
 
   async getPassiveContent(agentId: string): Promise<Array<{ name: string; content: string }>> {
+    const skillsDir = await this.resolveSkillsDir(agentId);
     const passiveSkills = await prisma.agentSkill.findMany({
       where: { agentId, type: 'PASSIVE', isActive: true },
       orderBy: { name: 'asc' },
@@ -285,18 +288,19 @@ export class SkillService {
 
     const results: Array<{ name: string; content: string }> = [];
     for (const skill of passiveSkills) {
-      const content = await this.readContentByRoot(agentId, this.resolveRootPath(skill), skill.name);
+      const content = await this.readContentByRoot(skillsDir, this.resolveRootPath(skill), skill.name);
       if (content.trim()) results.push({ name: `skill:${skill.name}`, content });
     }
     return results;
   }
 
   async readSkillFiles(agentId: string, name: string): Promise<Array<{ path: string; content: string }>> {
+    const skillsDir = await this.resolveSkillsDir(agentId);
     const skill = await prisma.agentSkill.findUnique({ where: { agentId_name: { agentId, name } } });
     if (!skill) throw new Error(`Skill "${name}" not found.`);
 
     const inventory = this.parseInventory(skill.fileInventory);
-    const rootPath = path.join(this.skillsDir(agentId), this.resolveRootPath(skill));
+    const rootPath = path.join(skillsDir, this.resolveRootPath(skill));
     const files: Array<{ path: string; content: string }> = [];
     for (const entry of inventory) {
       const absolute = path.join(rootPath, entry.path);

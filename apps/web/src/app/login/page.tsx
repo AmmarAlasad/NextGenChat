@@ -51,7 +51,7 @@ export default function LoginPage() {
               className="h-full w-full object-cover"
               height={44}
               priority
-              src="/nextgenchat-brand-mark.png"
+              src="/nextgenchat-brand-mark.svg"
               width={44}
             />
           </div>

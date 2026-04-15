@@ -13,7 +13,7 @@
  * across all agents in the workspace and injected into each agent's context.
  */
 
-import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { AgentDocAssistInput, AgentDocAssistResponse, AgentDocRecord, AgentDocType, UpdateAgentDocInput, WorkspaceDocRecord } from '@nextgenchat/types';
@@ -406,18 +406,18 @@ When in doubt, answer **NO**. ${input.agentName} should only speak when it genui
 `;
 }
 
-function agentWorkspaceDir(agentId: string) {
-  return path.join(env.agentWorkspacesDir, agentId);
+function agentWorkspaceDir(slug: string) {
+  return path.join(env.agentWorkspacesDir, slug);
 }
 
-function resolveAgentWorkspacePath(agentId: string, fileName: string) {
+function resolveAgentWorkspacePath(slug: string, fileName: string) {
   const trimmed = fileName.trim();
 
   if (!trimmed) {
     throw new Error('Workspace file name is required.');
   }
 
-  const workspaceDir = agentWorkspaceDir(agentId);
+  const workspaceDir = agentWorkspaceDir(slug);
   const resolvedPath = path.resolve(workspaceDir, trimmed);
   const relativePath = path.relative(workspaceDir, resolvedPath);
 
@@ -426,6 +426,30 @@ function resolveAgentWorkspacePath(agentId: string, fileName: string) {
   }
 
   return resolvedPath;
+}
+
+/**
+ * If the slug-based workspace dir doesn't exist yet but a legacy UUID-named dir
+ * does, rename it in place so existing agent files (user.md, memory.md, etc.)
+ * survive the transition automatically.
+ */
+async function migrateWorkspaceDirIfNeeded(agentId: string, slug: string) {
+  const slugDir = agentWorkspaceDir(slug);
+  const legacyDir = path.join(env.agentWorkspacesDir, agentId);
+
+  try {
+    await access(slugDir);
+    return; // slug-named dir already exists, nothing to do
+  } catch {
+    // slug dir doesn't exist yet — check for legacy UUID dir
+  }
+
+  try {
+    await access(legacyDir);
+    await rename(legacyDir, slugDir);
+  } catch {
+    // no legacy dir either — first run, ensureAgentWorkspaceDirectory will create it
+  }
 }
 
 async function fileExists(filePath: string) {
@@ -437,9 +461,9 @@ async function fileExists(filePath: string) {
   }
 }
 
-async function readAgentDocRecord(agentId: string, docType: AgentDocType): Promise<AgentDocRecord> {
+async function readAgentDocRecord(slug: string, docType: AgentDocType): Promise<AgentDocRecord> {
   const fileName = DOC_FILE_NAMES[docType];
-  const filePath = resolveAgentWorkspacePath(agentId, fileName);
+  const filePath = resolveAgentWorkspacePath(slug, fileName);
   const [content, fileStat] = await Promise.all([
     readFile(filePath, 'utf8'),
     stat(filePath),
@@ -484,16 +508,24 @@ export class WorkspaceService {
     return ensureAgentWorkspaceAccess(userId, agentId);
   }
 
-  getAgentWorkspaceDir(agentId: string) {
-    return agentWorkspaceDir(agentId);
+  /** Sync path resolver — callers must supply the agent slug, not the UUID. */
+  getAgentWorkspaceDir(slug: string) {
+    return agentWorkspaceDir(slug);
   }
 
-  private async ensureAgentWorkspaceDirectory(agentId: string) {
-    await mkdir(this.getAgentWorkspaceDir(agentId), { recursive: true });
+  /** Fetch slug from DB. One tiny SELECT; effectively free on local SQLite. */
+  async fetchSlug(agentId: string): Promise<string> {
+    const agent = await prisma.agent.findUniqueOrThrow({ where: { id: agentId }, select: { slug: true } });
+    return agent.slug;
+  }
+
+  private async ensureAgentWorkspaceDirectory(slug: string) {
+    await mkdir(this.getAgentWorkspaceDir(slug), { recursive: true });
   }
 
   async readAgentWorkspaceFile(agentId: string, fileName: string) {
-    const filePath = resolveAgentWorkspacePath(agentId, fileName);
+    const slug = await this.fetchSlug(agentId);
+    const filePath = resolveAgentWorkspacePath(slug, fileName);
 
     if (!(await fileExists(filePath))) {
       throw new Error('Workspace file not found.');
@@ -513,7 +545,8 @@ export class WorkspaceService {
   }
 
   async readAgentWorkspaceBinaryFile(agentId: string, fileName: string) {
-    const filePath = resolveAgentWorkspacePath(agentId, fileName);
+    const slug = await this.fetchSlug(agentId);
+    const filePath = resolveAgentWorkspacePath(slug, fileName);
 
     if (!(await fileExists(filePath))) {
       throw new Error('Workspace file not found.');
@@ -533,7 +566,8 @@ export class WorkspaceService {
   }
 
   async writeAgentWorkspaceFile(agentId: string, fileName: string, content: string) {
-    const filePath = resolveAgentWorkspacePath(agentId, fileName);
+    const slug = await this.fetchSlug(agentId);
+    const filePath = resolveAgentWorkspacePath(slug, fileName);
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, content, 'utf8');
     // Invalidate the static prefix cache so the next agent turn rebuilds
@@ -553,7 +587,8 @@ export class WorkspaceService {
     contentBuffer: Buffer;
     textContent?: string | null;
   }) {
-    const filePath = resolveAgentWorkspacePath(input.agentId, input.relativePath);
+    const slug = await this.fetchSlug(input.agentId);
+    const filePath = resolveAgentWorkspacePath(slug, input.relativePath);
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, input.contentBuffer);
 
@@ -614,11 +649,12 @@ export class WorkspaceService {
   }
 
   async getAgentContextDocs(agentId: string, docTypes: AgentDocType[]) {
-    await this.ensureAgentDocs(agentId);
-    return Promise.all(docTypes.map((docType) => readAgentDocRecord(agentId, docType)));
+    const slug = await this.ensureAgentDocs(agentId);
+    return Promise.all(docTypes.map((docType) => readAgentDocRecord(slug, docType)));
   }
 
-  async ensureAgentDocs(agentId: string) {
+  /** Ensures all agent doc files exist on disk and returns the agent slug. */
+  async ensureAgentDocs(agentId: string): Promise<string> {
     const agent = await prisma.agent.findUnique({
       where: { id: agentId },
       include: {
@@ -631,7 +667,8 @@ export class WorkspaceService {
       throw new Error('Agent not found.');
     }
 
-    await this.ensureAgentWorkspaceDirectory(agent.id);
+    await migrateWorkspaceDirIfNeeded(agentId, agent.slug);
+    await this.ensureAgentWorkspaceDirectory(agent.slug);
 
     const defaults: Record<AgentDocType, string> = {
       'soul.md': createSoulDoc({ agentName: agent.name }),
@@ -651,29 +688,31 @@ export class WorkspaceService {
 
     for (const [docType, content] of Object.entries(defaults) as Array<[AgentDocType, string]>) {
       const fileName = DOC_FILE_NAMES[docType];
-      const filePath = resolveAgentWorkspacePath(agent.id, fileName);
+      const filePath = resolveAgentWorkspacePath(agent.slug, fileName);
 
       if (!(await fileExists(filePath))) {
         await writeFile(filePath, content, 'utf8');
       }
     }
+
+    return agent.slug;
   }
 
   async listAgentDocs(userId: string, agentId: string) {
     await ensureAgentWorkspaceAccess(userId, agentId);
-    await this.ensureAgentDocs(agentId);
+    const slug = await this.ensureAgentDocs(agentId);
 
     return Promise.all(
-      Object.keys(DOC_FILE_NAMES).map((docType) => readAgentDocRecord(agentId, docType as AgentDocType)),
+      Object.keys(DOC_FILE_NAMES).map((docType) => readAgentDocRecord(slug, docType as AgentDocType)),
     );
   }
 
   async getAgentDoc(userId: string, agentId: string, docTypeInput: string) {
     await ensureAgentWorkspaceAccess(userId, agentId);
-    await this.ensureAgentDocs(agentId);
+    const slug = await this.ensureAgentDocs(agentId);
 
     const docType = resolveDocType(docTypeInput);
-    return readAgentDocRecord(agentId, docType);
+    return readAgentDocRecord(slug, docType);
   }
 
   async updateAgentDoc(userId: string, agentId: string, docTypeInput: string, input: UpdateAgentDocInput) {

@@ -223,8 +223,9 @@ export class AgentSessionGateway {
         return;
       }
 
-      const agentMeta = await prisma.agent.findUnique({ where: { id: agentId }, select: { name: true } });
+      const agentMeta = await prisma.agent.findUnique({ where: { id: agentId }, select: { name: true, slug: true } });
       const agentName = agentMeta?.name ?? 'Agent';
+      const agentSlug = agentMeta?.slug ?? agentId;
 
       const provider = await providerRegistry.get(agentId);
       const context = await contextBuilder.build(agentId, channelId, messageId);
@@ -240,7 +241,7 @@ export class AgentSessionGateway {
             kind: typeof triggerMetadata.kind === 'string' ? triggerMetadata.kind : null,
           }
         : null;
-      const initialTaskState = await readPersistedTaskState(agentId);
+      const initialTaskState = await readPersistedTaskState(agentId, agentSlug);
 
       const writeToolRequired = requestLikelyNeedsWriteTool(triggerContent);
       const bashToolRequired = requestLikelyNeedsBashTool(triggerContent);
@@ -377,7 +378,7 @@ export class AgentSessionGateway {
             continue;
           }
 
-          taskState = await readPersistedTaskState(agentId);
+          taskState = await readPersistedTaskState(agentId, agentSlug);
           const taskDecision = evaluateTaskContinuation({
             taskMode,
             state: taskState,
@@ -438,6 +439,7 @@ export class AgentSessionGateway {
           try {
             const result = await toolRegistryService.executeToolCall({
               agentId,
+              agentSlug,
               channelId,
               toolName: toolCall.name,
               args: toolCall.arguments,
@@ -492,7 +494,7 @@ export class AgentSessionGateway {
           if (success && toolCall.name === BASH_TOOL_NAME) successfulBashToolCalls += 1;
           if (success && [TODO_WRITE_TOOL_NAME, WRITE_TOOL_NAME, BASH_TOOL_NAME, SEND_REPLY_TOOL_NAME].includes(toolCall.name)) {
             taskMode = taskMode || [TODO_WRITE_TOOL_NAME, SEND_REPLY_TOOL_NAME].includes(toolCall.name);
-            taskState = await readPersistedTaskState(agentId);
+            taskState = await readPersistedTaskState(agentId, agentSlug);
 
             // Broadcast the updated todo list so the frontend can render a live task panel.
             if (toolCall.name === TODO_WRITE_TOOL_NAME) {
@@ -516,7 +518,7 @@ export class AgentSessionGateway {
 
       // ── Fallback if tool loop exhausted without text response ─────────────
       if (!finalResponse) {
-        taskState = await readPersistedTaskState(agentId);
+        taskState = await readPersistedTaskState(agentId, agentSlug);
         const fallbackContent = buildToolFallbackContent(toolExecutionSummaries);
 
         if (taskMode) {

@@ -170,6 +170,7 @@ describe('toolRegistryService', () => {
   it('finds files with workspace_glob', async () => {
     const result = await toolRegistryService.executeToolCall({
       agentId: 'agent-1',
+      agentSlug: 'agent-1',
       channelId: 'channel-1',
       toolName: 'workspace_glob',
       args: JSON.stringify({ pattern: '**/*.ts' }),
@@ -182,6 +183,7 @@ describe('toolRegistryService', () => {
   it('searches file contents with workspace_grep', async () => {
     const result = await toolRegistryService.executeToolCall({
       agentId: 'agent-1',
+      agentSlug: 'agent-1',
       channelId: 'channel-1',
       toolName: 'workspace_grep',
       args: JSON.stringify({ pattern: 'TODO|greet', include: '*.ts' }),
@@ -194,6 +196,7 @@ describe('toolRegistryService', () => {
   it('persists todo state across todowrite and todoread', async () => {
     await toolRegistryService.executeToolCall({
       agentId: 'agent-1',
+      agentSlug: 'agent-1',
       channelId: 'channel-1',
       toolName: 'todowrite',
       args: JSON.stringify({
@@ -206,6 +209,7 @@ describe('toolRegistryService', () => {
 
     const result = await toolRegistryService.executeToolCall({
       agentId: 'agent-1',
+      agentSlug: 'agent-1',
       channelId: 'channel-1',
       toolName: 'todoread',
       args: '{}',
@@ -220,6 +224,7 @@ describe('toolRegistryService', () => {
   it('sends sanitized intermediate replies with send_reply', async () => {
     await toolRegistryService.executeToolCall({
       agentId: 'agent-1',
+      agentSlug: 'agent-1',
       channelId: 'channel-1',
       toolName: 'send_reply',
       args: JSON.stringify({ content: '<message speaker="Agent">Checking the workspace now.</message>' }),
@@ -246,6 +251,7 @@ describe('toolRegistryService', () => {
 
     const created = await toolRegistryService.executeToolCall({
       agentId: 'agent-1',
+      agentSlug: 'agent-1',
       channelId: 'channel-1',
       toolName: 'schedule_task',
       args: JSON.stringify({
@@ -258,6 +264,7 @@ describe('toolRegistryService', () => {
 
     const listed = await toolRegistryService.executeToolCall({
       agentId: 'agent-1',
+      agentSlug: 'agent-1',
       channelId: 'channel-1',
       toolName: 'schedule_list',
       args: '{}',
@@ -268,6 +275,7 @@ describe('toolRegistryService', () => {
 
     const deletedFromManifest = await toolRegistryService.executeToolCall({
       agentId: 'agent-1',
+      agentSlug: 'agent-1',
       channelId: 'channel-1',
       toolName: 'workspace_write_file',
       args: JSON.stringify({

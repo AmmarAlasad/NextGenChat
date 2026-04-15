@@ -135,8 +135,9 @@ Every agent has an isolated on-disk workspace under `$AGENT_WORKSPACES_DIR/{agen
 8. `project.md` — channel project context; stored in `WorkspaceFile`, managed via `project.service.ts` (bootstrap priority 65)
 9. `memory.md` — long-term learnings (bootstrap priority 70)
 10. `Heartbeat.md` — dynamic, resumable work state (below cache boundary, always rebuilt)
-11. Conversation summary — compacted older history
-12. Cross-channel context — DM channels only
+11. Current date/time — injected as a `system` message immediately after the runtime-context block (`buildCurrentDateTimeContext()` in `context-builder.ts`)
+12. Conversation summary — compacted older history
+13. Cross-channel context — DM channels only
 
 ## AgentCreatorAgent
 
@@ -410,5 +411,6 @@ Typography: **Manrope** (`font-headline`) for headings, **Geist Sans** for body,
 - `.env.example` is committed, `.env` is gitignored
 - Backend validates all required env vars with Zod on startup — server refuses to start if misconfigured
 - LLM API keys stored encrypted in DB, not in environment variables
-- `AGENT_WORKSPACES_DIR` — path to on-disk agent workspaces (default: `agent-workspaces/`)
+- Local runtime data lives under `~/.nextgenchat/` by default — SQLite DB at `~/.nextgenchat/dev.db`, agent workspaces at `~/.nextgenchat/agent-workspaces/`, install state at `~/.nextgenchat/install/`. `scripts/setup.sh` no longer prompts for a workspace directory.
+- `AGENT_WORKSPACES_DIR` — path to on-disk agent workspaces (default: `~/.nextgenchat/agent-workspaces`). Override the whole data root for unattended installs via `NEXTGENCHAT_HOME`.
 - Docker test stack: `docker/docker-compose.test.yml`
