@@ -22,6 +22,8 @@
 
 import { z } from 'zod';
 
+import { ProviderName } from './providers.js';
+
 // ── Roles ──────────────────────────────────────────────
 
 export const WorkspaceRole = z.enum(['OWNER', 'ADMIN', 'MEMBER', 'VIEWER']);
@@ -32,12 +34,21 @@ export const SetupSchema = z
     username: z.string().min(3).max(32).regex(/^[a-zA-Z0-9_-]+$/),
     password: z.string().min(8).max(128),
     confirmPassword: z.string().min(8).max(128),
+    agencyName: z.string().min(1).max(100),
+    agencyDescription: z.string().min(1).max(2_000),
     agentName: z.string().min(1).max(100),
     agentDescription: z.string().min(1).max(2_000),
+    providerName: ProviderName.optional(),
+    providerModel: z.string().min(1).max(200).optional(),
+    providerApiKey: z.string().min(1).max(512).optional(),
   })
   .refine((value) => value.password === value.confirmPassword, {
     message: 'Passwords do not match',
     path: ['confirmPassword'],
+  })
+  .refine((value) => !value.providerName || Boolean(value.providerModel), {
+    message: 'Provider model is required when choosing a provider',
+    path: ['providerModel'],
   });
 export type SetupInput = z.infer<typeof SetupSchema>;
 

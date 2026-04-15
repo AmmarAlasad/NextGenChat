@@ -20,6 +20,8 @@ const booleanish = z
   .union([z.boolean(), z.enum(['true', 'false'])])
   .transform((value) => value === true || value === 'true');
 
+const defaultAgentWorkspaceDir = path.join(process.env.HOME ?? process.cwd(), '.nextgenchat', 'agent-workspaces');
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   DEPLOYMENT_MODE: z.enum(['local', 'network']).default('local'),
@@ -32,10 +34,10 @@ const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(16),
   ENCRYPTION_KEY: z.string().min(16),
   CORS_ORIGINS: z.string().default('http://localhost:3000'),
-  OPENAI_API_KEY: z.string().min(1),
+  OPENAI_API_KEY: z.string().default(''),
   OPENAI_MODEL: z.string().min(1).default('gpt-5.4'),
   AGENT_MAX_TOOL_ROUNDS: z.coerce.number().int().min(0).default(24),
-  AGENT_WORKSPACES_DIR: z.string().min(1).default('agent-workspaces'),
+  AGENT_WORKSPACES_DIR: z.string().min(1).default(defaultAgentWorkspaceDir),
   MINIO_ENDPOINT: z.string().default('localhost'),
   MINIO_PORT: z.coerce.number().int().positive().default(9000),
   MINIO_USE_SSL: z.coerce.boolean().default(false),

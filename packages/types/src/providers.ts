@@ -40,9 +40,22 @@ export type ProviderName = z.infer<typeof ProviderName>;
 export const LLMMessageRole = z.enum(['system', 'user', 'assistant', 'tool']);
 export type LLMMessageRole = z.infer<typeof LLMMessageRole>;
 
+export interface LLMTextContentBlock {
+  type: 'text';
+  text: string;
+}
+
+export interface LLMImageContentBlock {
+  type: 'image';
+  mimeType: string;
+  dataBase64: string;
+}
+
+export type LLMContentBlock = LLMTextContentBlock | LLMImageContentBlock;
+
 export interface LLMMessage {
   role: LLMMessageRole;
-  content: string;
+  content: string | LLMContentBlock[];
   toolCallId?: string;
   name?: string;
   toolCalls?: ToolCall[];
@@ -101,6 +114,7 @@ export interface LLMResponse {
 
 export interface LLMStreamChunk {
   delta: string;
+  toolCalls?: ToolCall[];
   finishReason?: FinishReason;
   responseId?: string;
   usage?: TokenUsage;

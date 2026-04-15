@@ -113,8 +113,16 @@ export type UpdateChannelAgentsInput = z.infer<typeof UpdateChannelAgentsSchema>
 
 export const SendMessageSchema = z.object({
   channelId: z.string().uuid(),
-  content: z.string().min(1).max(32_000),
+  content: z.string().max(32_000).default(''),
   contentType: ContentType.default('TEXT'),
+  attachments: z.array(z.object({
+    fileName: z.string().min(1).max(255),
+    mimeType: z.string().min(1).max(200),
+    contentBase64: z.string().min(1),
+  })).max(8).optional(),
+}).refine((value) => value.content.trim().length > 0 || (value.attachments?.length ?? 0) > 0, {
+  message: 'Message content or at least one attachment is required.',
+  path: ['content'],
 });
 export type SendMessageInput = z.infer<typeof SendMessageSchema>;
 

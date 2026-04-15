@@ -6,6 +6,7 @@ Compact repo guide for OpenCode sessions in `NextGenChat`.
 - Read `CLAUDE.md` before non-trivial work. It contains required file-header rules and the agent-system constraints that still matter.
 - Read `apps/web/AGENTS.md` before editing `apps/web`. This repo uses `next@16.2.2`; check installed docs in `node_modules/next/dist/docs/` instead of relying on memory.
 - Read `plan.md` only for major architecture or cross-package changes. Prefer scripts and code over plan prose when they disagree.
+- Prefer executable sources over phase/status prose. Some README sections lag behind the current code.
 
 ## Repo Shape
 - Monorepo: `apps/backend`, `apps/web`, `packages/types`, `packages/config`.
@@ -22,16 +23,16 @@ Compact repo guide for OpenCode sessions in `NextGenChat`.
   - Web: `pnpm --filter @nextgenchat/web dev|build|lint|typecheck`
   - Types: `pnpm --filter @nextgenchat/types build|lint|typecheck`
 - Single backend test: `pnpm --filter @nextgenchat/backend exec vitest run <path-or-pattern>` or `-t "name"`.
-- `apps/web` currently has no test script. `pnpm test` only exercises packages that define one.
+- `apps/web` currently has no test script, and backend `test` runs Vitest with `--passWithNoTests`. A green `pnpm test` is weaker evidence than usual.
 
 ## Verified Local Mode Behavior
 - `scripts/setup.sh` forces local defaults into `.env`: `DEPLOYMENT_MODE=local`, `DATABASE_URL=file:./dev.db`, `REDIS_ENABLED=false`.
 - Root `.env` is the source file; setup/dev scripts copy it to `apps/backend/.env` for Prisma.
 - `AGENT_WORKSPACES_DIR` is chosen during setup and stored outside the repo by default (`~/.nextgenchat/agent-workspaces`). Do not assume agent files live under the project tree.
-- Backend env validation requires `OPENAI_API_KEY`; local boot is not complete without it.
+- `.env.example` sets `OPENAI_API_KEY=disabled-local-key`. The server can boot without a real provider key, but agent-doc assistance, creator generation, and some provider-backed flows degrade or fall back until a real key is configured.
 
 ## Verification Order
-- CI runs: `pnpm lint` -> `pnpm typecheck` -> `pnpm test` -> `pnpm --filter @nextgenchat/backend prisma:validate`.
+- CI runs: `pnpm --filter @nextgenchat/backend prisma:generate` -> `pnpm lint` -> `pnpm typecheck` -> `pnpm test` -> `pnpm --filter @nextgenchat/backend prisma:validate`.
 - If you change shared contracts in `packages/types`, run `pnpm --filter @nextgenchat/types build` before typechecking backend or web.
 
 ## Source File Rule
@@ -43,8 +44,9 @@ Compact repo guide for OpenCode sessions in `NextGenChat`.
 - Queue behavior is mode-dependent: `apps/backend/src/queues/agent.processor.ts` creates a real BullMQ worker only when Redis is enabled; local mode returns a no-op worker handle.
 - Keep backend route handlers thin; business logic lives in `*.service.ts`.
 - Non-public backend routes and socket payloads are expected to be validated with shared Zod schemas from `@nextgenchat/types`.
+- The actual built-in agent tool list lives in `apps/backend/src/modules/agents/default-agent-tools.ts`; do not trust older README references to a smaller tool set.
 
 ## Agent-System Gotchas
-- Agent routing behavior lives in `apps/backend/src/modules/agents/agent-routing.service.ts`. Current modes in code are `DISABLED`, `MENTIONS_ONLY`, `WAKEUP`, and unconditional scheduling for the remaining active agents; do not rely on older doc names.
-- Protected agent workspace files are enforced by backend flows; preserve that behavior if touching workspace tooling.
-- Preserve `stripMessageWrapper()` protections in `apps/backend/src/queues/agent.processor.ts` / related gateway flow so saved replies do not leak internal XML-style wrappers.
+- Agent trigger modes in shared types are `AUTO`, `WAKEUP`, `MENTIONS_ONLY`, `ALL_MESSAGES`, `DISABLED`. Routing service handles `WAKEUP` / `MENTIONS_ONLY` / `DISABLED` specially and schedules the other active modes unconditionally.
+- Protected agent workspace files are enforced in backend tooling. Agents must not write `soul.md`, `identity.md`, `agent.md`, `pickup.md`, or `wakeup.md` directly.
+- Preserve `stripMessageWrapper()` protections in `apps/backend/src/modules/gateway/agent-session.gateway.ts` and `apps/backend/src/modules/tools/tool-registry.service.ts` so saved replies do not leak internal XML-style wrappers.

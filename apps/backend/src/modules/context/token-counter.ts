@@ -8,13 +8,28 @@
 
 import type { LLMMessage, LLMProvider } from '@nextgenchat/types';
 
+interface CountableTextBlock { type: 'text'; text: string; }
+interface CountableImageBlock { type: 'image'; mimeType: string; dataBase64: string; }
+type CountableBlock = CountableTextBlock | CountableImageBlock;
+
+function estimateMessageTextLength(message: LLMMessage) {
+  if (typeof message.content === 'string') {
+    return message.content.length;
+  }
+
+  return (message.content as unknown as CountableBlock[]).reduce((total, block) => {
+    if (block.type === 'text') return total + block.text.length;
+    return total + 1024;
+  }, 0);
+}
+
 export class TokenCounterService {
   async count(messages: LLMMessage[], provider?: Pick<LLMProvider, 'countTokens'>) {
     if (provider) {
       return provider.countTokens(messages);
     }
 
-    return messages.reduce((total, message) => total + Math.ceil(message.content.length / 4) + 4, 0);
+    return messages.reduce((total, message) => total + Math.ceil(estimateMessageTextLength(message) / 4) + 4, 0);
   }
 }
 

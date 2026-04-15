@@ -29,6 +29,8 @@ import type {
   CreateAgentInput,
   CreateChannelInput,
   MessageRecord,
+  ProviderModelsResponse,
+  ProviderStatus,
   ProjectSummary,
   WorkspaceSummary,
   WorkspaceDocRecord,
@@ -52,6 +54,17 @@ type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
 type TodoPriority = 'high' | 'medium' | 'low';
 interface AgentTodo { content: string; status: TodoStatus; priority: TodoPriority; }
 interface AgentTodoList { agentId: string; agentName: string; todos: AgentTodo[]; }
+type NewAgentForm = CreateAgentInput & {
+  providerName?: ProviderStatus['providerName'];
+  model?: string;
+};
+interface DraftAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  contentBase64: string;
+}
 
 interface ToolCallDetail {
   toolCallId?: string;
@@ -69,8 +82,8 @@ interface LiveToolCall extends ToolCallDetail {
   status: ToolCallStatus;
 }
 
-const emptyAgentForm: CreateAgentInput = {
-  name: '', persona: '', systemPrompt: '', voiceTone: '', triggerMode: 'AUTO',
+const emptyAgentForm: NewAgentForm = {
+  name: '', persona: '', systemPrompt: '', voiceTone: '', triggerMode: 'AUTO', providerName: 'openai', model: 'gpt-5.4',
 };
 
 const SELECTED_CHANNEL_STORAGE_KEY = 'nextgenchat:selected-channel-id';
@@ -111,6 +124,48 @@ function getMessageToolCalls(message: MessageRecord): ToolCallDetail[] {
   const raw = message.metadata?.toolCalls;
   if (!Array.isArray(raw)) return [];
   return raw.filter((entry): entry is ToolCallDetail => typeof entry === 'object' && entry !== null);
+}
+
+function getMessageAttachments(message: MessageRecord) {
+  const raw = message.metadata?.attachments;
+  if (!Array.isArray(raw)) return [] as Array<{
+    id?: string;
+    fileName: string;
+    mimeType: string;
+    fileSize?: number;
+    relativePath?: string;
+  }>;
+
+  return raw.filter((entry): entry is {
+    id?: string;
+    fileName: string;
+    mimeType: string;
+    fileSize?: number;
+    relativePath?: string;
+  } => typeof entry === 'object' && entry !== null && typeof (entry as { fileName?: unknown }).fileName === 'string' && typeof (entry as { mimeType?: unknown }).mimeType === 'string');
+}
+
+async function fileToBase64(file: File) {
+  const buffer = await file.arrayBuffer();
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+
+  return window.btoa(binary);
+}
+
+async function filesToDraftAttachments(files: File[]) {
+  return Promise.all(files.map(async (file) => ({
+    id: crypto.randomUUID(),
+    fileName: file.name || `pasted-image-${Date.now()}.png`,
+    mimeType: file.type || 'application/octet-stream',
+    fileSize: file.size,
+    contentBase64: await fileToBase64(file),
+  })));
 }
 
 function getScheduledMessageKind(message: MessageRecord): 'ONCE' | 'CRON' | null {
@@ -1134,6 +1189,7 @@ export function ChatScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [pendingAttachments, setPendingAttachments] = useState<DraftAttachment[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [channels, setChannels] = useState<ChannelSummary[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
@@ -1155,7 +1211,7 @@ export function ChatScreen() {
   const [showMembers, setShowMembers]             = useState(false);
   const [showAddProjectChannel, setShowAddProjectChannel] = useState<string | null>(null);
 
-  const [agentForm, setAgentForm] = useState<CreateAgentInput>(emptyAgentForm);
+  const [agentForm, setAgentForm] = useState<NewAgentForm>(emptyAgentForm);
   const [groupName, setGroupName] = useState('');
   const [groupAgentIds, setGroupAgentIds] = useState<string[]>([]);
   const [projectName, setProjectName] = useState('');
@@ -1168,8 +1224,12 @@ export function ChatScreen() {
   const [savingProject, setSavingProject]               = useState(false);
   const [savingProjectChannel, setSavingProjectChannel] = useState(false);
   const [savingMembers, setSavingMembers]               = useState(false);
+  const [providerStatuses, setProviderStatuses]         = useState<ProviderStatus[]>([]);
+  const [agentProviderModels, setAgentProviderModels]   = useState<Array<{ id: string; name: string }>>([]);
+  const [loadingAgentProviderModels, setLoadingAgentProviderModels] = useState(false);
 
   const scrollContainerRef  = useRef<HTMLElement | null>(null);
+  const attachmentInputRef  = useRef<HTMLInputElement | null>(null);
   const isNearBottomRef     = useRef(true);
   const routingTimeoutRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
@@ -1198,6 +1258,10 @@ export function ChatScreen() {
   const activeAgents = useMemo(
     () => agents.filter((a) => selectedChannel?.participantAgentIds.includes(a.id)),
     [agents, selectedChannel?.participantAgentIds],
+  );
+  const configuredProviders = useMemo(
+    () => providerStatuses.filter((provider) => provider.isConfigured),
+    [providerStatuses],
   );
   const slashSuggestions = useMemo(
     () => buildSlashSuggestions({ draft, activeAgents }),
@@ -1231,12 +1295,13 @@ export function ChatScreen() {
     const h = { Authorization: `Bearer ${token}` };
     const ws = await apiJson<WorkspaceSummary[]>('/workspaces', { headers: h });
     if (ws.length === 0) return { workspaces: [], channels: [], agents: [], projects: [] };
-    const [ch, ag, pr] = await Promise.all([
+    const [ch, ag, pr, providers] = await Promise.all([
       apiJson<ChannelSummary[]>(`/workspaces/${ws[0].id}/channels`, { headers: h }),
       apiJson<AgentSummary[]>(`/workspaces/${ws[0].id}/agents`, { headers: h }),
       apiJson<ProjectSummary[]>(`/workspaces/${ws[0].id}/projects`, { headers: h }),
+      apiJson<ProviderStatus[]>('/providers', { headers: h }),
     ]);
-    return { workspaces: ws, channels: ch, agents: ag, projects: pr };
+    return { workspaces: ws, channels: ch, agents: ag, projects: pr, providers };
   }, []);
 
   const loadMessages      = useCallback((t: string, cid: string) =>
@@ -1254,7 +1319,7 @@ export function ChatScreen() {
       if (cancelled) return;
       startTransition(() => {
         setWorkspaces(data.workspaces); setChannels(data.channels);
-        setAgents(data.agents); setProjects(data.projects);
+        setAgents(data.agents); setProjects(data.projects); setProviderStatuses(data.providers ?? []);
         const storedChannelId = readStoredSelectedChannelId();
         const storedChannel = storedChannelId ? data.channels.find((channel) => channel.id === storedChannelId) : null;
         const first = data.channels.find((c) => c.type !== 'DIRECT') ?? data.channels[0];
@@ -1291,6 +1356,47 @@ export function ChatScreen() {
     if (!selectedChannelId) return;
     markChannelAsRead(selectedChannelId);
   }, [markChannelAsRead, selectedChannelId]);
+
+  useEffect(() => {
+    if (!accessToken || !showNewAgent || !agentForm.providerName) return;
+
+    let cancelled = false;
+    setLoadingAgentProviderModels(true);
+
+    void apiJson<ProviderModelsResponse>(`/providers/${agentForm.providerName}/models`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }).then((response) => {
+      if (cancelled) return;
+
+      const models = response.models.map((model) => ({ id: model.id, name: model.name }));
+      setAgentProviderModels(models);
+      setAgentForm((current) => ({
+        ...current,
+        model: models.some((model) => model.id === current.model) ? current.model : (models[0]?.id ?? current.model),
+      }));
+    }).catch((e) => {
+      if (cancelled) return;
+      setAgentProviderModels([]);
+      setError(e instanceof Error ? e.message : 'Failed to load provider models.');
+    }).finally(() => {
+      if (!cancelled) setLoadingAgentProviderModels(false);
+    });
+
+    return () => { cancelled = true; };
+  }, [accessToken, agentForm.providerName, showNewAgent]);
+
+  useEffect(() => {
+    if (!showNewAgent) return;
+
+    const currentProvider = configuredProviders.find((provider) => provider.providerName === agentForm.providerName);
+    if (currentProvider || configuredProviders.length === 0) return;
+
+    setAgentForm((current) => ({
+      ...current,
+      providerName: configuredProviders[0]?.providerName,
+      model: undefined,
+    }));
+  }, [agentForm.providerName, configuredProviders, showNewAgent]);
 
   useEffect(() => {
     if (!accessToken || channels.length === 0) return;
@@ -1405,7 +1511,7 @@ export function ChatScreen() {
     if (c) c.scrollTop = c.scrollHeight;
   }, [messages, agentStreams, liveToolCalls, agentState]);
 
-  const canSend = Boolean(draft.trim() && accessToken && selectedChannelId && navView === 'chat');
+  const canSend = Boolean((draft.trim() || pendingAttachments.length > 0) && accessToken && selectedChannelId && navView === 'chat');
 
   const runCompactCommand = useCallback(async (cmd: { all: true } | { agentSlug: string }) => {
     if (!accessToken || !selectedChannelId) return;
@@ -1419,18 +1525,73 @@ export function ChatScreen() {
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to compact.'); }
   }, [accessToken, loadChannelSession, selectedChannelId]);
 
-  const submitMessage = useCallback(() => {
+  const submitMessage = useCallback(async () => {
     if (!canSend || !accessToken || !selectedChannelId) return;
     const cmd = parseCompactCommand(draft);
     if (cmd) { void runCompactCommand(cmd); return; }
-    const socket = getChatSocket(accessToken);
     clearRoutingTimeout(); setAgentState('queued');
     setAgentStreams(new Map()); setLiveToolCalls(new Map()); setError(null);
     routingTimeoutRef.current = setTimeout(() => { setAgentState('idle'); setAgentStreams(new Map()); setLiveToolCalls(new Map()); }, 20_000);
-    if (!socket.connected) { socket.connect(); socket.emit('channel:join', { channelId: selectedChannelId }); }
-    socket.emit('message:send', { channelId: selectedChannelId, content: draft.trim(), contentType: 'TEXT' });
-    setDraft('');
-  }, [accessToken, canSend, clearRoutingTimeout, draft, runCompactCommand, selectedChannelId]);
+
+    try {
+      await apiJson<MessageRecord>(`/channels/${selectedChannelId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          content: draft.trim(),
+          contentType: 'TEXT',
+          attachments: pendingAttachments.map((attachment) => ({
+            fileName: attachment.fileName,
+            mimeType: attachment.mimeType,
+            contentBase64: attachment.contentBase64,
+          })),
+        }),
+      });
+
+      setDraft('');
+      setPendingAttachments([]);
+    } catch (e) {
+      clearRoutingTimeout();
+      setAgentState('error');
+      setError(e instanceof Error ? e.message : 'Failed to send message.');
+    }
+  }, [accessToken, canSend, clearRoutingTimeout, draft, pendingAttachments, runCompactCommand, selectedChannelId]);
+
+  const handleAttachmentSelect = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    if (files.length === 0) return;
+
+    try {
+      const additions = await filesToDraftAttachments(files);
+
+      setPendingAttachments((current) => [...current, ...additions]);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Failed to read attachment.');
+    } finally {
+      event.target.value = '';
+    }
+  }, []);
+
+  const handleComposerPaste = useCallback(async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+
+    if (files.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+
+    try {
+      const additions = await filesToDraftAttachments(files);
+      setPendingAttachments((current) => [...current, ...additions]);
+      setError(null);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Failed to read pasted image.');
+    }
+  }, []);
 
   function selectChannel(id: string) {
     markChannelAsRead(id);
@@ -1626,6 +1787,13 @@ export function ChatScreen() {
             >
               + New Agent
             </button>
+            <Link
+              className="mt-1.5 block w-full rounded-xl py-2 text-center text-[12px] font-medium transition-colors hover:bg-white/10"
+              href="/settings"
+              style={{ border: '1px solid var(--ib-800)', color: 'var(--ib-500)' }}
+            >
+              Provider Settings
+            </Link>
           </div>
         </aside>
 
@@ -1737,6 +1905,7 @@ export function ChatScreen() {
 	                    const isAgent  = msg.senderType === 'AGENT';
 	                    const isSystem = msg.contentType === 'SYSTEM';
 	                    const toolCalls = getMessageToolCalls(msg);
+	                    const attachments = getMessageAttachments(msg);
 	                    const scheduledKind = getScheduledMessageKind(msg);
 
                     const prev = messages[idx - 1];
@@ -1836,15 +2005,40 @@ export function ChatScreen() {
                           )}
 
                           {/* Message text */}
-                          {isAgent && !failure ? (
-                            <AgentMarkdown content={msg.content} />
-                          ) : (
-                            <p
-                              className="whitespace-pre-wrap text-[14px] leading-[1.8]"
-                              style={{ color: failure ? 'var(--sr-300)' : 'var(--ib-100)' }}
-                            >
-                              {msg.content}
-                            </p>
+                          {msg.content ? (
+                            isAgent && !failure ? (
+                              <AgentMarkdown content={msg.content} />
+                            ) : (
+                              <p
+                                className="whitespace-pre-wrap text-[14px] leading-[1.8]"
+                                style={{ color: failure ? 'var(--sr-300)' : 'var(--ib-100)' }}
+                              >
+                                {msg.content}
+                              </p>
+                            )
+                          ) : null}
+
+                          {attachments.length > 0 && (
+                            <div className="mt-3 space-y-2">
+                              {attachments.map((attachment) => (
+                                <div
+                                  className="rounded-xl px-3 py-2 text-[12px]"
+                                  key={attachment.id ?? `${msg.id}:${attachment.fileName}`}
+                                  style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid var(--ib-800)', color: 'var(--ib-200)' }}
+                                >
+                                  <div className="font-medium">{attachment.fileName}</div>
+                                  <div className="mt-0.5 text-[10px]" style={{ color: 'var(--ib-600)' }}>
+                                    {attachment.mimeType}
+                                    {typeof attachment.fileSize === 'number' ? ` · ${Math.max(1, Math.round(attachment.fileSize / 1024))} KB` : ''}
+                                  </div>
+                                  {attachment.relativePath ? (
+                                    <div className="mt-1 text-[10px] font-mono" style={{ color: 'var(--ib-500)' }}>
+                                      Workspace path: {attachment.relativePath}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
                           )}
 
                           {/* Inline todos from todowrite calls in this message */}
@@ -1984,12 +2178,39 @@ export function ChatScreen() {
                       </div>
                     </div>
                   )}
+                  {pendingAttachments.length > 0 && (
+                    <div className="flex flex-wrap gap-2 px-4 pt-3">
+                      {pendingAttachments.map((attachment) => (
+                        <div
+                          className="flex items-center gap-2 rounded-xl px-3 py-2 text-[12px]"
+                          key={attachment.id}
+                          style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid var(--ib-800)', color: 'var(--ib-200)' }}
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate font-medium">{attachment.fileName}</div>
+                            <div className="text-[10px]" style={{ color: 'var(--ib-600)' }}>
+                              {Math.max(1, Math.round(attachment.fileSize / 1024))} KB
+                            </div>
+                          </div>
+                          <button
+                            className="rounded-full px-1.5 py-0.5 text-[11px]"
+                            onClick={() => setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                            style={{ color: 'var(--ib-500)' }}
+                            type="button"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <textarea
                     className="min-h-[72px] w-full resize-none bg-transparent px-4 pt-3 text-[14px] leading-relaxed outline-none"
                     onChange={(e) => setDraft(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submitMessage(); }
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submitMessage(); }
                     }}
+                    onPaste={(e) => { void handleComposerPaste(e); }}
                     placeholder={
                       selectedChannel?.type === 'DIRECT'
                         ? `Message ${selectedChannel.participantAgentNames[0] ?? selectedChannel.name}…`
@@ -1999,22 +2220,39 @@ export function ChatScreen() {
                     style={{ color: 'var(--ib-100)', caretColor: 'var(--ib-400)' }}
                     value={draft}
                   />
+                  <input
+                    hidden
+                    multiple
+                    onChange={handleAttachmentSelect}
+                    ref={attachmentInputRef}
+                    type="file"
+                  />
                   <div className="flex items-center justify-between px-4 pb-3">
-                    <span
-                      className="text-[11px]"
-                      style={{
-                        color: agentState === 'error' ? 'var(--sr-400)' : 'var(--ib-700)',
-                      }}
-                    >
-                      {agentState === 'error' ? 'Agent run failed'
-                        : agentState === 'streaming' ? 'Agent is replying…'
-                        : agentState === 'queued'   ? 'Routing to agents…'
-                        : `${isMac ? '⌘' : 'Ctrl'}↵`}
-                    </span>
+                    <div className="flex items-center gap-3">
+                      <button
+                        className="rounded-xl px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-white/10"
+                        onClick={() => attachmentInputRef.current?.click()}
+                        style={{ border: '1px solid var(--ib-800)', color: 'var(--ib-400)' }}
+                        type="button"
+                      >
+                        Add file
+                      </button>
+                      <span
+                        className="text-[11px]"
+                        style={{
+                          color: agentState === 'error' ? 'var(--sr-400)' : 'var(--ib-700)',
+                        }}
+                      >
+                        {agentState === 'error' ? 'Agent run failed'
+                          : agentState === 'streaming' ? 'Agent is replying…'
+                          : agentState === 'queued'   ? 'Routing to agents…'
+                          : `${isMac ? '⌘' : 'Ctrl'}↵`}
+                      </span>
+                    </div>
                     <button
                       className="font-headline rounded-xl px-5 py-1.5 text-[13px] font-semibold transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-30"
                       disabled={!canSend}
-                      onClick={submitMessage}
+                      onClick={() => { void submitMessage(); }}
                       style={{ background: 'var(--ib-500)', color: 'var(--ib-50)', boxShadow: canSend ? '0 0 16px rgba(79,108,176,0.3)' : undefined }}
                       type="button"
                     >
@@ -2048,6 +2286,19 @@ export function ChatScreen() {
             <MI value={agentForm.name} onChange={(v) => setAgentForm((c) => ({ ...c, name: v }))} placeholder="Agent name" />
             <MI value={agentForm.persona ?? ''} onChange={(v) => setAgentForm((c) => ({ ...c, persona: v }))} placeholder="Persona" />
             <MI value={agentForm.voiceTone ?? ''} onChange={(v) => setAgentForm((c) => ({ ...c, voiceTone: v }))} placeholder="Voice tone" />
+            <MS value={agentForm.providerName ?? ''} onChange={(v) => setAgentForm((c) => ({ ...c, providerName: v as CreateAgentInput['providerName'] }))}>
+              {configuredProviders.map((provider) => (
+                <option key={provider.providerName} value={provider.providerName}>{provider.label}</option>
+              ))}
+            </MS>
+            <MS value={agentForm.model ?? ''} onChange={(v) => setAgentForm((c) => ({ ...c, model: v }))}>
+              {agentProviderModels.map((model) => (
+                <option key={model.id} value={model.id}>{model.name}</option>
+              ))}
+            </MS>
+            <div className="px-1 text-[11px]" style={{ color: 'var(--ib-600)' }}>
+              {loadingAgentProviderModels ? 'Loading models…' : configuredProviders.length > 0 ? 'Choose from providers already connected in Settings.' : 'No providers configured yet. Connect one in Provider Settings first.'}
+            </div>
             <MS value={agentForm.triggerMode} onChange={(v) => setAgentForm((c) => ({ ...c, triggerMode: v as CreateAgentInput['triggerMode'] }))}>
               <option value="AUTO">Auto</option>
               <option value="MENTIONS_ONLY">Mentions only</option>
@@ -2055,7 +2306,7 @@ export function ChatScreen() {
               <option value="DISABLED">Disabled</option>
             </MS>
             <MT value={agentForm.systemPrompt ?? ''} onChange={(v) => setAgentForm((c) => ({ ...c, systemPrompt: v }))} placeholder="System prompt (optional)" />
-            <MB onClick={() => void createAgent()} disabled={!agentForm.name.trim() || savingAgent}>
+            <MB onClick={() => void createAgent()} disabled={!agentForm.name.trim() || !agentForm.providerName || !agentForm.model || configuredProviders.length === 0 || savingAgent}>
               {savingAgent ? 'Creating…' : 'Create Agent →'}
             </MB>
           </div>

@@ -517,6 +517,20 @@ model OAuthToken {
   agent          Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
 }
 
+/// Workspace-level provider credentials shared across all agents.
+/// Per-agent ProviderConfig.credentials override these when non-empty.
+/// credentials is AES-256-GCM encrypted JSON:
+///   API-key providers: { apiKey: string }
+///   OAuth providers:   { accessToken, refreshToken, expiresAt, scope? }
+model GlobalProviderConfig {
+  id           String   @id @default(uuid())
+  providerName String   @unique
+  credentials  String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
 model ConversationSummary {
   id                   String    @id @default(uuid())
   channelId             String

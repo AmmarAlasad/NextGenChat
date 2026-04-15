@@ -3,8 +3,8 @@
  *
  * Phase 1 implementation status:
  * - This file now owns the first working client-side auth/session state.
- * - Current scope covers health probing, first-run setup detection, login, refresh,
- *   logout, and in-memory access-token storage.
+ * - Current scope covers health probing (with retry backoff for slow backend startup),
+ *   first-run setup detection, login, refresh, logout, and in-memory access-token storage.
  * - Future phases can grow this into richer app-wide bootstrap and role awareness.
  */
 
@@ -21,11 +21,13 @@ interface AuthContextValue {
   accessToken: string | null;
   ready: boolean;
   setupRequired: boolean;
+  backendError: boolean;
   user: AuthUser | null;
   setup(input: SetupInput): Promise<void>;
   login(input: LoginInput): Promise<void>;
   refresh(): Promise<boolean>;
   logout(): Promise<void>;
+  retryInit(): void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -42,6 +44,8 @@ function applySession(
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [setupRequired, setSetupRequired] = useState(false);
+  const [backendError, setBackendError] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
 
@@ -60,15 +64,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const retryInit = useCallback(() => {
+    setReady(false);
+    setBackendError(false);
+    setSetupRequired(false);
+    setRetryKey((k) => k + 1);
+  }, []);
+
   useEffect(() => {
     let active = true;
 
-    async function initialize() {
-      const health = await apiJson<HealthStatus>('/health');
+    // Retry the health endpoint with increasing back-off.
+    // Total budget: ~30 s — enough for a cold Turbo/TypeScript backend start.
+    async function pollHealth(): Promise<HealthStatus> {
+      const DELAYS = [500, 1000, 2000, 3000, 5000, 5000, 5000, 5000];
+      let lastError: unknown;
 
-      if (!active) {
-        return;
+      for (let attempt = 0; attempt <= DELAYS.length; attempt++) {
+        if (!active) throw new Error('unmounted');
+
+        try {
+          return await apiJson<HealthStatus>('/health');
+        } catch (err) {
+          lastError = err;
+          if (attempt < DELAYS.length) {
+            await new Promise((resolve) => setTimeout(resolve, DELAYS[attempt]));
+          }
+        }
       }
+
+      throw lastError;
+    }
+
+    async function initialize() {
+      const health = await pollHealth();
+
+      if (!active) return;
 
       setSetupRequired(health.setupRequired);
 
@@ -83,6 +114,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     initialize().catch(() => {
       if (active) {
+        // Backend never responded — surface an error rather than silently
+        // falling through to the login page (which would be confusing on a
+        // fresh install where setup hasn't been done yet).
+        setBackendError(true);
         setReady(true);
       }
     });
@@ -90,7 +125,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, [refresh]);
+  }, [refresh, retryKey]);
 
   const setup = useCallback(async (input: SetupInput) => {
     const tokens = await apiJson<AuthTokens>('/auth/setup', {
@@ -123,13 +158,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       accessToken,
       ready,
       setupRequired,
+      backendError,
       user,
       setup,
       login,
       refresh,
       logout,
+      retryInit,
     }),
-    [accessToken, login, logout, ready, refresh, setup, setupRequired, user],
+    [accessToken, backendError, login, logout, ready, refresh, retryInit, setup, setupRequired, user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

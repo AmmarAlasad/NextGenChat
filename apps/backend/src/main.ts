@@ -25,6 +25,7 @@ import { skillRoutes } from '@/modules/agents/skill.routes.js';
 import { chatRoutes } from '@/modules/chat/chat.routes.js';
 import { workspaceRoutes } from '@/modules/workspace/workspace.routes.js';
 import { projectRoutes } from '@/modules/project/project.routes.js';
+import { providersRoutes } from '@/modules/providers/providers.routes.js';
 import { createAgentProcessorWorker } from '@/queues/agent.processor.js';
 import { createCronProcessorWorker } from '@/queues/cron.processor.js';
 import { createSocketServer } from '@/sockets/socket-server.js';
@@ -45,7 +46,7 @@ export async function buildServer() {
   });
 
   await fastify.register(cors, {
-    origin: env.corsOrigins,
+    origin: env.isLocalMode ? true : env.corsOrigins,
     credentials: true,
     // Explicitly declare allowed methods and headers so that the preflight
     // response is unambiguous for PUT and PATCH requests (which require
@@ -104,6 +105,7 @@ export async function buildServer() {
   await fastify.register(skillRoutes);
   await fastify.register(workspaceRoutes);
   await fastify.register(projectRoutes);
+  await fastify.register(providersRoutes);
 
   return fastify;
 }

@@ -21,6 +21,8 @@
 
 import { z } from 'zod';
 
+import { ProviderName } from './providers.js';
+
 // ── Enums ──────────────────────────────────────────────
 
 export const AgentStatus = z.enum(['ACTIVE', 'PAUSED', 'ARCHIVED']);
@@ -48,6 +50,8 @@ export const AgentDetailSchema = AgentSummarySchema.extend({
   primaryChannelId: z.string().uuid().nullable(),
   voiceTone: z.string().nullable(),
   activeChannelIds: z.array(z.string().uuid()).default([]),
+  providerName: z.string().nullable(),
+  model: z.string().nullable(),
 });
 export type AgentDetail = z.infer<typeof AgentDetailSchema>;
 
@@ -59,6 +63,8 @@ export const CreateAgentSchema = z.object({
   persona: z.string().max(2_000).optional(),
   voiceTone: z.string().max(200).optional(),
   triggerMode: AgentTriggerMode.default('AUTO'),
+  providerName: ProviderName.optional(),
+  model: z.string().min(1).max(200).optional(),
 });
 export type CreateAgentInput = z.infer<typeof CreateAgentSchema>;
 

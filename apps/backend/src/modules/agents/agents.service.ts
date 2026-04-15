@@ -8,7 +8,9 @@
  * - Future phases will expand tools, cron, analytics, and deeper routing controls.
  */
 
-import type { AgentBrowserMcpState, AgentDetail, AgentSummary, CreateAgentInput, UpdateAgentInput } from '@nextgenchat/types';
+import type { AgentBrowserMcpState, AgentDetail, AgentSummary, CreateAgentInput, ProviderName, UpdateAgentInput } from '@nextgenchat/types';
+
+import { STATIC_PROVIDER_MODELS } from '@nextgenchat/types';
 
 import { DEFAULT_AGENT_MODEL } from '@/config/constants.js';
 import { prisma } from '@/db/client.js';
@@ -17,6 +19,11 @@ import { env } from '@/config/env.js';
 import { buildDefaultAgentTools, ensureDefaultAgentTools } from '@/modules/agents/default-agent-tools.js';
 import { mcpService } from '@/modules/mcp/mcp.service.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
+
+type CreateAgentWithProviderInput = CreateAgentInput & {
+  providerName?: ProviderName;
+  model?: string;
+};
 
 function serializeAgent(agent: {
   id: string;
@@ -49,12 +56,15 @@ function serializeAgentDetail(agent: {
   primaryChannelId: string | null;
   identity: { systemPrompt: string | null; persona: string | null; voiceTone: string | null } | null;
   channelMemberships: Array<{ channelId: string }>;
+  providerConfig: { providerName: string; model: string } | null;
 }): AgentDetail {
   return {
     ...serializeAgent(agent),
     primaryChannelId: agent.primaryChannelId,
     voiceTone: agent.identity?.voiceTone ?? null,
     activeChannelIds: agent.channelMemberships.map((membership) => membership.channelId),
+    providerName: agent.providerConfig?.providerName ?? null,
+    model: agent.providerConfig?.model ?? null,
   };
 }
 
@@ -140,6 +150,12 @@ export class AgentsService {
             channelId: true,
           },
         },
+        providerConfig: {
+          select: {
+            providerName: true,
+            model: true,
+          },
+        },
       },
     });
 
@@ -152,6 +168,12 @@ export class AgentsService {
 
   async createAgent(userId: string, workspaceId: string, input: CreateAgentInput) {
     await requireWorkspaceAccess(userId, workspaceId);
+
+    const createInput = input as CreateAgentWithProviderInput;
+
+    const providerName = (createInput.providerName ?? 'openai') as ProviderName;
+    const model = createInput.model
+      ?? (providerName === 'openai' ? (env.OPENAI_MODEL || DEFAULT_AGENT_MODEL) : (STATIC_PROVIDER_MODELS[providerName]?.[0]?.id ?? DEFAULT_AGENT_MODEL));
 
     const slugBase = sanitizeAgentSlug(input.name);
     let slug = slugBase;
@@ -183,8 +205,8 @@ export class AgentsService {
         },
         providerConfig: {
           create: {
-            providerName: 'openai',
-            model: env.OPENAI_MODEL || DEFAULT_AGENT_MODEL,
+            providerName,
+            model,
             credentials: encryptJson({}),
             config: { temperature: 0.4, maxTokens: 1024 },
           },

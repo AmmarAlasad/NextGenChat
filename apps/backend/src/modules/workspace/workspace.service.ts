@@ -512,6 +512,26 @@ export class WorkspaceService {
     };
   }
 
+  async readAgentWorkspaceBinaryFile(agentId: string, fileName: string) {
+    const filePath = resolveAgentWorkspacePath(agentId, fileName);
+
+    if (!(await fileExists(filePath))) {
+      throw new Error('Workspace file not found.');
+    }
+
+    const [content, fileStat] = await Promise.all([
+      readFile(filePath),
+      stat(filePath),
+    ]);
+
+    return {
+      fileName,
+      content,
+      version: Math.floor(fileStat.mtimeMs),
+      updatedAt: fileStat.mtime.toISOString(),
+    };
+  }
+
   async writeAgentWorkspaceFile(agentId: string, fileName: string, content: string) {
     const filePath = resolveAgentWorkspacePath(agentId, fileName);
     await mkdir(path.dirname(filePath), { recursive: true });
@@ -520,6 +540,77 @@ export class WorkspaceService {
     // the prompt prefix from the freshly written file.
     staticPrefixCache.invalidate(agentId);
     return this.readAgentWorkspaceFile(agentId, fileName);
+  }
+
+  async saveUploadedFileToAgentWorkspace(input: {
+    agentId: string;
+    workspaceId: string;
+    uploadedBy: string;
+    relativePath: string;
+    fileName: string;
+    mimeType: string;
+    fileSize: number;
+    contentBuffer: Buffer;
+    textContent?: string | null;
+  }) {
+    const filePath = resolveAgentWorkspacePath(input.agentId, input.relativePath);
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, input.contentBuffer);
+
+    const key = `agents/${input.agentId}/${input.relativePath}`;
+
+    const existing = await prisma.workspaceFile.findUnique({
+      where: { key },
+      select: { id: true, version: true },
+    });
+
+    const nextVersion = (existing?.version ?? 0) + 1;
+
+    const file = existing
+      ? await prisma.workspaceFile.update({
+          where: { key },
+          data: {
+            fileName: input.fileName,
+            fileSize: input.fileSize,
+            mimeType: input.mimeType,
+            content: input.textContent ?? null,
+            version: nextVersion,
+            uploadedBy: input.uploadedBy,
+          },
+        })
+      : await prisma.workspaceFile.create({
+          data: {
+            workspaceId: input.workspaceId,
+            agentId: input.agentId,
+            uploadedBy: input.uploadedBy,
+            key,
+            fileName: input.fileName,
+            fileSize: input.fileSize,
+            mimeType: input.mimeType,
+            content: input.textContent ?? null,
+            version: nextVersion,
+          },
+        });
+
+    await prisma.workspaceFileVersion.create({
+      data: {
+        fileId: file.id,
+        key: `${key}@v${nextVersion}`,
+        fileSize: input.fileSize,
+        mimeType: input.mimeType,
+        content: input.textContent ?? null,
+        version: nextVersion,
+      },
+    });
+
+    return {
+      key,
+      relativePath: input.relativePath,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      fileSize: input.fileSize,
+      version: nextVersion,
+    };
   }
 
   async getAgentContextDocs(agentId: string, docTypes: AgentDocType[]) {

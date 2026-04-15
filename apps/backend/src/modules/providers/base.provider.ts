@@ -10,6 +10,10 @@
 
 import type { FinishReason, LLMProvider, LLMRequestOptions, LLMResponse, LLMStreamChunk } from '@nextgenchat/types';
 
+interface BaseTextBlock { type: 'text'; text: string; }
+interface BaseImageBlock { type: 'image'; mimeType: string; dataBase64: string; }
+type BaseContentBlock = BaseTextBlock | BaseImageBlock;
+
 export abstract class BaseProvider implements LLMProvider {
   abstract readonly name: 'openai' | 'openai-codex-oauth' | 'anthropic' | 'kimi' | 'openrouter';
   abstract readonly supportedModels: string[];
@@ -25,6 +29,7 @@ export abstract class BaseProvider implements LLMProvider {
     const response = await this.complete(options);
     yield {
       delta: response.content,
+      toolCalls: response.toolCalls,
       finishReason: response.finishReason as FinishReason,
       responseId: response.id,
       usage: response.usage,
@@ -33,6 +38,12 @@ export abstract class BaseProvider implements LLMProvider {
   }
 
   async countTokens(options: LLMRequestOptions['messages']) {
-    return options.reduce((total, message) => total + Math.ceil(message.content.length / 4) + 4, 0);
+    return options.reduce((total, message) => {
+      const contentLength = typeof message.content === 'string'
+        ? message.content.length
+        : (message.content as unknown as BaseContentBlock[]).reduce((sum, block) => sum + (block.type === 'text' ? block.text.length : 1024), 0);
+
+      return total + Math.ceil(contentLength / 4) + 4;
+    }, 0);
   }
 }

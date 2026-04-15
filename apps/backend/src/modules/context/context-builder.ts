@@ -68,6 +68,19 @@ export interface ContextBuildResult {
   staticPrefixCacheHit?: boolean;
 }
 
+interface MessageTextBlock {
+  type: 'text';
+  text: string;
+}
+
+interface MessageImageBlock {
+  type: 'image';
+  mimeType: string;
+  dataBase64: string;
+}
+
+type MessageContentBlock = MessageTextBlock | MessageImageBlock;
+
 // ── Runtime identity (hardcoded, like OpenClaw's tooling/identity sections) ───
 
 function buildRuntimeIdentityMessage(input: {
@@ -154,14 +167,62 @@ function buildRuntimeIdentityMessage(input: {
 
 // ── Message conversion ────────────────────────────────────────────────────────
 
-function toConversationMessage(message: {
+async function toConversationMessage(message: {
   senderId: string;
   senderType: SenderType;
   senderName: string | null;
   content: string;
-}, currentAgentId: string): LLMMessage {
+  metadata?: unknown;
+}, currentAgentId: string): Promise<LLMMessage> {
+  const attachmentEntries = Array.isArray((message.metadata as { attachments?: unknown } | null | undefined)?.attachments)
+    ? ((message.metadata as { attachments: Array<Record<string, unknown>> }).attachments)
+    : [];
+  const contentBlocks: MessageContentBlock[] = [];
+
+  if (message.content.trim()) {
+    const workspaceNotice = attachmentEntries.length > 0
+      ? `${message.content.trim()}\n\nThe attached files are included below for you to inspect directly. A copy of each attachment has also been saved in your workspace under the uploads folder if you need to work with it later.`
+      : message.content.trim();
+
+    contentBlocks.push({ type: 'text', text: workspaceNotice });
+  }
+
+  for (const attachment of attachmentEntries) {
+    const fileName = typeof attachment.fileName === 'string' ? attachment.fileName : 'attachment';
+    const relativePath = typeof attachment.relativePath === 'string' ? attachment.relativePath : null;
+    const mimeType = typeof attachment.mimeType === 'string' ? attachment.mimeType : 'application/octet-stream';
+
+    if (!relativePath) {
+      continue;
+    }
+
+    if (mimeType.startsWith('image/')) {
+      try {
+        const imageFile = await workspaceService.readAgentWorkspaceBinaryFile(currentAgentId, relativePath);
+        contentBlocks.push({ type: 'text', text: `Attached image: ${fileName}` });
+        contentBlocks.push({ type: 'image', mimeType, dataBase64: imageFile.content.toString('base64') });
+        continue;
+      } catch {
+        contentBlocks.push({ type: 'text', text: `Attached image: ${fileName} (saved in workspace, but its binary content could not be loaded into the prompt).` });
+        continue;
+      }
+    }
+
+    try {
+      const textFile = await workspaceService.readAgentWorkspaceFile(currentAgentId, relativePath);
+      contentBlocks.push({ type: 'text', text: `<file name="${fileName.replace(/[<>&"']/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[char] ?? char))}" mime="${mimeType.replace(/[<>&"']/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[char] ?? char))}">\n${textFile.content.replace(/<\s*\/\s*file\s*>/gi, '&lt;/file&gt;').replace(/<\s*file\b/gi, '&lt;file')}\n</file>` });
+      continue;
+    } catch {
+      contentBlocks.push({ type: 'text', text: `Attached file: ${fileName} (saved in workspace, but its content could not be embedded directly).` });
+    }
+  }
+
+  const normalizedContent = contentBlocks.length === 0
+    ? message.content
+    : contentBlocks;
+
   if (message.senderType === 'AGENT' && message.senderId === currentAgentId) {
-    return { role: 'assistant', content: message.content };
+    return { role: 'assistant', content: normalizedContent as LLMMessage['content'] };
   }
 
   const speakerType = message.senderType === 'AGENT' ? 'AGENT_COLLEAGUE' : 'USER';
@@ -169,7 +230,13 @@ function toConversationMessage(message: {
 
   return {
     role: 'user',
-    content: `<message speaker="${speakerName}" speakerType="${speakerType}">\n${message.content}\n</message>`,
+    content: (typeof normalizedContent === 'string'
+      ? `<message speaker="${speakerName}" speakerType="${speakerType}">\n${normalizedContent}\n</message>`
+      : [
+          { type: 'text', text: `<message speaker="${speakerName}" speakerType="${speakerType}">` },
+          ...normalizedContent,
+          { type: 'text', text: '</message>' },
+        ]) as LLMMessage['content'],
   };
 }
 
@@ -277,6 +344,7 @@ export class ContextBuilder {
           senderType: true,
           content: true,
           contentType: true,
+          metadata: true,
           createdAt: true,
         },
       }),
@@ -528,7 +596,7 @@ export class ContextBuilder {
     const prefixTokens = await tokenCounter.count(prefixMessages, provider);
     const dynamicTokens = await tokenCounter.count(dynamicMessages, provider);
 
-    const triggerLLMMessage = toConversationMessage(
+    const triggerLLMMessage = await toConversationMessage(
       {
         senderId: triggerMessage.senderId,
         senderType: triggerMessage.senderType,
@@ -536,6 +604,7 @@ export class ContextBuilder {
           ? (agentNameMap.get(triggerMessage.senderId) ?? null)
           : (userNameMap.get(triggerMessage.senderId) ?? null),
         content: triggerMessage.content,
+        metadata: triggerMessage.metadata,
       },
       agentId,
     );
@@ -555,7 +624,7 @@ export class ContextBuilder {
     });
 
     // ── 9. Convert kept history to LLMMessages ────────────────────────────────
-    const historyMessages: LLMMessage[] = compactionResult.keptMessages.map((m) =>
+    const historyMessages: LLMMessage[] = await Promise.all(compactionResult.keptMessages.map((m) =>
       toConversationMessage(
         {
           senderId: m.senderId,
@@ -564,10 +633,11 @@ export class ContextBuilder {
             ? (agentNameMap.get(m.senderId) ?? null)
             : (userNameMap.get(m.senderId) ?? null),
           content: m.content,
+          metadata: m.metadata,
         },
         agentId,
       ),
-    );
+    ));
 
     const messages = [
       ...prefixMessages,

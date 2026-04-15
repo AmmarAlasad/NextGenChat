@@ -37,3 +37,10 @@ coverage/
 *.db
 *.db-shm
 *.db-wal
+
+# Agent workspace runtime data
+apps/backend/agent-workspaces/
+.nextgenchat/
+
+# Local test artifacts
+test-results/

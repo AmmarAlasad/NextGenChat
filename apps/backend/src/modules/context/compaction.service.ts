@@ -64,7 +64,7 @@ const MAX_SUMMARIZATION_CONTENT_LENGTH = 3000;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type CompactableMesasge = Pick<Message, 'id' | 'senderId' | 'senderType' | 'content' | 'contentType' | 'createdAt'>;
+type CompactableMesasge = Pick<Message, 'id' | 'senderId' | 'senderType' | 'content' | 'contentType' | 'metadata' | 'createdAt'>;
 
 interface CompactNowInput {
   agentId: string;

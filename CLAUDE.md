@@ -4,13 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-**Phases 1 through 4 are implemented and running.** The full architecture and roadmap live in `plan.md`. Read it before starting any significant work.
+**Phases 1 through 5 are implemented and running.** The full architecture and roadmap live in `plan.md`. Read it before starting any significant work.
 
 What is currently running:
 - **Phase 1:** owner setup wizard, JWT auth (access token in memory, refresh in httpOnly cookie), one workspace + channel + agent, message persistence, BullMQ agent job pipeline, Socket.io streaming, full frontend (setup → login → chat)
 - **Phase 2/3B:** direct chats, group chats, speaker-aware group context assembly
-- **Phase 3C:** agent creation + profile editing, group membership management, per-agent pickup-LLM routing
-- **Phase 4:** dedicated agent workspace pages, seven-file agent architecture, AgentCreatorAgent, `send_reply` / `channel_send_message` / workspace tools, structured validators on all agent file writes
+- **Phase 3C:** agent creation + profile editing, group membership management, per-agent WAKEUP-LLM routing
+- **Phase 4:** dedicated agent workspace pages, eight-file agent architecture, AgentCreatorAgent, `send_reply` / `channel_send_message` / workspace tools, structured validators on all agent file writes, session lanes (serial execution per agent:channel), real SSE streaming
+- **Phase 5:** rules engine (stub), MCP integration (Browser MCP via stdio), agent skills system, agent cron scheduling, task mode with todowrite tool, wakeup LLM service
 
 ## Monorepo Layout
 
@@ -106,46 +107,47 @@ pnpm --filter @nextgenchat/backend prisma:studio     # GUI browser
 - **Zod schemas in `packages/types`** are the single source of truth — both backend and frontend import from there, never duplicate schemas
 - **Deployment mode is environment-driven** — `DEPLOYMENT_MODE=local` relaxes TLS/rate-limit requirements; `DEPLOYMENT_MODE=network` hardens everything
 
-## Seven-File Agent Architecture
+## Eight-File Agent Architecture
 
-Every agent has an isolated on-disk workspace under `$AGENT_WORKSPACES_DIR/{agentId}/`. Seven markdown files define the agent completely:
+Every agent has an isolated on-disk workspace under `$AGENT_WORKSPACES_DIR/{agentId}/`. Eight markdown files define the agent completely:
 
 | File | Who writes it | Purpose |
 |---|---|---|
-| `soul.md` | AgentCreatorAgent only | Immutable ethics and values — injected first, overrides everything |
+| `soul.md` | AgentCreatorAgent only | Immutable ethics and values — bootstrap priority 20, injected after Agent.md |
 | `identity.md` | AgentCreatorAgent only | Public persona, tone, communication style |
 | `Agent.md` | AgentCreatorAgent only | Operating manual — tool rules, memory update triggers, multi-step response rules |
 | `user.md` | Agent itself | Evolving model of the user, written via `workspace_write_file` |
 | `memory.md` | Agent itself | Long-term patterns and learnings, written via `workspace_write_file` |
 | `Heartbeat.md` | Agent itself | Cron-driven status log for resumable long-running work |
-| `pickup.md` | AgentCreatorAgent only | Decision instructions for the pickup LLM (when to respond in groups) |
+| `wakeup.md` | AgentCreatorAgent only | Decision instructions for the wakeup LLM (when to respond in groups) |
+| `pickup.md` | AgentCreatorAgent only | (Legacy alias) same purpose as wakeup.md — kept for compatibility |
 
 **Write protection:** `workspace_write_file` (the agent tool) blocks writes to `soul.md`, `identity.md`, `agent.md`, and `pickup.md`. Agents may only update `user.md`, `memory.md`, and `heartbeat.md`. Only `AgentCreatorAgent` (admin API) may update protected files.
 
-**Context injection order** (inside `ContextBuilder.build`):
-1. `runtime-context.md` — current channel, participants, constraints
-2. `soul.md` — ethics first, overrides everything
-3. `identity.md` — persona and voice
-4. `Agent.md` — operating manual
-5. `tools.md` — approved tool list and usage rules (generated, not a file)
-6. `user.md` — agent's model of the user
-7. `memory.md` — long-term learnings
-8. `Heartbeat.md` — resumable work state
-9. `project.md` — if the channel belongs to a project (Projects group related channels; `project.md` is stored in `WorkspaceFile` and managed via `project.service.ts`)
-10. `agency.md` — workspace-level constitution (shared across all agents)
+**Context injection order** (inside `ContextBuilder.build`; bootstrap priorities defined in `bootstrap-context.ts`):
+1. `runtime-context.md` — current channel, participants, constraints (injected by ContextBuilder directly)
+2. `Agent.md` — operating manual (bootstrap priority 10)
+3. `soul.md` — ethics and values (bootstrap priority 20)
+4. `identity.md` — persona and voice (bootstrap priority 30)
+5. `user.md` — agent's model of the user (bootstrap priority 40)
+6. `tools.md` — approved tool list and usage rules (generated, bootstrap priority 50)
+7. `agency.md` — workspace-level constitution, shared across all agents (bootstrap priority 60)
+8. `project.md` — channel project context; stored in `WorkspaceFile`, managed via `project.service.ts` (bootstrap priority 65)
+9. `memory.md` — long-term learnings (bootstrap priority 70)
+10. `Heartbeat.md` — dynamic, resumable work state (below cache boundary, always rebuilt)
 11. Conversation summary — compacted older history
 12. Cross-channel context — DM channels only
 
 ## AgentCreatorAgent
 
-`apps/backend/src/modules/agents/agent-creator.service.ts` is a dedicated LLM service that generates and maintains the seven agent files. It is the **only** path that may write to protected files.
+`apps/backend/src/modules/agents/agent-creator.service.ts` is a dedicated LLM service that generates and maintains the eight agent files. It is the **only** path that may write to protected files.
 
 Two entry points:
-- **`generateAndWriteAgentDocs(agentId, name, description)`** — called during setup; generates all seven files from a plain-language description
+- **`generateAndWriteAgentDocs(agentId, name, description)`** — called during setup; generates all eight files from a plain-language description
 - **`chatWithCreator(agentId, message, history)`** — called from the admin chat panel; edits files through conversation
 
 **Safety validators** run before every file write and reject:
-- `pickup.md` that is a JSON blob instead of instruction markdown
+- `wakeup.md` / `pickup.md` that is a JSON blob instead of instruction markdown
 - `Agent.md` missing `send_reply`, `memory.md`, `user.md`, or `workspace_write_file` references
 - `soul.md` that is too short or is a JSON blob
 - Any file shorter than its minimum viable length
@@ -165,6 +167,7 @@ All tools live in `apps/backend/src/modules/tools/tool-registry.service.ts`. Def
 | `workspace_bash` | Run shell commands from the agent workspace with timeout |
 | `channel_send_message` | Post a message to a different non-direct channel the agent belongs to (cross-channel relay) |
 | `send_reply` | Post an intermediate message to the **current** channel mid-turn — enables human-like multi-part replies |
+| `todowrite` | Create/update/cancel todo items; state persisted to `.nextgenchat/todo-state.json` for task-mode continuation |
 
 `send_reply` is the key tool for natural pacing. The agent calls it to post a first message ("Let me look into that…"), does the work, then produces a final reply. The user sees 2–3 messages from one agent turn. It does **not** trigger other agents.
 
@@ -174,21 +177,21 @@ All tools live in `apps/backend/src/modules/tools/tool-registry.service.ts`. Def
 
 ## Agent Routing
 
-`agent-routing.service.ts` — three-stage filter before any LLM call:
+`agent-routing.service.ts` — gate-based filter before any LLM call:
 
-1. **Mode gates** — `DISABLED` skips, `ALL_MESSAGES` always responds, `MENTIONS_ONLY` only when explicitly addressed
-2. **Agent-sender guard** — when sender is an agent and `isRelay=false`, only explicitly mentioned agents respond (prevents infinite chains). Relay messages (`isRelay=true`) bypass this guard and go to pickup.
-3. **Per-agent pickup LLM** — each AUTO-mode agent runs `gpt-4o-mini` at `temp=0.0` in parallel. The pickup model reads:
-   - The agent's `pickup.md` as its system prompt
-   - A named transcript (showing real agent names, not just `[AGENT]`)
-   - An explicit "has this agent already replied recently?" flag
-   - Defaults to NO — only YES on clear specific reason
+**Trigger modes (per agent):**
+- `DISABLED` — always skipped
+- `MENTIONS_ONLY` — only when explicitly addressed by name/slug
+- `ALL_MESSAGES` / `AUTO` — scheduled unconditionally; agent self-filters with `[[NO_REPLY]]`
+- `WAKEUP` — runs a cheap pre-filter LLM (`gpt-4o-mini` + `wakeup.md`) before scheduling
 
-**Pickup model defaults:**
-- `PICKUP_MODEL = 'gpt-4o-mini'`
-- `PICKUP_CONTEXT_MESSAGES = 5`
-- `maxTokens = 80`, `temperature = 0.0`
-- Fallback on error: silence (not respond)
+**Evaluation order:**
+1. Mode gate — DISABLED skips immediately; MENTIONS_ONLY checks for explicit mention
+2. Agent-sender guard — when sender is an agent and `isRelay=false`, only explicitly mentioned agents respond (prevents infinite chains). Relay messages (`isRelay=true`) bypass this guard.
+3. For `WAKEUP` agents — `wakeup-llm.service.ts` runs `gpt-4o-mini` with `wakeup.md` as the system prompt and last 8 messages as context. Returns YES/NO. Defaults to NO on error.
+4. `ALL_MESSAGES`/`AUTO` agents — enqueued unconditionally; the agent produces `[[NO_REPLY]]` to self-filter.
+
+**Wakeup model defaults:** `WAKEUP_MODEL = 'gpt-4o-mini'`, `WAKEUP_MAX_TOKENS = 10`, `WAKEUP_CONTEXT_MESSAGES = 8`, `temperature = 0.0`. All WAKEUP checks run in parallel.
 
 **Message visibility (`agent-visibility.ts`):** user messages are visible to all eligible channel members; agent reply messages are visible in an agent's context only if (a) it is the agent's own reply, or (b) the reply explicitly mentions another agent by `@slug` or name. This prevents agents from seeing each other's unrelated conversation threads.
 
@@ -199,7 +202,7 @@ Five supported providers under `modules/providers/`. All implement `LLMProvider`
 | Provider | Auth | Notes |
 |---|---|---|
 | `openai` | API key | tiktoken for token counting |
-| `openai-codex-oauth` | OAuth 2.0 | tokens in `OAuthToken` table, auto-refresh |
+| `openai-codex-oauth` | OAuth 2.0 | tokens in `GlobalProviderConfig` row (encrypted), auto-refresh |
 | `anthropic` | API key | exact token count via `/v1/messages/count_tokens`; prompt caching via `cache_control` |
 | `kimi` | API key | OpenAI-compatible at `api.moonshot.cn`; extends OpenAI provider |
 | `openrouter` | API key | OpenAI-compatible; model list fetched from OpenRouter and cached in Redis |
@@ -209,11 +212,12 @@ Five supported providers under `modules/providers/`. All implement `LLMProvider`
 
 ## Context Window Management
 
-Three-layer system in `modules/context/`:
+Four-layer system in `modules/context/`:
 
 1. **Token counting** (`token-counter.ts`): tiktoken for OpenAI/Kimi/OpenRouter, Anthropic API for Claude. Always reserve `RESPONSE_BUFFER` (default 4096 tokens).
 2. **Auto-compaction** (`compaction.service.ts`): when history exceeds budget, summarize old messages via a cheap model, store in `ConversationSummary`. Runs as async BullMQ job — never blocks current LLM call.
 3. **Prompt caching** (`cache.service.ts`): for Anthropic, add `cache_control: { type: "ephemeral" }` after static context. Track `cache_read_input_tokens` vs `cache_creation_input_tokens` in `message.metadata`.
+4. **Static prefix cache** (`static-prefix-cache.ts`): caches the static doc portion of the prompt (soul, identity, Agent.md, tools, user, memory, project, agency, runtime-context) by mtime-hash + TTL. Invalidated by `workspaceService.writeAgentWorkspaceFile()`. Heartbeat.md, conversation summary, and history are never cached.
 
 `ContextBuilder.build(agentId, channelId, messageId)` is the single entry point.
 
@@ -227,6 +231,9 @@ Any time you add a new API endpoint, socket event, or DB-facing DTO:
 
 Socket event names and payloads are defined in `packages/types/src/socket-events.ts` as discriminated unions.
 
+Key non-obvious type files:
+- `providers-admin.ts` — `ProviderStatus`, `SetApiKeyCredentialSchema`, `UpdateAgentProviderSchema`, `SetFallbackProviderSchema`, `STATIC_PROVIDER_MODELS`, `PROVIDER_METADATA`
+
 ## Backend Module Structure
 
 ```
@@ -238,39 +245,95 @@ modules/
   chat/
     chat.service.ts      # Message persistence, agent scheduling, relay messages
   agents/
-    agents.service.ts         # Agent CRUD
-    agent-routing.service.ts  # Pre-LLM routing — which agents respond
-    agent-routing.utils.ts    # Pure deterministic heuristics (no DB/provider deps, unit-testable)
-    agent-creator.service.ts  # AgentCreatorAgent — generates and edits agent docs
-    agent-output.ts           # Sanitizes LLM output: strips block tags, leaky prompts, [[NO_REPLY]]
-    agent-visibility.ts       # Message visibility rules — which messages enter an agent's context
-    default-agent-tools.ts    # Default tool set registered for new agents
+    agents.service.ts          # Agent CRUD
+    agent-routing.service.ts   # Pre-LLM routing — which agents respond
+    agent-routing.utils.ts     # Pure deterministic heuristics (no DB/provider deps, unit-testable)
+    agent-creator.service.ts   # AgentCreatorAgent — generates and edits agent docs
+    agent-output.ts            # Sanitizes LLM output: strips block tags, leaky prompts, [[NO_REPLY]]
+    agent-visibility.ts        # Message visibility rules — which messages enter an agent's context
+    agent-cron.service.ts      # Agent-managed cron/one-off schedules; mirrors to .nextgenchat/schedules.json
+    wakeup-llm.service.ts      # Cheap pre-filter LLM for WAKEUP-mode agents (reads wakeup.md)
+    skill.service.ts           # Agent skills — directories rooted in agent workspace at skills/{name}/
+    skill-installer.service.ts # Installs skills from templates or external sources
+    task-state.ts              # Todo-backed task-state parsing + multi-step continuation rules
+    default-agent-tools.ts     # Default tool set registered for new agents
+  gateway/
+    agent-session.gateway.ts   # Owns full agent turn lifecycle (replaced agent.processor as entry point)
+    session-lane.ts            # At-most-one-active-turn per agentId:channelId (serial execution)
   project/
     project.service.ts        # Project CRUD; project.md file stored in WorkspaceFile table
     project.routes.ts         # Project API routes
   workspace/
-    workspace.service.ts      # Agent doc file management (read/write/ensure)
-    workspace.routes.ts       # Workspace API routes
+    workspace.service.ts             # Agent doc file management (read/write/ensure)
+    workspace.routes.ts              # Workspace API routes
+    agent-workspace-tools.service.ts # `read_file` and `apply_patch` tools for agents (=== SEARCH === / === REPLACE === format)
   tools/
     tool-registry.service.ts  # Built-in tool definitions and execution
   context/
     context-builder.ts        # Assembles LLM prompt from docs + history
+    bootstrap-context.ts      # OpenClaw-ported file budgeting/truncation — 20 KB/file, 150 KB total, 70%+20% head+tail strategy
+    static-prefix-cache.ts    # Caches static doc prefix by mtime-hash + TTL
+  mcp/
+    mcp.service.ts            # Browser MCP runtime integration — stdio client, tool sync to DB
+    mcp.routes.ts             # MCP API routes
+  rules/
+    rules.service.ts          # Policy evaluation stub (ALLOW/BLOCK/REQUIRE_APPROVAL) — Phase 5 TODO
+    rules.routes.ts           # Rules API routes
   providers/
+    providers.routes.ts       # Provider admin API — CRUD for global credentials, per-agent provider, fallback, OpenAI Codex OAuth flow
+    base.provider.ts          # Abstract LLMProvider base class
+    registry.ts               # ProviderRegistry — caches instantiated providers by config hash
+    openai.provider.ts        # OpenAI provider (tiktoken)
+    anthropic.provider.ts     # Anthropic provider (exact token count + prompt caching)
+    kimi.provider.ts          # Kimi/Moonshot provider (extends OpenAI)
+    openrouter.provider.ts    # OpenRouter provider (dynamic model list from API, cached in Redis)
+    openai-codex-oauth.provider.ts  # Codex OAuth flow helpers
 queues/
-  agent.processor.ts    # Main agent LLM loop, tool execution, streaming, relay
+  agent.processor.ts    # Thin BullMQ worker shell — delegates to agent-session.gateway.ts#runAgentTurn()
 ```
 
 Route handlers stay thin — call service methods, return results. All business logic lives in `*.service.ts`.
 
-## Agent Processor (`agent.processor.ts`)
+## Agent Session Gateway (`gateway/agent-session.gateway.ts`)
+
+`agent.processor.ts` is now a thin BullMQ shell — all turn logic lives in `agent-session.gateway.ts#runAgentTurn()`.
 
 Key behaviours:
-- Strips `<message speaker="..." speakerType="...">` XML wrappers from LLM output before saving — prevents self-reinforcing pattern where the agent echoes the conversation wrapper format in its own replies
-- `stripMessageWrapper()` is applied to `finalResponse.content` and to `send_reply` tool content
-- `sanitizeAgentVisibleContent()` (in `agent-output.ts`) also strips internal block tags (`<thinking>`, `<scratchpad>`, etc.) and leaky prompt fragments before any text is shown to users
-- If the sanitized output equals `[[NO_REPLY]]` the agent's turn is silently discarded — no message saved, no Socket.io event emitted
-- Passes `channelId` to `executeToolCall` so `send_reply` knows where to post
-- Relay commands (`<<send:channel-name>>…<</send>>`) are extracted after the LLM call, stripped from the saved response, and posted to target channels
+- **Session lanes** (`session-lane.ts`): at most one active turn per `agentId:channelId`. Concurrent jobs queue behind the active lane.
+- **Real SSE streaming**: uses `provider.stream()` for final text rounds; non-streaming for intermediate tool rounds.
+- **Tool activity events**: emits `agent:tool:start` / `agent:tool:end` socket events during the tool loop so the frontend can show live activity indicators.
+- Strips `<message speaker="..." speakerType="...">` XML wrappers from LLM output before saving — prevents self-reinforcing pattern.
+- `sanitizeAgentVisibleContent()` (in `agent-output.ts`) strips internal block tags (`<thinking>`, `<scratchpad>`, etc.) and leaky prompt fragments before any text is shown to users.
+- If the sanitized output equals `[[NO_REPLY]]` the agent's turn is silently discarded — no message saved, no Socket.io event emitted.
+- Relay commands (`<<send:channel-name>>…<</send>>`) are extracted after the LLM call, stripped from the saved response, and posted to target channels.
+- **Task mode** (`task-state.ts`): if the request likely requires multi-step work, the gateway injects task-mode instructions and evaluates whether a tool-loop turn should continue based on persisted todo state at `.nextgenchat/todo-state.json` in the agent workspace. The `todowrite` tool updates this file.
+
+## Agent Skills
+
+`skill.service.ts` — each skill is a directory in the agent workspace at `skills/{name}/` with a required `SKILL.md` entry point. Metadata is stored in the `AgentSkill` DB table; the full directory lives on disk.
+
+- Skills have a `type` (e.g. `CUSTOM`, `TEMPLATE`) and `sourceType` (e.g. `LOCAL`, `GITHUB`)
+- File inventory is classified by path: `SKILL.md` → `skill`, `references/*` → `reference`, `scripts/*` → `script`, `assets/*` → `asset`
+- Activating a skill exposes its real installed structure to the agent context
+- `staticPrefixCache.invalidate(agentId)` is called after skill changes
+
+## Agent Cron Scheduling
+
+`agent-cron.service.ts` — agents can schedule both one-off wakeups and recurring cron tasks.
+
+- Schedules persisted in Prisma (`AgentSchedule` table) with per-channel targeting
+- Mirrored to `.nextgenchat/schedules.json` in the agent workspace so agents can inspect/edit their own schedules
+- Simple scheduled posts are delivered directly when the task clearly describes a message to send
+
+## MCP Integration
+
+`mcp.service.ts` — manages a workspace-scoped Browser MCP server over stdio.
+
+- Uses `@modelcontextprotocol/sdk` stdio client; one Browser MCP server per workspace
+- Discovered tools are synced into `McpServerTool` and `AgentTool` Prisma rows
+- Per-agent enable/disable via `AgentTool` join table
+- MCP env vars stored encrypted (AES-256-GCM) in the `McpServer` row
+- Future: multi-server registration, approval workflows
 
 ## Security Requirements (Non-Negotiable)
 
@@ -295,12 +358,14 @@ Key behaviours:
 
 1. Save triggering message to DB
 2. Enqueue BullMQ job (`agent:process`) — never call LLM inline
-3. Worker builds context via `ContextBuilder.build()`
-4. Tool loop: LLM call → tool calls → execute → repeat until text response
-5. Strip message wrapper, extract relay commands, stream final response
-6. Save message to DB, broadcast via Socket.io
-7. Execute relay commands (post to other channels)
-8. `triggerAgentsForMessage` for the saved response (agent-to-agent chains suppressed unless relay)
+3. Worker delegates to `agent-session.gateway.ts#runAgentTurn()`
+4. Session lane acquired (serial per agentId:channelId)
+5. Context built via `ContextBuilder.build()`, task-mode instructions injected if needed
+6. Tool loop: LLM call → tool calls → execute → repeat until text response
+7. Strip message wrapper, extract relay commands, stream final response
+8. Save message to DB, broadcast via Socket.io
+9. Execute relay commands (post to other channels)
+10. `triggerAgentsForMessage` for the saved response (agent-to-agent chains suppressed unless relay)
 
 ## Frontend Notes
 
@@ -333,7 +398,7 @@ Typography: **Manrope** (`font-headline`) for headings, **Geist Sans** for body,
 
 `apps/web/src/app/agents/[id]/page.tsx` renders `agent-admin-screen.tsx`. Contains:
 - Agent settings form (name, persona, trigger mode, status)
-- Seven-file doc editor with tab navigation
+- Eight-file doc editor with tab navigation
 - **AgentCreatorAgent chat panel** — replaces the old writing assistant. User types natural-language instructions; AgentCreatorAgent updates the relevant files and reports what changed.
 
 ### Setup Wizard

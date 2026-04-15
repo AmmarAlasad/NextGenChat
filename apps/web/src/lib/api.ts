@@ -8,14 +8,21 @@
  * - Future phases can layer richer error handling and query caching on top of it.
  */
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+function getDefaultApiBaseUrl() {
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.hostname}:3001`;
+  }
+
+  return 'http://localhost:3001';
+}
 
 export function getApiBaseUrl() {
-  return apiBaseUrl;
+  return process.env.NEXT_PUBLIC_API_URL ?? getDefaultApiBaseUrl();
 }
 
 export async function apiRequest(path: string, init?: RequestInit) {
   const hasBody = typeof init?.body !== 'undefined';
+  const apiBaseUrl = getApiBaseUrl();
 
   return fetch(`${apiBaseUrl}${path}`, {
     ...init,

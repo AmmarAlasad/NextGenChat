@@ -15,8 +15,20 @@ import type { ClientToServerEvents, ServerToClientEvents } from '@nextgenchat/ty
 let chatSocket: Socket<ServerToClientEvents, ClientToServerEvents> | null = null;
 let activeToken: string | null = null;
 
+function getSocketBaseUrl() {
+  if (process.env.NEXT_PUBLIC_SOCKET_URL) {
+    return process.env.NEXT_PUBLIC_SOCKET_URL;
+  }
+
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.hostname}:3001`;
+  }
+
+  return 'http://localhost:3001';
+}
+
 export function getChatSocket(accessToken: string) {
-  const baseUrl = process.env.NEXT_PUBLIC_SOCKET_URL ?? 'http://localhost:3001';
+  const baseUrl = getSocketBaseUrl();
 
   if (!chatSocket || activeToken !== accessToken) {
     chatSocket?.disconnect();

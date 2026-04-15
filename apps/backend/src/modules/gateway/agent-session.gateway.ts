@@ -270,7 +270,11 @@ export class AgentSessionGateway {
         messages.push({ role: 'system', content: buildTaskModeInstruction() });
       }
 
-      // ── Tool loop (non-streaming) ──────────────────────────────────────────
+      // ── Tool loop (streaming) ─────────────────────────────────────────────
+      // Each round uses provider.stream() so text deltas reach the client in
+      // real time.  During tool rounds (finishReason === 'tool_calls') OpenAI
+      // emits no text content, so no spurious socket events are fired.
+      // Text rounds emit deltas immediately after a short NO_REPLY probe buffer.
       for (let round = 0; maxToolRounds === 0 || round < maxToolRounds; round += 1) {
         const forcedToolChoice = getForcedToolChoice({
           writeToolRequired,
@@ -279,13 +283,80 @@ export class AgentSessionGateway {
           successfulBashToolCalls,
         });
 
-        const response = await provider.complete({
+        // ── Stream one LLM round ────────────────────────────────────────────
+        let roundContent = '';
+        let roundToolCalls: Array<{ id: string; name: string; arguments: string }> | undefined;
+        let roundUsage: { promptTokens: number; completionTokens: number; totalTokens: number; cachedTokens?: number } | undefined;
+        let roundResponseId = '';
+        let roundFinishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
+
+        // Buffer the first few chars before emitting so we can abort if the
+        // model sends [[NO_REPLY]] without flashing partial text to the client.
+        const NO_REPLY_CHECK_LEN = '[[NO_REPLY]]'.length + 5;
+        let streamBuf = '';
+        let streamFlushed = false;
+
+        for await (const chunk of provider.stream({
           messages,
           tools: providerTools,
           toolChoice: forcedToolChoice,
           maxTokens: 1024,
           temperature: 0.4,
-        });
+        })) {
+          if (chunk.delta) {
+            roundContent += chunk.delta;
+
+            if (!streamFlushed) {
+              streamBuf += chunk.delta;
+              if (streamBuf.length >= NO_REPLY_CHECK_LEN) {
+                if (!streamBuf.startsWith('[[NO_REPLY')) {
+                  streamFlushed = true;
+                  chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:chunk', {
+                    tempId,
+                    agentId,
+                    channelId,
+                    delta: streamBuf,
+                  });
+                  streamBuf = '';
+                }
+                // else: it IS a NO_REPLY — stop buffering; content discarded later
+              }
+            } else {
+              chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:chunk', {
+                tempId,
+                agentId,
+                channelId,
+                delta: chunk.delta,
+              });
+            }
+          }
+
+          if (chunk.toolCalls) roundToolCalls = chunk.toolCalls;
+          if (chunk.usage) roundUsage = chunk.usage;
+          if (chunk.responseId) roundResponseId = chunk.responseId;
+          if (chunk.finishReason) roundFinishReason = chunk.finishReason;
+        }
+
+        // Flush any remaining buffer (short responses that never hit the threshold).
+        if (!streamFlushed && streamBuf && !streamBuf.startsWith('[[NO_REPLY')) {
+          chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:chunk', {
+            tempId,
+            agentId,
+            channelId,
+            delta: streamBuf,
+          });
+        }
+
+        // Reconstruct an LLMResponse-compatible object so the rest of the loop
+        // can use it without change.
+        const response = {
+          id: roundResponseId || `stream-${tempId}-${round}`,
+          content: roundContent,
+          finishReason: roundFinishReason,
+          toolCalls: roundToolCalls,
+          usage: roundUsage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          providerMetadata: { model: provider.model } as Record<string, unknown>,
+        };
 
         if (response.finishReason !== 'tool_calls' || !response.toolCalls || response.toolCalls.length === 0) {
           if (writeToolRequired && successfulWriteToolCalls === 0) {
@@ -493,34 +564,10 @@ export class AgentSessionGateway {
         return;
       }
 
-      // ── Stream the final response ─────────────────────────────────────────
-      // Emit the already-collected content as a single chunk. The content came
-      // from the tool loop's provider.complete() call — making a second LLM
-      // call via provider.stream() would waste tokens and produce different text.
-      // True token-level streaming (restructuring the last tool loop round to use
-      // stream() directly) is a follow-up optimization.
-      chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:chunk', {
-        tempId,
-        agentId,
-        channelId,
-        delta: rawContent,
-      });
-
-      const finalContent = rawContent;
-
-      if (!finalContent || finalContent === NO_REPLY_TOKEN) {
-        chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:end', {
-          tempId,
-          finalMessageId: '',
-          channelId,
-          createdAt: new Date().toISOString(),
-        });
-        return;
-      }
-
       // ── Extract relay commands, persist message ───────────────────────────
-      const { commands: relayCommands, cleanedContent } = extractRelayCommands(finalContent);
-      const persistedContent = cleanedContent || finalContent;
+      // rawContent was already streamed token-by-token to the socket above.
+      const { commands: relayCommands, cleanedContent } = extractRelayCommands(rawContent);
+      const persistedContent = cleanedContent || rawContent;
 
       const metadata = JSON.parse(
         JSON.stringify({

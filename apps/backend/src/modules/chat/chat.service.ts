@@ -9,6 +9,8 @@
  * - Future phases will extend edits, deletes, reactions, search, and read receipts.
  */
 
+import path from 'node:path';
+
 import type {
   AgentRoutingReason,
   CompactChannelSessionInput,
@@ -32,6 +34,98 @@ import { prisma } from '@/db/client.js';
 import { agentRoutingService } from '@/modules/agents/agent-routing.service.js';
 import { compactionService } from '@/modules/context/compaction.service.js';
 import { getChatNamespace, getChannelRoom } from '@/sockets/socket-server.js';
+import { workspaceService } from '@/modules/workspace/workspace.service.js';
+
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const TEXT_ATTACHMENT_MAX_BYTES = 256 * 1024;
+const TEXT_ATTACHMENT_MIME_PREFIXES = ['text/'];
+const TEXT_ATTACHMENT_MIMES = new Set([
+  'application/json',
+  'application/xml',
+  'application/yaml',
+  'application/x-yaml',
+  'application/javascript',
+]);
+const TEXT_ATTACHMENT_EXTENSIONS = new Set([
+  '.txt', '.md', '.json', '.yaml', '.yml', '.xml', '.csv', '.tsv', '.log', '.js', '.ts', '.jsx', '.tsx', '.css', '.html', '.py', '.sh', '.sql', '.env', '.ini', '.toml', '.cfg', '.conf',
+]);
+
+interface MessageAttachmentInput {
+  fileName: string;
+  mimeType: string;
+  contentBase64: string;
+}
+type SendMessageWithAttachmentsInput = SendMessageInput & {
+  attachments?: MessageAttachmentInput[];
+};
+
+function sanitizeAttachmentFileName(fileName: string) {
+  const cleaned = fileName.replace(/[\r\n\t]/g, ' ').replace(/[\\/]+/g, '-').trim();
+  return cleaned || `attachment-${Date.now()}`;
+}
+
+function buildAttachmentRelativePath(channelId: string, messageId: string, fileName: string) {
+  return `uploads/${channelId}/${messageId}/${sanitizeAttachmentFileName(fileName)}`;
+}
+
+function createAttachmentRoutingHint(content: string, attachments: Array<{ fileName: string }>) {
+  if (attachments.length === 0) return content;
+
+  const fileHint = `Uploaded files: ${attachments.map((attachment) => attachment.fileName).join(', ')}`;
+  return content.trim() ? `${content.trim()}\n\n${fileHint}` : fileHint;
+}
+
+function decodeAttachmentBase64(attachment: MessageAttachmentInput) {
+  const buffer = Buffer.from(attachment.contentBase64, 'base64');
+
+  if (buffer.byteLength === 0) {
+    throw new Error(`Attachment "${attachment.fileName}" is empty or invalid.`);
+  }
+
+  if (buffer.byteLength > MAX_ATTACHMENT_BYTES) {
+    throw new Error(`Attachment "${attachment.fileName}" exceeds the ${Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024))}MB limit.`);
+  }
+
+  return buffer;
+}
+
+function isTextAttachment(fileName: string, mimeType: string, fileSize: number) {
+  if (fileSize > TEXT_ATTACHMENT_MAX_BYTES) return false;
+
+  const normalizedMime = mimeType.split(';')[0]?.trim().toLowerCase() ?? '';
+  if (TEXT_ATTACHMENT_MIME_PREFIXES.some((prefix) => normalizedMime.startsWith(prefix))) return true;
+  if (TEXT_ATTACHMENT_MIMES.has(normalizedMime)) return true;
+
+  return TEXT_ATTACHMENT_EXTENSIONS.has(path.extname(fileName).toLowerCase());
+}
+
+function extractTextAttachmentContent(fileName: string, mimeType: string, buffer: Buffer) {
+  if (!isTextAttachment(fileName, mimeType, buffer.byteLength)) {
+    return null;
+  }
+
+  return buffer.toString('utf8');
+}
+
+function buildAttachmentMetadataEntries(entries: Array<{
+  id: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  relativePath: string;
+  fileKey: string;
+  textPreview?: string | null;
+}>) {
+  return entries.map((entry) => ({
+    id: entry.id,
+    fileName: entry.fileName,
+    mimeType: entry.mimeType,
+    fileSize: entry.fileSize,
+    relativePath: entry.relativePath,
+    fileKey: entry.fileKey,
+    textPreview: entry.textPreview ?? null,
+  }));
+}
 
 function serializeWorkspace(workspace: { id: string; name: string; slug: string }): WorkspaceSummary {
   return {
@@ -206,6 +300,77 @@ async function ensureChannelMembership(userId: string, channelId: string) {
   if (!membership) {
     throw new Error('You do not have access to this channel.');
   }
+}
+
+async function persistMessageAttachments(input: {
+  userId: string;
+  workspaceId: string;
+  channelId: string;
+  messageId: string;
+  agentIds: string[];
+  attachments: MessageAttachmentInput[];
+}) {
+  const results: Array<{
+    id: string;
+    fileName: string;
+    mimeType: string;
+    fileSize: number;
+    relativePath: string;
+    fileKey: string;
+    textPreview?: string | null;
+  }> = [];
+  const usedFileNames = new Map<string, number>();
+
+  for (const attachment of input.attachments) {
+    const sanitizedBaseFileName = sanitizeAttachmentFileName(attachment.fileName);
+    const seenCount = usedFileNames.get(sanitizedBaseFileName) ?? 0;
+    usedFileNames.set(sanitizedBaseFileName, seenCount + 1);
+    const ext = path.extname(sanitizedBaseFileName);
+    const stem = ext ? sanitizedBaseFileName.slice(0, -ext.length) : sanitizedBaseFileName;
+    const sanitizedFileName = seenCount === 0 ? sanitizedBaseFileName : `${stem}-${seenCount + 1}${ext}`;
+    const buffer = decodeAttachmentBase64({ ...attachment, fileName: sanitizedFileName });
+    const relativePath = buildAttachmentRelativePath(input.channelId, input.messageId, sanitizedFileName);
+    const fileKey = `channels/${input.channelId}/messages/${input.messageId}/${sanitizedFileName}`;
+    const textContent = extractTextAttachmentContent(sanitizedFileName, attachment.mimeType, buffer);
+
+    const createdAttachment = await prisma.attachment.create({
+      data: {
+        messageId: input.messageId,
+        uploadedBy: input.userId,
+        fileKey,
+        fileName: sanitizedFileName,
+        fileSize: buffer.byteLength,
+        mimeType: attachment.mimeType,
+        virusScanStatus: 'CLEAN',
+      },
+    });
+
+    for (const agentId of input.agentIds) {
+      await workspaceService.saveUploadedFileToAgentWorkspace({
+        agentId,
+        workspaceId: input.workspaceId,
+        uploadedBy: input.userId,
+        relativePath,
+        fileName: sanitizedFileName,
+        mimeType: attachment.mimeType,
+        fileSize: buffer.byteLength,
+        contentBuffer: buffer,
+        textContent,
+      });
+    }
+
+    results.push({
+      id: createdAttachment.id,
+      fileName: sanitizedFileName,
+      mimeType: attachment.mimeType,
+      fileSize: buffer.byteLength,
+      relativePath,
+      fileKey,
+      textPreview: textContent ? textContent.slice(0, 4000) : null,
+    });
+  }
+
+  return results;
 }
 
 export class ChatService {
@@ -515,17 +680,44 @@ export class ChatService {
   }
 
   async createUserMessage(userId: string, input: SendMessageInput): Promise<MessageRecord> {
+    const messageInput = input as SendMessageWithAttachmentsInput;
+
     await ensureChannelMembership(userId, input.channelId);
+
+    const channel = await prisma.channel.findUnique({
+      where: { id: input.channelId },
+      select: {
+        workspaceId: true,
+        agentMemberships: {
+          select: { agentId: true },
+        },
+      },
+    });
+
+    if (!channel) {
+      throw new Error('Channel not found.');
+    }
 
     const message = await prisma.message.create({
       data: {
         channelId: input.channelId,
         senderId: userId,
         senderType: 'USER',
-        content: input.content,
+        content: input.content.trim(),
         contentType: input.contentType as ContentType,
       },
     });
+
+    const attachmentEntries = messageInput.attachments?.length
+      ? await persistMessageAttachments({
+          userId,
+          workspaceId: channel.workspaceId,
+          channelId: input.channelId,
+          messageId: message.id,
+          agentIds: channel.agentMemberships.map((membership) => membership.agentId),
+          attachments: messageInput.attachments,
+        })
+      : [];
 
     const sender = await prisma.user.findUnique({
       where: { id: userId },
@@ -541,25 +733,25 @@ export class ChatService {
       channelId: input.channelId,
       senderId: userId,
       senderType: serializedBase.senderType,
-      content: serializedBase.content,
+      content: createAttachmentRoutingHint(serializedBase.content, attachmentEntries),
       messageId: message.id,
     });
+
+    const metadata = {
+      routing,
+      attachments: buildAttachmentMetadataEntries(attachmentEntries),
+    };
 
     await prisma.message.update({
       where: { id: message.id },
       data: {
-        metadata: {
-          routing,
-        },
+        metadata: metadata as Prisma.InputJsonValue,
       },
     });
 
     const serialized = {
       ...serializedBase,
-      metadata: {
-        ...(serializedBase.metadata ?? {}),
-        routing,
-      },
+      metadata,
     };
 
     getChatNamespace().to(getChannelRoom(input.channelId)).emit('message:new', serialized);

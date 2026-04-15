@@ -48,6 +48,11 @@ class InMemoryRedis {
     return this.store.get(key) ?? null;
   }
 
+  async set(key: string, value: string, _exMode?: string, _ttl?: number) {
+    this.store.set(key, value);
+    return 'OK' as const;
+  }
+
   async del(key: string) {
     this.store.delete(key);
     return 1;

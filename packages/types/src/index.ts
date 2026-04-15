@@ -15,6 +15,7 @@ export * from './auth.js';
 export * from './chat.js';
 export * from './agents.js';
 export * from './providers.js';
+export * from './providers-admin.js';
 export * from './context.js';
 export * from './workspace.js';
 export * from './socket-events.js';

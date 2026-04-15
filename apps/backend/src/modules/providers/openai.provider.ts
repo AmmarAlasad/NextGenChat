@@ -10,11 +10,15 @@
  */
 
 import OpenAI from 'openai';
-import type { ChatCompletionMessageParam, ChatCompletionTool, ChatCompletionToolChoiceOption } from 'openai/resources/chat/completions';
+import type { ChatCompletionContentPart, ChatCompletionMessageParam, ChatCompletionTool, ChatCompletionToolChoiceOption } from 'openai/resources/chat/completions';
 
 import type { FinishReason, LLMMessage, LLMRequestOptions, LLMResponse, LLMStreamChunk } from '@nextgenchat/types';
 
 import { BaseProvider } from '@/modules/providers/base.provider.js';
+
+interface OpenAITextBlock { type: 'text'; text: string; }
+interface OpenAIImageBlock { type: 'image'; mimeType: string; dataBase64: string; }
+type OpenAIContentBlock = OpenAITextBlock | OpenAIImageBlock;
 
 function mapRole(role: LLMMessage['role']) {
   if (role === 'system') {
@@ -24,11 +28,45 @@ function mapRole(role: LLMMessage['role']) {
   return role;
 }
 
+function mapContent(content: LLMMessage['content']) {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  return (content as unknown as OpenAIContentBlock[]).map((block): ChatCompletionContentPart => {
+    if (block.type === 'text') {
+      return { type: 'text' as const, text: block.text };
+    }
+
+    return {
+      type: 'image_url' as const,
+      image_url: {
+        url: `data:${block.mimeType};base64,${block.dataBase64}`,
+      },
+    };
+  });
+}
+
+function textOnlyContent(content: LLMMessage['content']) {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  return (content as unknown as OpenAIContentBlock[])
+    .filter((block): block is OpenAITextBlock => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n\n');
+}
+
 function mapMessage(message: LLMMessage): ChatCompletionMessageParam {
   if (message.role === 'assistant' && message.toolCalls) {
+    const assistantText = typeof message.content === 'string'
+      ? message.content
+      : (message.content as unknown as OpenAIContentBlock[]).filter((block) => block.type === 'text').map((block) => block.text).join('\n\n');
+
     return {
       role: 'assistant',
-      content: message.content,
+      content: assistantText,
       tool_calls: message.toolCalls.map((toolCall) => ({
         id: toolCall.id,
         type: 'function',
@@ -43,14 +81,30 @@ function mapMessage(message: LLMMessage): ChatCompletionMessageParam {
   if (message.role === 'tool') {
     return {
       role: 'tool',
-      content: message.content,
+      content: textOnlyContent(message.content),
       tool_call_id: message.toolCallId ?? '',
     };
   }
 
+  if (message.role === 'system') {
+    return {
+      role: 'developer',
+      content: textOnlyContent(message.content),
+    };
+  }
+
+  if (message.role === 'user') {
+    return {
+      role: 'user',
+      content: mapContent(message.content),
+    };
+  }
+
   return {
-    role: mapRole(message.role) as 'developer' | 'user' | 'assistant',
-    content: message.content,
+    role: 'assistant',
+    content: typeof message.content === 'string'
+      ? message.content
+      : (message.content as unknown as OpenAIContentBlock[]).filter((block) => block.type === 'text').map((block) => block.text).join('\n\n'),
   };
 }
 
@@ -95,11 +149,11 @@ function usesMaxCompletionTokens(model: string) {
 }
 
 export class OpenAIProvider extends BaseProvider {
-  readonly name = 'openai' as const;
+  readonly name: import('@nextgenchat/types').ProviderName = 'openai';
 
   readonly supportedModels = ['gpt-5.4', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1', 'o3', 'o3-mini'];
 
-  private readonly client: OpenAI;
+  protected readonly client: OpenAI;
 
   constructor(apiKey: string, model: string) {
     super(apiKey, model);
@@ -219,18 +273,18 @@ export class OpenAIProvider extends BaseProvider {
     // Terminal chunk — signals end of stream with metadata for persistence.
     yield {
       delta: '',
+      toolCalls: toolCallBuffers.size > 0
+        ? Array.from(toolCallBuffers.values()).map((buf) => ({
+            id: buf.id,
+            name: buf.name,
+            arguments: buf.args,
+          }))
+        : undefined,
       finishReason,
       responseId,
       usage,
       providerMetadata: {
         model: this.model,
-        toolCalls: toolCallBuffers.size > 0
-          ? Array.from(toolCallBuffers.values()).map((buf) => ({
-              id: buf.id,
-              name: buf.name,
-              arguments: buf.args,
-            }))
-          : undefined,
       },
     };
   }

@@ -26,6 +26,10 @@ import type {
   AgentCreatorChatMessage,
   AgentCreatorChatResponse,
   AgentDetail,
+  ProviderModel,
+  ProviderModelsResponse,
+  ProviderStatus,
+  UpdateAgentProviderInput,
   AgentDocRecord,
   AgentScheduleRecord,
   AgentSkill,
@@ -254,6 +258,10 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
   const [browserMcp, setBrowserMcp] = useState<AgentBrowserMcpState | null>(null);
   const [savingBrowserMcp, setSavingBrowserMcp] = useState(false);
   const [schedules, setSchedules] = useState<AgentScheduleRecord[]>([]);
+  const [providerStatuses, setProviderStatuses] = useState<ProviderStatus[]>([]);
+  const [providerModelOptions, setProviderModelOptions] = useState<ProviderModel[]>([]);
+  const [providerSelection, setProviderSelection] = useState<UpdateAgentProviderInput>({ providerName: 'openai', model: 'gpt-5.4' });
+  const [loadingProviderModels, setLoadingProviderModels] = useState(false);
   const [deletingScheduleId, setDeletingScheduleId] = useState<string | null>(null);
   const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null);
   const [savingScheduleId, setSavingScheduleId] = useState<string | null>(null);
@@ -275,13 +283,14 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
       setLoading(true); setError(null);
       try {
         const headers = { Authorization: `Bearer ${accessToken}` };
-        const [nextAgent, nextDocs, nextAgency, nextSkills, nextBrowserMcp, nextSchedules] = await Promise.all([
+        const [nextAgent, nextDocs, nextAgency, nextSkills, nextBrowserMcp, nextSchedules, nextProviders] = await Promise.all([
           apiJson<AgentDetail>(`/agents/${agentId}`, { headers }),
           apiJson<AgentDocRecord[]>(`/agents/${agentId}/docs`, { headers }),
           apiJson<WorkspaceDocRecord>('/workspace/agency', { headers }),
           apiJson<AgentSkill[]>(`/agents/${agentId}/skills`, { headers }),
           apiJson<AgentBrowserMcpState>(`/agents/${agentId}/browser-mcp`, { headers }),
           apiJson<AgentScheduleRecord[]>(`/agents/${agentId}/schedules`, { headers }),
+          apiJson<ProviderStatus[]>('/providers', { headers }),
         ]);
         if (!active) return;
         setAgent(nextAgent);
@@ -300,6 +309,11 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
         setSkills(nextSkills);
         setBrowserMcp(nextBrowserMcp);
         setSchedules(nextSchedules);
+        setProviderStatuses(nextProviders);
+        setProviderSelection({
+          providerName: (nextAgent.providerName ?? 'openai') as UpdateAgentProviderInput['providerName'],
+          model: nextAgent.model ?? 'gpt-5.4',
+        });
       } catch (loadError) {
         if (active) setError(loadError instanceof Error ? loadError.message : 'Failed to load agent workspace.');
       } finally {
@@ -311,11 +325,44 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
   }, [accessToken, agentId]);
 
   const activeDoc = docs[activeTab] ?? null;
+  const selectedProviderStatus = providerStatuses.find((provider) => provider.providerName === providerSelection.providerName) ?? null;
 
   useEffect(() => {
     setDraft(activeDoc?.content ?? '');
     setSavedAt(activeDoc?.updatedAt ?? null);
   }, [activeDoc]);
+
+  useEffect(() => {
+    if (!accessToken || !providerSelection.providerName) return;
+
+    let active = true;
+    setLoadingProviderModels(true);
+
+    void apiJson<ProviderModelsResponse>(`/providers/${providerSelection.providerName}/models`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }).then((response) => {
+      if (!active) return;
+      setProviderModelOptions(response.models);
+      setProviderSelection((current) => {
+        if (response.models.some((model) => model.id === current.model)) {
+          return current;
+        }
+
+        return {
+          ...current,
+          model: response.models[0]?.id ?? current.model,
+        };
+      });
+    }).catch((loadError) => {
+      if (!active) return;
+      setProviderModelOptions([]);
+      setError(loadError instanceof Error ? loadError.message : 'Failed to load provider models.');
+    }).finally(() => {
+      if (active) setLoadingProviderModels(false);
+    });
+
+    return () => { active = false; };
+  }, [accessToken, providerSelection.providerName]);
 
   useEffect(() => {
     if (creatorScrollRef.current) {
@@ -326,11 +373,15 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
   const hasDocChanges = useMemo(() => draft !== (activeDoc?.content ?? ''), [activeDoc?.content, draft]);
   const hasAgentChanges = useMemo(() => {
     if (!agent) return false;
-    return JSON.stringify(agentForm) !== JSON.stringify({
+    const agentSettingsChanged = JSON.stringify(agentForm) !== JSON.stringify({
       name: agent.name, persona: agent.persona ?? '', systemPrompt: agent.systemPrompt ?? '',
       voiceTone: agent.voiceTone ?? '', triggerMode: agent.triggerMode, status: agent.status,
     });
-  }, [agent, agentForm]);
+    const providerChanged = providerSelection.providerName !== (agent.providerName ?? 'openai')
+      || providerSelection.model !== (agent.model ?? 'gpt-5.4');
+
+    return agentSettingsChanged || providerChanged;
+  }, [agent, agentForm, providerSelection]);
   const hasAgencyChanges = agencyDraft !== (workspaceAgency?.content ?? '');
 
   async function saveDoc() {
@@ -354,6 +405,9 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
     try {
       await apiJson(`/agents/${agentId}`, {
         method: 'PATCH', headers: { Authorization: `Bearer ${accessToken}` }, body: JSON.stringify(agentForm),
+      });
+      await apiJson(`/agents/${agentId}/provider`, {
+        method: 'PUT', headers: { Authorization: `Bearer ${accessToken}` }, body: JSON.stringify(providerSelection),
       });
       const refreshed = await apiJson<AgentDetail>(`/agents/${agentId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
       setAgent(refreshed);
@@ -939,6 +993,69 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
                     <Field label="System Prompt">
                       <FTextarea value={agentForm.systemPrompt ?? ''} onChange={(v) => setAgentForm((c) => ({ ...c, systemPrompt: v }))} placeholder="System prompt override…" rows={4} />
                     </Field>
+                  </div>
+
+                  <div
+                    className="rounded-xl p-5 space-y-4"
+                    style={{ background: 'var(--surface-container-lowest)', border: '1px solid var(--outline-variant)' }}
+                  >
+                    <div>
+                      <h3 className="font-headline text-sm font-semibold text-on-surface">AI Provider</h3>
+                      <p className="mt-1 text-[11px] text-on-surface-variant/40">
+                        Choose which provider and model this agent uses. Global provider credentials are managed in Settings.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <Field label="Provider">
+                        <FSelect
+                          value={providerSelection.providerName}
+                          onChange={(value) => setProviderSelection((current) => ({
+                            ...current,
+                            providerName: value as UpdateAgentProviderInput['providerName'],
+                          }))}
+                        >
+                          {providerStatuses.map((provider) => (
+                            <option key={provider.providerName} value={provider.providerName}>
+                              {provider.label}
+                              {provider.isConfigured ? '' : ' (not configured)'}
+                            </option>
+                          ))}
+                        </FSelect>
+                      </Field>
+
+                      <Field label="Model">
+                        <FSelect
+                          value={providerSelection.model}
+                          onChange={(value) => setProviderSelection((current) => ({ ...current, model: value }))}
+                        >
+                          {providerModelOptions.map((model) => (
+                            <option key={model.id} value={model.id}>{model.name}</option>
+                          ))}
+                        </FSelect>
+                      </Field>
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-md px-3 py-2 text-[11px]" style={fieldBase}>
+                      <span>
+                        {selectedProviderStatus?.isConfigured
+                          ? `${selectedProviderStatus.label} is configured and ready to use.`
+                          : `${selectedProviderStatus?.label ?? 'Provider'} still needs credentials in global settings.`}
+                      </span>
+                      <span className="text-on-surface-variant/50">
+                        {loadingProviderModels ? 'Loading models…' : `${providerModelOptions.length} models`}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-end">
+                      <Link
+                        className="rounded-md px-3 py-1.5 text-[11px] font-semibold transition hover:bg-white/10"
+                        href="/settings"
+                        style={{ border: '1px solid var(--outline-variant)', color: 'var(--on-surface-variant)' }}
+                      >
+                        Open global settings
+                      </Link>
+                    </div>
                   </div>
 
                   <div

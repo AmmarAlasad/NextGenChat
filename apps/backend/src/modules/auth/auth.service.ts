@@ -14,9 +14,9 @@ import { randomBytes } from 'node:crypto';
 import argon2 from 'argon2';
 import jwt from 'jsonwebtoken';
 
-import type { LoginInput } from '@nextgenchat/types';
+import type { LoginInput, ProviderName, SetupInput } from '@nextgenchat/types';
 
-import type { SetupInput } from '@/modules/auth/auth.schema.js';
+import { STATIC_PROVIDER_MODELS } from '@nextgenchat/types';
 
 import {
   ACCESS_TOKEN_TTL_SECONDS,
@@ -36,6 +36,12 @@ import { redis } from '@/lib/redis.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
 
 const FAILED_LOGIN_PREFIX = 'auth:failed-login:';
+const SETUP_PENDING_CODEX_KEY = 'SETUP_PENDING_PROVIDER_OPENAI_CODEX_OAUTH';
+type SetupProviderInput = SetupInput & {
+  providerName?: ProviderName;
+  providerModel?: string;
+  providerApiKey?: string;
+};
 
 interface SessionUser {
   id: string;
@@ -84,6 +90,33 @@ async function issueSession(
   };
 }
 
+function resolveInitialProviderName(input: SetupProviderInput): ProviderName {
+  return input.providerName ?? 'openai';
+}
+
+function resolveInitialProviderModel(input: SetupProviderInput, providerName: ProviderName): string {
+  if (input.providerModel) {
+    return input.providerModel;
+  }
+
+  if (providerName === 'openai') {
+    return env.OPENAI_MODEL || DEFAULT_AGENT_MODEL;
+  }
+
+  return STATIC_PROVIDER_MODELS[providerName]?.[0]?.id ?? DEFAULT_AGENT_MODEL;
+}
+
+function getEnvFallbackApiKey(providerName: ProviderName): string | undefined {
+  const fallbacks: Partial<Record<ProviderName, string | undefined>> = {
+    openai: env.OPENAI_API_KEY && env.OPENAI_API_KEY !== 'disabled-local-key' ? env.OPENAI_API_KEY : undefined,
+    anthropic: process.env.ANTHROPIC_API_KEY,
+    kimi: process.env.KIMI_API_KEY,
+    openrouter: process.env.OPENROUTER_API_KEY,
+  };
+
+  return fallbacks[providerName];
+}
+
 export class AuthService {
   async getSetupRequired() {
     const count = await prisma.user.count();
@@ -91,6 +124,8 @@ export class AuthService {
   }
 
   async setupOwner(input: SetupInput) {
+    const setupInput = input as SetupProviderInput;
+
     if (!(await this.getSetupRequired())) {
       throw new Error('Setup has already been completed.');
     }
@@ -106,11 +141,17 @@ export class AuthService {
       },
     });
 
+    const workspaceSlug = input.agencyName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || DEFAULT_WORKSPACE_SLUG;
+
     const workspace = await prisma.workspace.create({
       data: {
         ownerId: user.id,
-        name: DEFAULT_WORKSPACE_NAME,
-        slug: DEFAULT_WORKSPACE_SLUG,
+        name: input.agencyName,
+        slug: workspaceSlug,
         memberships: {
           create: {
             userId: user.id,
@@ -134,6 +175,39 @@ export class AuthService {
       },
     });
 
+    const providerName = resolveInitialProviderName(setupInput);
+    const providerModel = resolveInitialProviderModel(setupInput, providerName);
+
+    if (providerName === 'openai-codex-oauth') {
+      const pendingOauth = await prisma.systemSetting.findUnique({
+        where: { key: SETUP_PENDING_CODEX_KEY },
+      });
+
+      if (!pendingOauth) {
+        throw new Error('OpenAI Codex is not connected yet. Connect it in setup before creating the first agent.');
+      }
+
+      await prisma.globalProviderConfig.upsert({
+        where: { providerName },
+        update: { credentials: encryptJson(pendingOauth.value), isActive: true },
+        create: { providerName, credentials: encryptJson(pendingOauth.value), isActive: true },
+      });
+
+      await prisma.systemSetting.delete({ where: { key: SETUP_PENDING_CODEX_KEY } }).catch(() => undefined);
+    } else if (providerName !== 'openai' || setupInput.providerApiKey) {
+      const apiKey = setupInput.providerApiKey?.trim() || getEnvFallbackApiKey(providerName);
+
+      if (!apiKey) {
+        throw new Error(`An API key is required for ${providerName} before creating the first agent.`);
+      }
+
+      await prisma.globalProviderConfig.upsert({
+        where: { providerName },
+        update: { credentials: encryptJson({ apiKey }), isActive: true },
+        create: { providerName, credentials: encryptJson({ apiKey }), isActive: true },
+      });
+    }
+
     const agent = await prisma.agent.create({
       data: {
         workspaceId: workspace.id,
@@ -156,8 +230,8 @@ export class AuthService {
         },
         providerConfig: {
           create: {
-            providerName: 'openai',
-            model: env.OPENAI_MODEL || DEFAULT_AGENT_MODEL,
+            providerName,
+            model: providerModel,
             credentials: encryptJson({}),
             config: { temperature: 0.4, maxTokens: 1024 },
           },
@@ -169,8 +243,9 @@ export class AuthService {
     });
 
     // Create default doc files on disk first, then let AgentCreatorAgent
-    // overwrite them with content tailored to the agent's description.
+    // overwrite them with content tailored to the descriptions.
     await workspaceService.ensureAgentDocs(agent.id);
+    void agentCreatorService.generateAndWriteAgencyDoc(user.id, workspace.name, input.agencyDescription);
     void agentCreatorService.generateAndWriteAgentDocs(agent.id, input.agentName, input.agentDescription);
 
     await prisma.systemSetting.upsert({

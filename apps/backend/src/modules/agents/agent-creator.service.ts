@@ -437,6 +437,55 @@ export class AgentCreatorService {
   }
 
   /**
+   * Generates agency.md from a plain-language agency description and writes it
+   * to the workspace-level WorkspaceFile record. Called fire-and-forget during
+   * the setup wizard when the user provides an agency description.
+   * Falls back to the existing default silently if generation fails.
+   */
+  async generateAndWriteAgencyDoc(userId: string, workspaceName: string, description: string): Promise<void> {
+    const provider = getProvider();
+
+    if (!provider) {
+      return;
+    }
+
+    try {
+      const response = await provider.complete({
+        messages: [
+          {
+            role: 'system',
+            content: `You are an expert at writing agency.md — the workspace-level constitution shared by all AI agents in a workspace.
+
+agency.md defines:
+- The workspace mission and purpose
+- Operating standards for all agents
+- Tone, values, and collaboration style
+- Any shared context or constraints
+
+Write clear, professional markdown. Be specific and actionable. Do NOT use generic filler. Write in second person when addressing agents ("You are part of…").`,
+          },
+          {
+            role: 'user',
+            content: `Write a complete agency.md for the following workspace.\n\nWorkspace name: ${workspaceName}\nDescription: ${description}\n\nReturn only the markdown content — no code fences, no explanation.`,
+          },
+        ],
+        maxTokens: 1_500,
+        temperature: 0.3,
+      });
+
+      const content = response.content.trim();
+
+      if (content.length < 100) {
+        return;
+      }
+
+      await workspaceService.updateWorkspaceAgencyDoc(userId, content);
+    } catch (error) {
+      console.warn('[agent-creator] Agency doc generation failed, using default:', error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
    * Runs a chat turn with AgentCreatorAgent. Loads the agent's current files
    * as context, processes the user message, validates each proposed update,
    * writes safe updates to disk, and returns the reply + list of what changed.
