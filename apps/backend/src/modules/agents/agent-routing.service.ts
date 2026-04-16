@@ -65,6 +65,16 @@ export class AgentRoutingService {
     // ── Group channels — first pass: gate checks ──────────────────────────────
     const diagnostics: AgentRoutingReason[] = [];
     const selectedAgentIds: string[] = [];
+    const inProgressProjectAssignees = channel.projectId && input.senderType === 'USER'
+      ? new Set((await prisma.projectTicket.findMany({
+          where: {
+            projectId: channel.projectId,
+            status: 'IN_PROGRESS',
+            assignedAgentId: { not: null },
+          },
+          select: { assignedAgentId: true },
+        })).map((ticket) => ticket.assignedAgentId).filter((agentId): agentId is string => typeof agentId === 'string'))
+      : null;
 
     // Agents that passed basic gates and need a wakeup LLM check.
     const wakeupCandidates: Array<{ agentId: string; agentName: string }> = [];
@@ -115,6 +125,29 @@ export class AgentRoutingService {
       }
 
       const mentioned = isExplicitlyMentioned(input.content, { slug: agent.slug, name: agent.name }, input.senderType);
+
+      if (inProgressProjectAssignees?.size) {
+        if (inProgressProjectAssignees.has(agent.id)) {
+          diagnostics.push({
+            agentId: agent.id,
+            score: 1,
+            decision: 'RESPOND',
+            reason: 'Agent currently owns an in-progress project ticket in this project.',
+          });
+          selectedAgentIds.push(agent.id);
+          continue;
+        }
+
+        if (!mentioned) {
+          diagnostics.push({
+            agentId: agent.id,
+            score: 0,
+            decision: 'IGNORE',
+            reason: 'Another agent currently owns the active in-progress project ticket for this project.',
+          });
+          continue;
+        }
+      }
 
       // ── Gate 3: MENTIONS_ONLY ───────────────────────────────────────────────
       if (agent.triggerMode === 'MENTIONS_ONLY') {

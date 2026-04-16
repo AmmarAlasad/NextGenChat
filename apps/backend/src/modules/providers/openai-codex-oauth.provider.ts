@@ -297,6 +297,7 @@ export class OpenAICodexOAuthProvider extends BaseProvider {
       method: 'POST',
       headers: buildCodexHeaders(this.oauthCredentials.accessToken, accountId),
       body: JSON.stringify(buildCodexBody(this.model, options)),
+      signal: options.abortSignal as AbortSignal | undefined,
     });
 
     if (!response.ok) {
@@ -343,7 +344,7 @@ export class OpenAICodexOAuthProvider extends BaseProvider {
     const response = await this.createCodexResponse(options);
     const toolBuffers = new Map<string, { id: string; name: string; arguments: string }>();
     let responseId = '';
-    let finishReason: FinishReason = 'stop';
+    let finishReason: FinishReason;
     let usage: LLMStreamChunk['usage'];
 
     for await (const event of parseSse(response)) {

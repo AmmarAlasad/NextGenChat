@@ -172,6 +172,10 @@ vi.mock('@/modules/gateway/session-lane.js', () => ({
     getLane: () => ({
       enqueue: async <T>(task: () => Promise<T>) => task(),
     }),
+    registerActiveTurn: vi.fn(() => undefined),
+    getActiveTurn: vi.fn(() => null),
+    clearActiveTurn: vi.fn(() => undefined),
+    cancelActiveTurn: vi.fn(() => null),
   },
 }));
 
@@ -180,6 +184,24 @@ vi.mock('@/modules/providers/registry.js', () => ({
     get: vi.fn(async () => ({
       name: 'openai',
       model: 'gpt-5.4',
+      stream: vi.fn(async function* () {
+        const next = state.providerResponses.shift();
+        if (!next) {
+          throw new Error('No more provider responses queued.');
+        }
+
+        if (typeof next.content === 'string' && next.content.length > 0) {
+          yield { delta: next.content };
+        }
+
+        yield {
+          delta: '',
+          toolCalls: next.toolCalls as Array<{ id: string; name: string; arguments: string }> | undefined,
+          finishReason: next.finishReason as 'stop' | 'tool_calls' | 'length' | 'error',
+          responseId: next.id as string,
+          usage: next.usage as { promptTokens: number; completionTokens: number; totalTokens: number },
+        };
+      }),
       complete: vi.fn(async () => {
         const next = state.providerResponses.shift();
         if (!next) {

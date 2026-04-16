@@ -21,6 +21,7 @@ const booleanish = z
   .transform((value) => value === true || value === 'true');
 
 const defaultAgentWorkspaceDir = path.join(process.env.HOME ?? process.cwd(), '.nextgenchat', 'agent-workspaces');
+const defaultProjectWorkspaceDir = path.join(process.env.HOME ?? process.cwd(), '.nextgenchat', 'project-workspaces');
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -38,6 +39,7 @@ const envSchema = z.object({
   OPENAI_MODEL: z.string().min(1).default('gpt-5.4'),
   AGENT_MAX_TOOL_ROUNDS: z.coerce.number().int().min(0).default(24),
   AGENT_WORKSPACES_DIR: z.string().min(1).default(defaultAgentWorkspaceDir),
+  PROJECT_WORKSPACES_DIR: z.string().min(1).default(defaultProjectWorkspaceDir),
   MINIO_ENDPOINT: z.string().default('localhost'),
   MINIO_PORT: z.coerce.number().int().positive().default(9000),
   MINIO_USE_SSL: z.coerce.boolean().default(false),
@@ -62,6 +64,7 @@ export const env = {
   ...baseEnv,
   agentMaxToolRounds: baseEnv.AGENT_MAX_TOOL_ROUNDS,
   agentWorkspacesDir: path.resolve(baseEnv.AGENT_WORKSPACES_DIR),
+  projectWorkspacesDir: path.resolve(baseEnv.PROJECT_WORKSPACES_DIR),
   isDevelopment: baseEnv.NODE_ENV === 'development',
   isProduction: baseEnv.NODE_ENV === 'production',
   isLocalMode: baseEnv.DEPLOYMENT_MODE === 'local',

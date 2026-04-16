@@ -55,6 +55,25 @@ interface MessageAttachmentInput {
   mimeType: string;
   contentBase64: string;
 }
+
+interface PersistedMessageAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  relativePath: string;
+  fileKey: string;
+  textPreview?: string | null;
+}
+
+interface AgentMessageAttachmentInput {
+  fileName: string;
+  mimeType: string;
+  relativePath: string;
+  contentBuffer: Buffer;
+  textPreview?: string | null;
+}
+
 type SendMessageWithAttachmentsInput = SendMessageInput & {
   attachments?: MessageAttachmentInput[];
 };
@@ -66,6 +85,10 @@ function sanitizeAttachmentFileName(fileName: string) {
 
 function buildAttachmentRelativePath(channelId: string, messageId: string, fileName: string) {
   return `uploads/${channelId}/${messageId}/${sanitizeAttachmentFileName(fileName)}`;
+}
+
+function buildAttachmentDownloadPath(attachmentId: string) {
+  return `/attachments/${attachmentId}/download`;
 }
 
 function createAttachmentRoutingHint(content: string, attachments: Array<{ fileName: string }>) {
@@ -123,6 +146,7 @@ function buildAttachmentMetadataEntries(entries: Array<{
     fileSize: entry.fileSize,
     relativePath: entry.relativePath,
     fileKey: entry.fileKey,
+    downloadPath: buildAttachmentDownloadPath(entry.id),
     textPreview: entry.textPreview ?? null,
   }));
 }
@@ -191,6 +215,10 @@ function isInternalMessage(metadata: unknown) {
     && 'internal' in metadata
     && (metadata as Record<string, unknown>).internal === true,
   );
+}
+
+function estimateSessionTextTokens(content: string) {
+  return Math.ceil(content.length / 4) + 4;
 }
 
 async function ensureWorkspaceMembership(userId: string, workspaceId: string) {
@@ -310,15 +338,7 @@ async function persistMessageAttachments(input: {
   agentIds: string[];
   attachments: MessageAttachmentInput[];
 }) {
-  const results: Array<{
-    id: string;
-    fileName: string;
-    mimeType: string;
-    fileSize: number;
-    relativePath: string;
-    fileKey: string;
-    textPreview?: string | null;
-  }> = [];
+  const results: PersistedMessageAttachment[] = [];
   const usedFileNames = new Map<string, number>();
 
   for (const attachment of input.attachments) {
@@ -367,6 +387,41 @@ async function persistMessageAttachments(input: {
       relativePath,
       fileKey,
       textPreview: textContent ? textContent.slice(0, 4000) : null,
+    });
+  }
+
+  return results;
+}
+
+async function persistAgentMessageAttachments(input: {
+  messageId: string;
+  senderId: string;
+  attachments: AgentMessageAttachmentInput[];
+}) {
+  const results: PersistedMessageAttachment[] = [];
+
+  for (const attachment of input.attachments) {
+    const fileKey = `agents/${input.senderId}/${attachment.relativePath}`;
+    const createdAttachment = await prisma.attachment.create({
+      data: {
+        messageId: input.messageId,
+        uploadedBy: null,
+        fileKey,
+        fileName: attachment.fileName,
+        fileSize: attachment.contentBuffer.byteLength,
+        mimeType: attachment.mimeType,
+        virusScanStatus: 'CLEAN',
+      },
+    });
+
+    results.push({
+      id: createdAttachment.id,
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+      fileSize: attachment.contentBuffer.byteLength,
+      relativePath: attachment.relativePath,
+      fileKey,
+      textPreview: attachment.textPreview ?? null,
     });
   }
 
@@ -795,14 +850,142 @@ export class ChatService {
     });
   }
 
+  async createAgentAttachmentMessage(input: {
+    channelId: string;
+    senderId: string;
+    content: string;
+    contentType: ContentType;
+    metadata?: Record<string, unknown> | null;
+    attachments: AgentMessageAttachmentInput[];
+  }): Promise<MessageRecord> {
+    const message = await prisma.message.create({
+      data: {
+        channelId: input.channelId,
+        senderId: input.senderId,
+        senderType: 'AGENT',
+        content: input.content,
+        contentType: input.contentType,
+      },
+    });
+
+    const attachmentEntries = await persistAgentMessageAttachments({
+      messageId: message.id,
+      senderId: input.senderId,
+      attachments: input.attachments,
+    });
+
+    const metadata = {
+      ...(input.metadata ?? {}),
+      attachments: buildAttachmentMetadataEntries(attachmentEntries),
+    };
+
+    await prisma.message.update({
+      where: { id: message.id },
+      data: {
+        metadata: metadata as Prisma.InputJsonValue,
+      },
+    });
+
+    const agent = await prisma.agent.findUnique({
+      where: { id: input.senderId },
+      select: { name: true },
+    });
+
+    return serializeMessage({
+      ...message,
+      senderName: agent?.name ?? null,
+      metadata,
+    });
+  }
+
+  async downloadAttachment(userId: string, attachmentId: string) {
+    const attachment = await prisma.attachment.findUnique({
+      where: { id: attachmentId },
+      include: {
+        message: {
+          select: {
+            channelId: true,
+            senderId: true,
+            senderType: true,
+            metadata: true,
+            channel: {
+              select: {
+                agentMemberships: {
+                                  select: { agentId: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!attachment) {
+      throw new Error('Attachment not found.');
+    }
+
+    await ensureChannelMembership(userId, attachment.message.channelId);
+
+    const metadataAttachments = Array.isArray((attachment.message.metadata as { attachments?: unknown } | null | undefined)?.attachments)
+      ? (attachment.message.metadata as { attachments: Array<Record<string, unknown>> }).attachments
+      : [];
+    const metadataEntry = metadataAttachments.find((entry) => entry?.id === attachment.id);
+    const relativePath = typeof metadataEntry?.relativePath === 'string' ? metadataEntry.relativePath : null;
+
+    if (!relativePath) {
+      throw new Error('Attachment is missing a readable workspace path.');
+    }
+
+    const sourceAgentId = attachment.message.senderType === 'AGENT'
+      ? attachment.message.senderId
+      : (attachment.message.channel.agentMemberships[0]?.agentId ?? null);
+
+    if (!sourceAgentId) {
+      throw new Error('Attachment file is not available for download in this channel yet.');
+    }
+
+    const file = await workspaceService.readAgentWorkspaceBinaryFile(sourceAgentId, relativePath);
+
+    return {
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+      content: file.content,
+    };
+  }
+
   async ensureSocketChannelAccess(userId: string, channelId: string) {
     await ensureChannelMembership(userId, channelId);
+  }
+
+  async stopAgentExecution(userId: string, channelId: string, agentId: string) {
+    await ensureChannelMembership(userId, channelId);
+
+    const membership = await prisma.agentChannelMembership.findFirst({
+      where: { channelId, agentId },
+      select: { agentId: true },
+    });
+
+    if (!membership) {
+      throw new Error('That agent is not a member of this channel.');
+    }
+
+    const { agentSessionGateway } = await import('@/modules/gateway/agent-session.gateway.js');
+    const cancelled = agentSessionGateway.cancelAgentTurn(agentId, channelId);
+
+    return {
+      stopped: Boolean(cancelled),
+      agentId,
+      channelId,
+      message: cancelled
+        ? 'Stop requested for the active agent run.'
+        : 'That agent is not currently running in this channel.',
+    };
   }
 
   async getChannelSession(userId: string, channelId: string): Promise<ChannelSessionSummary> {
     await ensureChannelMembership(userId, channelId);
 
-    const [messages, summaryCount] = await Promise.all([
+    const [messages, summaryCount, latestSummary] = await Promise.all([
       prisma.message.findMany({
         where: {
           channelId,
@@ -817,6 +1000,15 @@ export class ChatService {
       }),
       prisma.conversationSummary.count({
         where: { channelId },
+      }),
+      prisma.conversationSummary.findFirst({
+        where: { channelId },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          tokenCount: true,
+          covesToMessageId: true,
+          firstKeptMessageId: true,
+        },
       }),
     ]);
 
@@ -857,6 +1049,38 @@ export class ChatService {
       lastActiveAt = message.createdAt.toISOString();
     }
 
+    let estimatedCurrentContextUsed = latestContextUsed;
+    if (latestSummary) {
+      let candidateCreatedAtGte: Date | undefined;
+
+      if (latestSummary.firstKeptMessageId) {
+        const firstKept = await prisma.message.findUnique({
+          where: { id: latestSummary.firstKeptMessageId },
+          select: { createdAt: true },
+        });
+        candidateCreatedAtGte = firstKept?.createdAt;
+      } else if (latestSummary.covesToMessageId) {
+        const coveredTo = await prisma.message.findUnique({
+          where: { id: latestSummary.covesToMessageId },
+          select: { createdAt: true },
+        });
+        if (coveredTo) {
+          candidateCreatedAtGte = new Date(coveredTo.createdAt.getTime() + 1);
+        }
+      }
+
+      const remainingMessages = await prisma.message.findMany({
+        where: {
+          channelId,
+          contentType: { not: 'SYSTEM' },
+          ...(candidateCreatedAtGte ? { createdAt: { gte: candidateCreatedAtGte } } : {}),
+        },
+        select: { content: true },
+      });
+
+      estimatedCurrentContextUsed = latestSummary.tokenCount + remainingMessages.reduce((sum, message) => sum + estimateSessionTextTokens(message.content), 0);
+    }
+
     return {
       sessionId: channelId,
       channelId,
@@ -866,11 +1090,11 @@ export class ChatService {
       totalPromptTokens,
       totalCompletionTokens,
       totalCachedTokens,
-      latestContextUsed,
+      latestContextUsed: estimatedCurrentContextUsed,
       latestContextLimit,
       latestContextUsagePercent:
-        latestContextUsed !== null && latestContextLimit !== null && latestContextLimit > 0
-          ? Math.round((latestContextUsed / latestContextLimit) * 1000) / 10
+        estimatedCurrentContextUsed !== null && latestContextLimit !== null && latestContextLimit > 0
+          ? Math.round((estimatedCurrentContextUsed / latestContextLimit) * 1000) / 10
           : null,
       summaryCount,
       lastActiveAt,
@@ -933,6 +1157,33 @@ export class ChatService {
     const compactedAgentNames = results.filter((result) => result.compacted).map((result) => result.agentName);
     const compactedAgentIds = results.filter((result) => result.compacted).map((result) => result.agentId);
     const skippedAgentNames = results.filter((result) => !result.compacted).map((result) => result.agentName);
+
+    if (compactedAgentNames.length > 0) {
+      const message = await prisma.message.create({
+        data: {
+          channelId,
+          senderId: compactedAgentIds[0],
+          senderType: 'AGENT',
+          content: compactedAgentNames.length === 1
+            ? `Session compacted for ${compactedAgentNames[0]}.`
+            : `Session compacted for ${compactedAgentNames.join(', ')}.`,
+          contentType: 'SYSTEM',
+          metadata: {
+            compaction: {
+              agentIds: compactedAgentIds,
+              agentNames: compactedAgentNames,
+              skippedAgentNames,
+              origin: 'manual',
+            },
+          },
+        },
+      });
+
+      getChatNamespace().to(getChannelRoom(channelId)).emit('message:new', serializeMessage({
+        ...message,
+        senderName: compactedAgentNames[0] ?? null,
+      }));
+    }
 
     return {
       compactedAgentIds,

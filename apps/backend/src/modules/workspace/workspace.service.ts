@@ -576,6 +576,18 @@ export class WorkspaceService {
     return this.readAgentWorkspaceFile(agentId, fileName);
   }
 
+  async saveBufferToAgentWorkspace(agentId: string, relativePath: string, contentBuffer: Buffer) {
+    const slug = await this.fetchSlug(agentId);
+    const filePath = resolveAgentWorkspacePath(slug, relativePath);
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, contentBuffer);
+
+    return {
+      filePath,
+      relativePath,
+    };
+  }
+
   async saveUploadedFileToAgentWorkspace(input: {
     agentId: string;
     workspaceId: string;

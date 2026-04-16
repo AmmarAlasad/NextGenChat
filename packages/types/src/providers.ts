@@ -71,6 +71,7 @@ export interface LLMRequestOptions {
   temperature?: number;
   stream?: boolean;
   systemPrompt?: string;
+  abortSignal?: unknown;
 }
 
 export interface LLMTool {

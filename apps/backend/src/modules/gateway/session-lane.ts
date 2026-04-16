@@ -42,11 +42,24 @@ class SessionLane {
   }
 }
 
+export interface ActiveTurnRecord {
+  agentId: string;
+  channelId: string;
+  tempId: string;
+  cancel(): void;
+  cancelled: boolean;
+}
+
 class SessionLaneRegistry {
   private readonly lanes = new Map<string, SessionLane>();
+  private readonly activeTurns = new Map<string, ActiveTurnRecord>();
+
+  private buildKey(agentId: string, channelId: string) {
+    return `${agentId}:${channelId}`;
+  }
 
   getLane(agentId: string, channelId: string): SessionLane {
-    const key = `${agentId}:${channelId}`;
+    const key = this.buildKey(agentId, channelId);
     let lane = this.lanes.get(key);
 
     if (!lane) {
@@ -55,6 +68,36 @@ class SessionLaneRegistry {
     }
 
     return lane;
+  }
+
+  registerActiveTurn(turn: Omit<ActiveTurnRecord, 'cancelled'>) {
+    this.activeTurns.set(this.buildKey(turn.agentId, turn.channelId), {
+      ...turn,
+      cancelled: false,
+    });
+  }
+
+  getActiveTurn(agentId: string, channelId: string) {
+    return this.activeTurns.get(this.buildKey(agentId, channelId)) ?? null;
+  }
+
+  clearActiveTurn(agentId: string, channelId: string, tempId?: string) {
+    const key = this.buildKey(agentId, channelId);
+    const current = this.activeTurns.get(key);
+
+    if (!current) return;
+    if (tempId && current.tempId !== tempId) return;
+
+    this.activeTurns.delete(key);
+  }
+
+  cancelActiveTurn(agentId: string, channelId: string) {
+    const turn = this.getActiveTurn(agentId, channelId);
+    if (!turn) return null;
+
+    turn.cancelled = true;
+    turn.cancel();
+    return turn;
   }
 }
 

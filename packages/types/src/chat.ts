@@ -140,6 +140,14 @@ export const CompactChannelSessionResultSchema = z.object({
 });
 export type CompactChannelSessionResult = z.infer<typeof CompactChannelSessionResultSchema>;
 
+export const StopAgentExecutionResultSchema = z.object({
+  stopped: z.boolean(),
+  agentId: z.string().uuid(),
+  channelId: z.string().uuid(),
+  message: z.string(),
+});
+export type StopAgentExecutionResult = z.infer<typeof StopAgentExecutionResultSchema>;
+
 export const EditMessageSchema = z.object({
   content: z.string().min(1).max(32_000),
 });

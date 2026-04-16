@@ -76,6 +76,68 @@ export const ProjectSummarySchema = z.object({
 });
 export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
 
+export const ProjectFileRecordSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  fileName: z.string(),
+  relativePath: z.string(),
+  mimeType: z.string(),
+  fileSize: z.number().int().nonnegative(),
+  updatedAt: z.string(),
+  downloadPath: z.string(),
+  editable: z.boolean(),
+});
+export type ProjectFileRecord = z.infer<typeof ProjectFileRecordSchema>;
+
+export const UploadProjectFileSchema = z.object({
+  fileName: z.string().min(1).max(255),
+  mimeType: z.string().min(1).max(200),
+  contentBase64: z.string().min(1),
+});
+export type UploadProjectFileInput = z.infer<typeof UploadProjectFileSchema>;
+
+export const ProjectTicketStatusSchema = z.enum(['TODO', 'ASSIGNED', 'IN_PROGRESS', 'DONE', 'BLOCKED', 'CANCELLED']);
+export type ProjectTicketStatus = z.infer<typeof ProjectTicketStatusSchema>;
+
+export const ProjectTicketAssignmentModeSchema = z.enum(['MANUAL', 'AUTO']);
+export type ProjectTicketAssignmentMode = z.infer<typeof ProjectTicketAssignmentModeSchema>;
+
+export const ProjectTicketRecordSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  title: z.string(),
+  description: z.string().nullable(),
+  status: ProjectTicketStatusSchema,
+  assignedAgentId: z.string().uuid().nullable(),
+  assignedAgentName: z.string().nullable(),
+  createdByUserId: z.string().uuid(),
+  createdByUsername: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  claimedAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+});
+export type ProjectTicketRecord = z.infer<typeof ProjectTicketRecordSchema>;
+
+export const CreateProjectTicketSchema = z.object({
+  title: z.string().min(1).max(200),
+  description: z.string().max(8_000).optional(),
+  assignmentMode: ProjectTicketAssignmentModeSchema.default('MANUAL'),
+  assignedAgentId: z.string().uuid().optional(),
+});
+export type CreateProjectTicketInput = z.infer<typeof CreateProjectTicketSchema>;
+
+export const UpdateProjectTicketSchema = z.object({
+  title: z.string().min(1).max(200).optional(),
+  description: z.string().max(8_000).nullable().optional(),
+  status: ProjectTicketStatusSchema.optional(),
+  assignedAgentId: z.string().uuid().nullable().optional(),
+  channelMessage: z.string().max(8_000).optional(),
+}).refine((value) => value.title !== undefined || value.description !== undefined || value.status !== undefined || value.assignedAgentId !== undefined, {
+  message: 'At least one ticket field must be provided.',
+});
+export type UpdateProjectTicketInput = z.infer<typeof UpdateProjectTicketSchema>;
+
 // Workspace-level (shared) document — not tied to a specific agent.
 export const WorkspaceDocRecordSchema = z.object({
   fileName: z.string(),

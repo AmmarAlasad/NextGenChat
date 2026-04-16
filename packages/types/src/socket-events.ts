@@ -135,6 +135,12 @@ export interface ServerToClientEvents {
     selectedCount: number;
   }) => void;
 
+  'agent:turn:start': (data: {
+    agentId: string;
+    channelId: string;
+    turnId: string;
+  }) => void;
+
   // Emitted when an agent starts executing a tool mid-turn.
   // turnId matches the tempId of the in-progress streaming bubble.
   'agent:tool:start': (data: {

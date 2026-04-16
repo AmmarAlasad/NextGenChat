@@ -50,6 +50,7 @@ const BASH_TOOL_NAME = 'workspace_bash';
 const SEND_CHANNEL_MESSAGE_TOOL_NAME = 'channel_send_message';
 const TODO_WRITE_TOOL_NAME = 'todowrite';
 const SEND_REPLY_TOOL_NAME = 'send_reply';
+const PROJECT_TICKET_SOURCE = 'project-ticket';
 const MAX_REQUIRED_TOOL_RETRIES = 8;
 
 const RELAY_TAG_RE = /<<send:([^>]+)>>([\s\S]*?)<<\/send>>/gi;
@@ -58,6 +59,12 @@ const RELAY_TAG_RE = /<<send:([^>]+)>>([\s\S]*?)<<\/send>>/gi;
 // messages to prevent the LLM from echoing the format in its own replies.
 const MESSAGE_WRAPPER_RE = /^<message\b[^>]*>\s*/i;
 const MESSAGE_WRAPPER_CLOSE_RE = /\s*<\/message>\s*$/i;
+
+class TurnCancelledError extends Error {
+  constructor() {
+    super('Agent turn was cancelled.');
+  }
+}
 
 // ── Pure helpers (moved verbatim from agent.processor.ts) ────────────────────
 
@@ -80,6 +87,18 @@ function safeParseToolArguments(raw: string) {
 
 function stripMessageWrapper(text: string): string {
   return text.replace(MESSAGE_WRAPPER_RE, '').replace(MESSAGE_WRAPPER_CLOSE_RE, '').trim();
+}
+
+function buildProjectTicketWorkflowInstruction(input: { ticketId: string | null }) {
+  return [
+    'You are handling a project ticket wakeup.',
+    input.ticketId ? `Ticket id: ${input.ticketId}` : null,
+    'If the ticket fits your role, claim it immediately with `project_ticket_claim` before doing substantive work.',
+    'If claim fails because another agent already owns it, stop and return [[NO_REPLY]].',
+    'After the work is complete, send a visible update to the current project channel with `send_reply` or `send_file` if you produced an artifact.',
+    'Only after the visible project-channel update should you call `project_ticket_update` with status `DONE`.',
+    'If you cannot finish, update the ticket to `BLOCKED` with a concise note instead of leaving it unclear.',
+  ].filter(Boolean).join('\n');
 }
 
 function requestLikelyNeedsWriteTool(content: string) {
@@ -189,6 +208,10 @@ async function executeRelayCommands(commands: RelayCommand[], agentId: string): 
 // ── Gateway ──────────────────────────────────────────────────────────────────
 
 export class AgentSessionGateway {
+  cancelAgentTurn(agentId: string, channelId: string) {
+    return sessionLaneRegistry.cancelActiveTurn(agentId, channelId);
+  }
+
   /**
    * Entry point called by agent.processor.ts (BullMQ worker) and local queue.
    * Enqueues the turn on the agent's session lane to ensure serial execution
@@ -206,8 +229,30 @@ export class AgentSessionGateway {
   private async executeTurn(agentId: string, channelId: string, messageId: string): Promise<void> {
     const tempId = randomUUID();
     const chatNamespace = getChatNamespace();
+    const turnAbortController = new AbortController();
+    let triggerMetadata: Record<string, unknown> | null = null;
+
+    const throwIfCancelled = () => {
+      const turn = sessionLaneRegistry.getActiveTurn(agentId, channelId);
+      if (turnAbortController.signal.aborted || (turn && turn.tempId === tempId && turn.cancelled)) {
+        throw new TurnCancelledError();
+      }
+    };
 
     try {
+      sessionLaneRegistry.registerActiveTurn({
+        agentId,
+        channelId,
+        tempId,
+        cancel: () => turnAbortController.abort(),
+      });
+
+      chatNamespace.to(getChannelRoom(channelId)).emit('agent:turn:start', {
+        agentId,
+        channelId,
+        turnId: tempId,
+      });
+
       await ensureDefaultAgentTools(agentId);
 
       const triggeringMessage = await prisma.message.findUnique({
@@ -233,7 +278,7 @@ export class AgentSessionGateway {
       const messages = [...context.messages];
       const toolExecutionSummaries: TaskToolExecutionSummary[] = [];
       const triggerContent = triggeringMessage?.content ?? '';
-      const triggerMetadata = (triggeringMessage?.metadata as Record<string, unknown> | null) ?? null;
+      triggerMetadata = (triggeringMessage?.metadata as Record<string, unknown> | null) ?? null;
       const scheduleTriggerMetadata = triggerMetadata?.source === 'agent-cron'
         ? {
             source: 'agent-cron',
@@ -241,15 +286,24 @@ export class AgentSessionGateway {
             kind: typeof triggerMetadata.kind === 'string' ? triggerMetadata.kind : null,
           }
         : null;
+      const projectTicketTriggerMetadata = triggerMetadata?.source === PROJECT_TICKET_SOURCE
+        ? {
+            source: PROJECT_TICKET_SOURCE,
+            ticketId: typeof triggerMetadata.ticketId === 'string' ? triggerMetadata.ticketId : null,
+          }
+        : null;
       const initialTaskState = await readPersistedTaskState(agentId, agentSlug);
 
       const writeToolRequired = requestLikelyNeedsWriteTool(triggerContent);
       const bashToolRequired = requestLikelyNeedsBashTool(triggerContent);
-      let taskMode = requestLikelyNeedsTaskMode(triggerContent)
+      const taskMode = Boolean(projectTicketTriggerMetadata)
+        || requestLikelyNeedsTaskMode(triggerContent)
         || (initialTaskState.totalTodos > 0 && requestLikelyResumesTask(triggerContent));
-      const taskModeReason = taskMode
-        ? (initialTaskState.totalTodos > 0 && requestLikelyResumesTask(triggerContent) ? 'resume-existing-task' : 'heuristic')
-        : 'none';
+      const taskModeReason = projectTicketTriggerMetadata
+        ? 'project-ticket'
+        : taskMode
+          ? (initialTaskState.totalTodos > 0 && requestLikelyResumesTask(triggerContent) ? 'resume-existing-task' : 'heuristic')
+          : 'none';
       const maxToolRounds = (await import('@/config/env.js')).env.agentMaxToolRounds;
 
       let successfulWriteToolCalls = 0;
@@ -270,6 +324,14 @@ export class AgentSessionGateway {
       if (taskMode) {
         messages.push({ role: 'system', content: buildTaskModeInstruction() });
       }
+      if (projectTicketTriggerMetadata) {
+        messages.push({
+          role: 'system',
+          content: buildProjectTicketWorkflowInstruction({
+            ticketId: projectTicketTriggerMetadata.ticketId,
+          }),
+        });
+      }
 
       // ── Tool loop (streaming) ─────────────────────────────────────────────
       // Each round uses provider.stream() so text deltas reach the client in
@@ -277,6 +339,8 @@ export class AgentSessionGateway {
       // emits no text content, so no spurious socket events are fired.
       // Text rounds emit deltas immediately after a short NO_REPLY probe buffer.
       for (let round = 0; maxToolRounds === 0 || round < maxToolRounds; round += 1) {
+        throwIfCancelled();
+
         const forcedToolChoice = getForcedToolChoice({
           writeToolRequired,
           bashToolRequired,
@@ -291,61 +355,24 @@ export class AgentSessionGateway {
         let roundResponseId = '';
         let roundFinishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
 
-        // Buffer the first few chars before emitting so we can abort if the
-        // model sends [[NO_REPLY]] without flashing partial text to the client.
-        const NO_REPLY_CHECK_LEN = '[[NO_REPLY]]'.length + 5;
-        let streamBuf = '';
-        let streamFlushed = false;
-
         for await (const chunk of provider.stream({
           messages,
           tools: providerTools,
           toolChoice: forcedToolChoice,
           maxTokens: 1024,
           temperature: 0.4,
+          abortSignal: turnAbortController.signal,
         })) {
+          throwIfCancelled();
+
           if (chunk.delta) {
             roundContent += chunk.delta;
-
-            if (!streamFlushed) {
-              streamBuf += chunk.delta;
-              if (streamBuf.length >= NO_REPLY_CHECK_LEN) {
-                if (!streamBuf.startsWith('[[NO_REPLY')) {
-                  streamFlushed = true;
-                  chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:chunk', {
-                    tempId,
-                    agentId,
-                    channelId,
-                    delta: streamBuf,
-                  });
-                  streamBuf = '';
-                }
-                // else: it IS a NO_REPLY — stop buffering; content discarded later
-              }
-            } else {
-              chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:chunk', {
-                tempId,
-                agentId,
-                channelId,
-                delta: chunk.delta,
-              });
-            }
           }
 
           if (chunk.toolCalls) roundToolCalls = chunk.toolCalls;
           if (chunk.usage) roundUsage = chunk.usage;
           if (chunk.responseId) roundResponseId = chunk.responseId;
           if (chunk.finishReason) roundFinishReason = chunk.finishReason;
-        }
-
-        // Flush any remaining buffer (short responses that never hit the threshold).
-        if (!streamFlushed && streamBuf && !streamBuf.startsWith('[[NO_REPLY')) {
-          chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:chunk', {
-            tempId,
-            agentId,
-            channelId,
-            delta: streamBuf,
-          });
         }
 
         // Reconstruct an LLMResponse-compatible object so the rest of the loop
@@ -493,7 +520,6 @@ export class AgentSessionGateway {
           if (success && toolCall.name === WRITE_TOOL_NAME) successfulWriteToolCalls += 1;
           if (success && toolCall.name === BASH_TOOL_NAME) successfulBashToolCalls += 1;
           if (success && [TODO_WRITE_TOOL_NAME, WRITE_TOOL_NAME, BASH_TOOL_NAME, SEND_REPLY_TOOL_NAME].includes(toolCall.name)) {
-            taskMode = taskMode || [TODO_WRITE_TOOL_NAME, SEND_REPLY_TOOL_NAME].includes(toolCall.name);
             taskState = await readPersistedTaskState(agentId, agentSlug);
 
             // Broadcast the updated todo list so the frontend can render a live task panel.
@@ -565,6 +591,13 @@ export class AgentSessionGateway {
         });
         return;
       }
+
+      chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:chunk', {
+        tempId,
+        agentId,
+        channelId,
+        delta: rawContent,
+      });
 
       // ── Extract relay commands, persist message ───────────────────────────
       // rawContent was already streamed token-by-token to the socket above.
@@ -644,7 +677,27 @@ export class AgentSessionGateway {
         messageId: message.id,
       });
     } catch (error) {
+      if (error instanceof TurnCancelledError || (error instanceof Error && error.name === 'AbortError')) {
+        chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:end', {
+          tempId,
+          finalMessageId: '',
+          channelId,
+          createdAt: new Date().toISOString(),
+        });
+        return;
+      }
+
       const errorMessage = error instanceof Error ? error.message : 'Agent processing failed.';
+
+      if (triggerMetadata?.internal === true && triggerMetadata?.source === PROJECT_TICKET_SOURCE) {
+        chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:end', {
+          tempId,
+          finalMessageId: '',
+          channelId,
+          createdAt: new Date().toISOString(),
+        });
+        return;
+      }
 
       const fallbackMessage = await prisma.message.create({
         data: {
@@ -677,6 +730,8 @@ export class AgentSessionGateway {
       }));
 
       throw error;
+    } finally {
+      sessionLaneRegistry.clearActiveTurn(agentId, channelId, tempId);
     }
   }
 }

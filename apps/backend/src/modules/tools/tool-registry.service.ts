@@ -20,6 +20,7 @@ import { skillService } from '@/modules/agents/skill.service.js';
 import { skillInstallerService } from '@/modules/agents/skill-installer.service.js';
 import { chatService } from '@/modules/chat/chat.service.js';
 import { mcpService } from '@/modules/mcp/mcp.service.js';
+import { projectService } from '@/modules/project/project.service.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
 import { getChatNamespace, getChannelRoom } from '@/sockets/socket-server.js';
 import { agentCronService } from '../agents/agent-cron.service.js';
@@ -36,6 +37,13 @@ const TOOL_GLOB = 'workspace_glob';
 const TOOL_GREP = 'workspace_grep';
 const TOOL_SEND_CHANNEL_MESSAGE = 'channel_send_message';
 const TOOL_SEND_REPLY = 'send_reply';
+const TOOL_SEND_FILE = 'send_file';
+const TOOL_PROJECT_LIST_FILES = 'project_list_files';
+const TOOL_PROJECT_READ_FILE = 'project_read_file';
+const TOOL_PROJECT_WRITE_FILE = 'project_write_file';
+const TOOL_PROJECT_TICKET_LIST = 'project_ticket_list';
+const TOOL_PROJECT_TICKET_CLAIM = 'project_ticket_claim';
+const TOOL_PROJECT_TICKET_UPDATE = 'project_ticket_update';
 const TOOL_TODO_READ = 'todoread';
 const TOOL_TODO_WRITE = 'todowrite';
 const TOOL_WEBSEARCH = 'websearch';
@@ -49,6 +57,7 @@ const TOOL_SCHEDULE_DELETE = 'schedule_delete';
 const TOOL_STATE_DIR = '.nextgenchat';
 const TODO_STATE_FILE = `${TOOL_STATE_DIR}/todo-state.json`;
 const SCHEDULE_STATE_FILE = `${TOOL_STATE_DIR}/schedules.json`;
+const OUTBOUND_FILE_DIR = `${TOOL_STATE_DIR}/sent-files`;
 const DEFAULT_SEARCH_LIMIT = 200;
 const MESSAGE_WRAPPER_RE = /^<message\b[^>]*>\s*/i;
 const MESSAGE_WRAPPER_CLOSE_RE = /\s*<\/message>\s*$/i;
@@ -95,6 +104,35 @@ const SendChannelMessageToolSchema = z.object({
 
 const SendReplyToolSchema = z.object({
   content: z.string().min(1).max(32_000).describe('Intermediate progress update to post into the current channel.'),
+});
+
+const SendFileToolSchema = z.object({
+  filePath: z.string().min(1).describe('Absolute or workspace-relative path to an existing file inside the agent workspace.'),
+  content: z.string().max(32_000).optional().describe('Optional message to accompany the file in chat.'),
+});
+
+const ProjectListFilesToolSchema = z.object({});
+
+const ProjectReadFileToolSchema = z.object({
+  filePath: z.string().min(1).describe('Project-relative path to a shared file, for example "specs/api.md" or "project.md".'),
+});
+
+const ProjectWriteFileToolSchema = z.object({
+  filePath: z.string().min(1).describe('Project-relative path to the shared file to create or update.'),
+  content: z.string().describe('Full text content for the project file.'),
+});
+
+const ProjectTicketListToolSchema = z.object({});
+
+const ProjectTicketClaimToolSchema = z.object({
+  ticketId: z.string().uuid().describe('Ticket id to claim and move into IN_PROGRESS.'),
+});
+
+const ProjectTicketUpdateToolSchema = z.object({
+  ticketId: z.string().uuid().describe('Ticket id to update.'),
+  status: z.enum(['TODO', 'ASSIGNED', 'IN_PROGRESS', 'DONE', 'BLOCKED', 'CANCELLED']).optional().describe('Next ticket status.'),
+  description: z.string().nullable().optional().describe('Optional updated ticket description or resolution note.'),
+  channelMessage: z.string().max(8_000).optional().describe('Required when finishing a ticket. Visible project-channel update to send before marking the ticket done.'),
 });
 
 const TodoItemSchema = z.object({
@@ -471,6 +509,94 @@ function resolveAllowedDirectory(agentSlug: string, value: string | undefined) {
   return resolveAllowedPath(agentSlug, value);
 }
 
+function resolveSendableFilePath(agentSlug: string, value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error('File path is required.');
+  }
+
+  if (!path.isAbsolute(trimmed)) {
+    return resolveAllowedPath(agentSlug, trimmed);
+  }
+
+  const candidate = path.resolve(trimmed);
+  const allowedRoots = [
+    process.env.HOME ? path.resolve(process.env.HOME) : null,
+    path.resolve(process.cwd()),
+  ].filter((root): root is string => Boolean(root));
+  const blockedRoots = [
+    '/bin', '/boot', '/dev', '/etc', '/lib', '/lib64', '/proc', '/root', '/run', '/sbin', '/sys', '/usr', '/var',
+  ].map((root) => path.resolve(root));
+
+  if (blockedRoots.some((root) => candidate === root || candidate.startsWith(`${root}${path.sep}`))) {
+    throw new Error('send_file cannot access protected system paths.');
+  }
+
+  if (allowedRoots.some((root) => candidate === root || candidate.startsWith(`${root}${path.sep}`))) {
+    return candidate;
+  }
+
+  throw new Error('Absolute paths for send_file must stay inside the current user home or repository.');
+}
+
+function displaySendableFilePath(agentSlug: string, filePath: string) {
+  const workspaceRoot = path.resolve(workspaceService.getAgentWorkspaceDir(agentSlug));
+  const absolutePath = path.resolve(filePath);
+  const workspaceRelative = path.relative(workspaceRoot, absolutePath);
+
+  if (!workspaceRelative.startsWith('..') && !path.isAbsolute(workspaceRelative)) {
+    return workspaceRelative || '.';
+  }
+
+  const repoRoot = path.resolve(process.cwd());
+  const repoRelative = path.relative(repoRoot, absolutePath);
+  if (!repoRelative.startsWith('..') && !path.isAbsolute(repoRelative)) {
+    return repoRelative || '.';
+  }
+
+  const homeRoot = process.env.HOME ? path.resolve(process.env.HOME) : null;
+  if (homeRoot) {
+    const homeRelative = path.relative(homeRoot, absolutePath);
+    if (!homeRelative.startsWith('..') && !path.isAbsolute(homeRelative)) {
+      return `~/${homeRelative}`;
+    }
+  }
+
+  return absolutePath;
+}
+
+function inferMimeType(filePath: string) {
+  switch (path.extname(filePath).toLowerCase()) {
+    case '.txt': return 'text/plain';
+    case '.md': return 'text/markdown';
+    case '.json': return 'application/json';
+    case '.csv': return 'text/csv';
+    case '.ts': return 'text/typescript';
+    case '.tsx': return 'text/tsx';
+    case '.js': return 'text/javascript';
+    case '.jsx': return 'text/jsx';
+    case '.html': return 'text/html';
+    case '.css': return 'text/css';
+    case '.xml': return 'application/xml';
+    case '.yaml':
+    case '.yml': return 'application/yaml';
+    case '.pdf': return 'application/pdf';
+    case '.png': return 'image/png';
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg';
+    case '.gif': return 'image/gif';
+    case '.webp': return 'image/webp';
+    case '.svg': return 'image/svg+xml';
+    case '.zip': return 'application/zip';
+    default: return 'application/octet-stream';
+  }
+}
+
+function sanitizeOutboundFileName(fileName: string) {
+  const cleaned = fileName.replace(/[\r\n\t]/g, ' ').replace(/[\\/]+/g, '-').trim();
+  return cleaned || `attachment-${Date.now()}`;
+}
+
 function stripHtmlTags(html: string) {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -517,6 +643,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
     usageGuidance: [
       'Use this when you already know the file path and need the exact contents.',
       'Use `filePath="."` to list the workspace root or any directory contents.',
+      'In project channels, use the project file tools first for shared project files and user-provided project artifacts. Use this tool for agent-private files and local working state.',
       'Prefer this over `workspace_bash` for normal file reads.',
     ],
     schema: ReadToolSchema,
@@ -582,6 +709,7 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
     usageGuidance: [
       'Use this to create a new file or fully overwrite an existing file inside the workspace.',
       'Read a file first before overwriting it unless you are creating it from scratch.',
+      'In project channels, prefer `project_write_file` for shared project deliverables and user-requested artifacts that belong to the whole project.',
       'Do not claim a file changed unless this tool succeeded.',
     ],
     schema: WriteToolSchema,
@@ -1021,6 +1149,294 @@ const builtInTools: Record<string, BuiltInToolDefinition> = {
           messageId: message.id,
           content,
         },
+      };
+    },
+  },
+  [TOOL_SEND_FILE]: {
+    name: TOOL_SEND_FILE,
+    description: 'Send an existing accessible file into the current chat as a downloadable attachment. Use this when the user asked you to give them a file, export, report, image, or other artifact.',
+    usageGuidance: [
+      'Use this for files that already exist either in your workspace or at an allowed absolute path inside the current user home or repository.',
+      'Pair it with a short caption in `content` when context helps, but keep the file itself as the main deliverable.',
+      'Do not claim the file was sent unless this tool succeeded.',
+    ],
+    schema: SendFileToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        filePath: { type: 'string', description: 'Absolute or workspace-relative path to an existing file inside the agent workspace.' },
+        content: { type: 'string', description: 'Optional message to accompany the file in chat.' },
+      },
+      required: ['filePath'],
+    },
+    async execute(args, context) {
+      const input = SendFileToolSchema.parse(args);
+      const filePath = resolveSendableFilePath(context.agentSlug, input.filePath);
+      const fileStat = await stat(filePath).catch(() => null);
+      const displayPath = displaySendableFilePath(context.agentSlug, filePath);
+
+      if (!fileStat) {
+        throw new Error(`File not found: ${displayPath}`);
+      }
+
+      if (!fileStat.isFile()) {
+        throw new Error('send_file requires a file path, not a directory.');
+      }
+
+      const buffer = await readFile(filePath);
+      const mimeType = inferMimeType(filePath);
+      const textPreview = mimeType.startsWith('text/') || ['application/json', 'application/xml', 'application/yaml'].includes(mimeType)
+        ? buffer.toString('utf8').slice(0, 4000)
+        : null;
+      const content = typeof input.content === 'string' ? sanitizeVisibleText(input.content) : '';
+      const outboundRelativePath = `${OUTBOUND_FILE_DIR}/${context.channelId}/${Date.now()}-${sanitizeOutboundFileName(path.basename(filePath))}`;
+      const storedFile = await workspaceService.saveBufferToAgentWorkspace(context.agentId, outboundRelativePath, buffer);
+
+      const message = await chatService.createAgentAttachmentMessage({
+        channelId: context.channelId,
+        senderId: context.agentId,
+        content,
+        contentType: content ? 'MARKDOWN' : 'FILE',
+        metadata: {
+          viaTool: TOOL_SEND_FILE,
+        },
+        attachments: [{
+          fileName: path.basename(filePath),
+          mimeType,
+          relativePath: storedFile.relativePath,
+          contentBuffer: buffer,
+          textPreview,
+        }],
+      });
+
+      getChatNamespace().to(getChannelRoom(context.channelId)).emit('message:new', message);
+
+      return {
+        output: `Sent file to the current channel: ${path.basename(filePath)}`,
+        structuredOutput: {
+          channelId: context.channelId,
+          messageId: message.id,
+          fileName: path.basename(filePath),
+          filePath: displayPath,
+          mimeType,
+          sizeBytes: fileStat.size,
+        },
+      };
+    },
+  },
+  [TOOL_PROJECT_LIST_FILES]: {
+    name: TOOL_PROJECT_LIST_FILES,
+    description: 'List shared files and active tickets for the current project. Use this in project channels to understand shared project state before choosing follow-up tools.',
+    usageGuidance: [
+      'Use this in project channels when you need to see what shared files or open tickets already exist.',
+      'Use `project_read_file` to inspect a specific shared file after listing.',
+      'Use `project_ticket_claim` or `project_ticket_update` only after confirming the ticket is relevant to you.',
+    ],
+    schema: ProjectListFilesToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    async execute(_args, context) {
+      const projectState = await projectService.listProjectFilesForAgent(context.agentId, context.channelId);
+      const lines = [
+        '<project_state>',
+        '<files>',
+        ...(projectState.files.length > 0
+          ? projectState.files.map((file) => `${file.relativePath} (${file.mimeType}, ${file.fileSize} bytes)`)
+          : ['(none)']),
+        '</files>',
+        '<tickets>',
+        ...(projectState.tickets.length > 0
+          ? projectState.tickets.map((ticket) => `[${ticket.status}] ${ticket.id}: ${ticket.title}${ticket.assignedAgentName ? ` — assigned to ${ticket.assignedAgentName}` : ''}`)
+          : ['(none)']),
+        '</tickets>',
+        '</project_state>',
+      ];
+
+      return {
+        output: lines.join('\n'),
+        structuredOutput: {
+          fileCount: projectState.files.length,
+          ticketCount: projectState.tickets.length,
+          myAssignedTicketCount: projectState.myAssignedTickets.length,
+        },
+      };
+    },
+  },
+  [TOOL_PROJECT_READ_FILE]: {
+    name: TOOL_PROJECT_READ_FILE,
+    description: 'Read a shared file from the current project workspace. Use this for project-level specs, notes, assets, and other files shared across project agents.',
+    usageGuidance: [
+      'Use project-relative paths such as `project.md`, `specs/api.md`, or `tickets/context.json`.',
+      'Use this instead of workspace_read_file when the file belongs to the shared project rather than your private agent workspace.',
+      'Binary files are not supported by this text reader; use project_list_files first if unsure.',
+    ],
+    schema: ProjectReadFileToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        filePath: { type: 'string', description: 'Project-relative path to a shared file.' },
+      },
+      required: ['filePath'],
+    },
+    async execute(args, context) {
+      const input = ProjectReadFileToolSchema.parse(args);
+      const file = await projectService.readProjectSharedFileForAgent(context.agentId, context.channelId, input.filePath);
+      const text = file.content.toString('utf8');
+
+      return {
+        output: [`<path>${file.relativePath}</path>`, `<type>file</type>`, '<content>', text, '</content>'].join('\n'),
+        structuredOutput: {
+          filePath: file.relativePath,
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          bytesRead: file.content.byteLength,
+        },
+      };
+    },
+  },
+  [TOOL_PROJECT_WRITE_FILE]: {
+    name: TOOL_PROJECT_WRITE_FILE,
+    description: 'Create or update a shared text file in the current project workspace. Use this when the user asked you to change project-shared content for the team.',
+    usageGuidance: [
+      'Use this for project-shared docs, specs, plans, and text assets that other project agents should see.',
+      'Read the file first when modifying an existing shared file.',
+      'Do not claim the shared project file was updated unless this tool succeeded.',
+    ],
+    schema: ProjectWriteFileToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        filePath: { type: 'string', description: 'Project-relative path to the shared file.' },
+        content: { type: 'string', description: 'Full file content.' },
+      },
+      required: ['filePath', 'content'],
+    },
+    async execute(args, context) {
+      const input = ProjectWriteFileToolSchema.parse(args);
+      const file = await projectService.writeProjectSharedFileForAgent(context.agentId, context.channelId, input.filePath, input.content);
+
+      return {
+        output: `Updated shared project file: ${file.relativePath}`,
+        structuredOutput: {
+          filePath: file.relativePath,
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          fileSize: file.fileSize,
+        },
+      };
+    },
+  },
+  [TOOL_PROJECT_TICKET_LIST]: {
+    name: TOOL_PROJECT_TICKET_LIST,
+    description: 'List the active ticket deck for the current project, including assignments and your own tickets.',
+    usageGuidance: [
+      'Use this to inspect the current project deck before claiming or updating a ticket.',
+      'Prefer claiming a ticket only when it clearly matches your role or the user asked you directly.',
+      'Use `project_ticket_update` after real progress, not as a placeholder gesture.',
+    ],
+    schema: ProjectTicketListToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    async execute(_args, context) {
+      const projectState = await projectService.listProjectTicketsForAgent(context.agentId, context.channelId);
+      return {
+        output: projectState.tickets.length > 0
+          ? projectState.tickets.map((ticket) => `[${ticket.status}] ${ticket.id}: ${ticket.title}${ticket.assignedAgentName ? ` — assigned to ${ticket.assignedAgentName}` : ' — unassigned'}`).join('\n')
+          : 'No active project tickets.',
+        structuredOutput: {
+          tickets: projectState.tickets,
+          myAssignedTickets: projectState.myAssignedTickets,
+        },
+      };
+    },
+  },
+  [TOOL_PROJECT_TICKET_CLAIM]: {
+    name: TOOL_PROJECT_TICKET_CLAIM,
+    description: 'Claim a project ticket for yourself and move it into IN_PROGRESS. Use this only when the ticket is clearly yours to work on.',
+    usageGuidance: [
+      'Claim a ticket only if it matches your role, skills, and the user expectation for the project.',
+      'Do not claim tickets already assigned to another agent.',
+      'After claiming, update the ticket status as your work progresses.',
+    ],
+    schema: ProjectTicketClaimToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        ticketId: { type: 'string', description: 'Ticket id to claim.' },
+      },
+      required: ['ticketId'],
+    },
+    async execute(args, context) {
+      const input = ProjectTicketClaimToolSchema.parse(args);
+      const ticket = await projectService.claimProjectTicketForAgent(context.agentId, context.channelId, input.ticketId);
+      return {
+        output: `Claimed project ticket ${ticket.id}: ${ticket.title}`,
+        structuredOutput: ticket,
+      };
+    },
+  },
+  [TOOL_PROJECT_TICKET_UPDATE]: {
+    name: TOOL_PROJECT_TICKET_UPDATE,
+    description: 'Update the status or description of a project ticket assigned to you. Use this when you start work, finish it, or need to mark it blocked.',
+    usageGuidance: [
+      'Set status to `IN_PROGRESS` when you actually start, `DONE` when the work is complete, and `BLOCKED` when you cannot proceed.',
+      'Only update tickets you own or are actively claiming in this turn.',
+      'When setting status to `DONE`, provide `channelMessage` so the project channel receives the completion update before the ticket closes.',
+      'Keep description updates factual and concise.',
+    ],
+    schema: ProjectTicketUpdateToolSchema,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        ticketId: { type: 'string', description: 'Ticket id to update.' },
+        status: { type: 'string', enum: ['TODO', 'ASSIGNED', 'IN_PROGRESS', 'DONE', 'BLOCKED', 'CANCELLED'] },
+        description: { type: 'string', description: 'Optional updated description or resolution note.' },
+        channelMessage: { type: 'string', description: 'Visible project-channel update to send before marking the ticket done.' },
+      },
+      required: ['ticketId'],
+    },
+    async execute(args, context) {
+      const input = ProjectTicketUpdateToolSchema.parse(args);
+
+      if (input.status === 'DONE') {
+        const content = sanitizeVisibleText(input.channelMessage ?? '');
+        if (!content) {
+          throw new Error('A visible completion message is required when marking a project ticket DONE.');
+        }
+
+        const message = await chatService.createAgentRelayMessage({
+          channelId: context.channelId,
+          senderId: context.agentId,
+          content,
+          contentType: 'MARKDOWN',
+          metadata: {
+            viaTool: TOOL_PROJECT_TICKET_UPDATE,
+            projectTicketStatus: 'DONE',
+          },
+        });
+
+        getChatNamespace().to(getChannelRoom(context.channelId)).emit('message:new', message);
+      }
+
+      const ticket = await projectService.updateProjectTicketForAgent(context.agentId, context.channelId, input.ticketId, {
+        status: input.status,
+        description: input.description,
+        channelMessage: input.channelMessage,
+      });
+      return {
+        output: `Updated project ticket ${ticket.id} to ${ticket.status}.`,
+        structuredOutput: ticket,
       };
     },
   },

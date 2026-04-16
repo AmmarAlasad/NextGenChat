@@ -10,6 +10,8 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 
+import { StopAgentExecutionResultSchema } from '@nextgenchat/types';
+
 import { authenticateRequest, requireAuthUser } from '@/middleware/auth.js';
 import { CompactChannelSessionSchema, CreateChannelSchema, CreateDirectChannelSchema, MessagePaginationSchema, SendMessageSchema, UpdateChannelAgentsSchema } from '@/modules/chat/chat.schema.js';
 import { chatService } from '@/modules/chat/chat.service.js';
@@ -80,5 +82,25 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
     const input = SendMessageSchema.parse({ ...(request.body as object), channelId: params.id });
 
     return chatService.createUserMessage(authUser.id, input);
+  });
+
+  fastify.post('/channels/:channelId/agents/:agentId/stop', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { channelId: string; agentId: string };
+
+    return StopAgentExecutionResultSchema.parse(
+      await chatService.stopAgentExecution(authUser.id, params.channelId, params.agentId),
+    );
+  });
+
+  fastify.get('/attachments/:id/download', { preHandler: authenticateRequest }, async (request, reply) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+    const attachment = await chatService.downloadAttachment(authUser.id, params.id);
+
+    reply
+      .header('Content-Type', attachment.mimeType)
+      .header('Content-Disposition', `attachment; filename="${encodeURIComponent(attachment.fileName)}"`)
+      .send(attachment.content);
   });
 };

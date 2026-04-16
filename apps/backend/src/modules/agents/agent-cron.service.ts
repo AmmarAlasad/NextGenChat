@@ -111,7 +111,9 @@ function computeNextRun(input: {
       strict: true,
     }).next().toDate();
   } catch (error) {
-    throw new Error(`Invalid cron expression: ${error instanceof Error ? error.message : 'Unknown parser error.'}`);
+    throw new Error(`Invalid cron expression: ${error instanceof Error ? error.message : 'Unknown parser error.'}`, {
+      cause: error,
+    });
   }
 }
 
@@ -420,7 +422,9 @@ export class AgentCronService {
         parsed = ScheduleManifestSchema.parse(raw);
       }
     } catch (error) {
-      throw new Error(`Invalid schedules manifest JSON: ${error instanceof Error ? error.message : 'Unknown parse error.'}`);
+      throw new Error(`Invalid schedules manifest JSON: ${error instanceof Error ? error.message : 'Unknown parse error.'}`, {
+        cause: error,
+      });
     }
 
     const existing = await prisma.agentCronJob.findMany({

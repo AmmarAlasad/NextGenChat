@@ -51,6 +51,7 @@ import { promptCacheService } from '@/modules/context/cache.service.js';
 import { staticPrefixCache } from '@/modules/context/static-prefix-cache.js';
 import { tokenCounter } from '@/modules/context/token-counter.js';
 import { providerRegistry } from '@/modules/providers/registry.js';
+import { projectService } from '@/modules/project/project.service.js';
 import { skillService } from '@/modules/agents/skill.service.js';
 import { toolRegistryService } from '@/modules/tools/tool-registry.service.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
@@ -101,6 +102,7 @@ function buildRuntimeIdentityMessage(input: {
   projectName: string | null;
   participantNames: string[];
   workspaceRoot: string;
+  projectWorkspaceRoot: string | null;
   toolGuidance: string;
   maxToolRounds: number | 'unlimited';
 }) {
@@ -141,11 +143,20 @@ function buildRuntimeIdentityMessage(input: {
     '',
     '## Workspace & Tools',
     '',
-    `Your workspace root is: ${input.workspaceRoot}`,
+    ...(input.projectWorkspaceRoot
+      ? [
+          `Project workspace root: ${input.projectWorkspaceRoot}`,
+          `Agent-private workspace root: ${input.workspaceRoot}`,
+          'Because you are currently in a project channel, prefer the project workspace for shared work, user-provided project files, project artifacts, specs, extracted content, and deliverables.',
+          'Use the project tools first for project-shared work. Use the agent-private workspace mainly for your own files such as `Heartbeat.md`, `user.md`, `memory.md`, and other personal working state.',
+        ]
+      : [`Your workspace root is: ${input.workspaceRoot}`]),
     `Tool round budget for this turn: ${input.maxToolRounds === 'unlimited' ? 'unlimited' : input.maxToolRounds}.`,
     'Use approved tools when they help you inspect files, search the workspace, update files, run commands, manage task state, or send messages.',
     'Your final visible reply goes to the current chat automatically. Use `send_reply` only for intermediate progress updates before the final reply.',
-    'All file and shell work must stay inside your workspace root.',
+    input.projectWorkspaceRoot
+      ? 'All file and shell work must stay inside the allowed roots. In project channels, project-shared work should go to the project workspace unless it is clearly agent-private state.'
+      : 'All file and shell work must stay inside your workspace root.',
     'When the user asks you to send a message to a group or project channel, call `channel_send_message` — do not just describe sending.',
     'Other agents do not automatically see your reply. If you want another agent to respond, mention them with @slug in your visible reply.',
     'When you learn something meaningful about the user, update `user.md` via `workspace_write_file`.',
@@ -289,6 +300,48 @@ function buildCrossChannelContextMessage(channels: Array<{
   return lines.join('\n');
 }
 
+function buildProjectSharedStateMessage(input: {
+  projectWorkspaceRoot: string;
+  files: Array<{ relativePath: string; mimeType: string; fileSize: number; updatedAt: string }>; 
+  tickets: Array<{ id: string; title: string; status: string; assignedAgentName: string | null }>;
+  myAssignedTickets: Array<{ id: string; title: string; status: string }>;
+}) {
+  const lines = [
+    '# project-shared-state.md',
+    '',
+    `Project workspace root: ${input.projectWorkspaceRoot}`,
+    'Shared project files are available through the project file tools.',
+    'In this project channel, prefer project file tools for user-provided files and shared project artifacts.',
+  ];
+
+  if (input.files.length === 0) {
+    lines.push('No shared project files are currently stored.');
+  } else {
+    lines.push('Shared project files:');
+    for (const file of input.files) {
+      lines.push(`- ${file.relativePath} (${file.mimeType}, ${file.fileSize} bytes, updated ${file.updatedAt})`);
+    }
+  }
+
+  lines.push('', 'Project ticket deck:');
+  if (input.tickets.length === 0) {
+    lines.push('- No active tickets in the deck.');
+  } else {
+    for (const ticket of input.tickets) {
+      lines.push(`- [${ticket.status}] ${ticket.id}: ${ticket.title}${ticket.assignedAgentName ? ` — assigned to ${ticket.assignedAgentName}` : ' — unassigned'}`);
+    }
+  }
+
+  if (input.myAssignedTickets.length > 0) {
+    lines.push('', 'Tickets currently assigned to you:');
+    for (const ticket of input.myAssignedTickets) {
+      lines.push(`- [${ticket.status}] ${ticket.id}: ${ticket.title}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 // ── ContextBuilder ─────────────────────────────────────────────────────────────
 
 export class ContextBuilder {
@@ -408,6 +461,7 @@ export class ContextBuilder {
       ]);
 
       const workspaceRoot = workspaceService.getAgentWorkspaceDir(agent.slug);
+      const projectWorkspaceRoot = channel.project?.name ? projectService.getProjectWorkspaceDir(channel.project.name) : null;
       const docMap = new Map(docs.map((d) => [d.docType, d.content ?? '']));
 
       // ── Message 1: Runtime identity + tooling (OpenClaw: hardcoded sections) ─
@@ -424,6 +478,7 @@ export class ContextBuilder {
             ...channel.agentMemberships.map((m) => m.agent.name),
           ],
           workspaceRoot,
+          projectWorkspaceRoot,
           toolGuidance,
           maxToolRounds: env.agentMaxToolRounds === 0 ? 'unlimited' : env.agentMaxToolRounds,
         }),
@@ -492,6 +547,14 @@ export class ContextBuilder {
     const taskStateText = formatTaskStateContext(persistedTaskState);
     if (taskStateText) {
       dynamicMessages.push({ role: 'system', content: taskStateText });
+    }
+
+    if (channel.projectId) {
+      const projectSharedState = await projectService.getProjectAgentContext(channel.projectId, agentId);
+      dynamicMessages.push({
+        role: 'system',
+        content: buildProjectSharedStateMessage(projectSharedState),
+      });
     }
 
     // Conversation summary — compacted older history.

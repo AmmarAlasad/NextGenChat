@@ -43,6 +43,7 @@ vi.mock('@/db/client.js', () => ({
 vi.mock('@/modules/workspace/workspace.service.js', () => ({
   workspaceService: {
     getAgentWorkspaceDir: vi.fn(() => state.workspaceRoot),
+    saveBufferToAgentWorkspace: vi.fn(async (_agentId: string, relativePath: string) => ({ filePath: path.join(state.workspaceRoot, relativePath), relativePath })),
   },
 }));
 
@@ -65,7 +66,57 @@ vi.mock('@/modules/chat/chat.service.js', () => ({
       state.relayedMessages.push(message);
       return message;
     }),
+    createAgentAttachmentMessage: vi.fn(async (input: { channelId: string; senderId: string; content: string; contentType: string; metadata?: Record<string, unknown> | null; attachments?: Array<Record<string, unknown>> }) => {
+      const message = {
+        id: `msg-${state.relayedMessages.length + 1}`,
+        channelId: input.channelId,
+        senderId: input.senderId,
+        senderType: 'AGENT',
+        senderName: 'Agent',
+        content: input.content,
+        contentType: input.contentType,
+        metadata: {
+          ...(input.metadata ?? {}),
+          attachments: input.attachments?.map((attachment, index) => ({
+            id: `attachment-${index + 1}`,
+            downloadPath: `/attachments/${index + 1}/download`,
+            ...attachment,
+          })) ?? [],
+        },
+        createdAt: new Date().toISOString(),
+        editedAt: null,
+        deletedAt: null,
+      };
+      state.relayedMessages.push(message);
+      return message;
+    }),
     triggerAgentsForMessage: vi.fn(async () => ({ selectedAgentIds: [], diagnostics: [] })),
+  },
+}));
+
+vi.mock('@/modules/project/project.service.js', () => ({
+  projectService: {
+    listProjectFilesForAgent: vi.fn(async () => ({ files: [], tickets: [], myAssignedTickets: [] })),
+    readProjectSharedFileForAgent: vi.fn(async () => ({
+      fileName: 'project.md',
+      mimeType: 'text/markdown',
+      relativePath: 'project.md',
+      content: Buffer.from('# Project\n', 'utf8'),
+    })),
+    writeProjectSharedFileForAgent: vi.fn(async () => ({
+      id: 'project-file-1',
+      projectId: 'project-1',
+      fileName: 'project.md',
+      relativePath: 'project.md',
+      mimeType: 'text/markdown',
+      fileSize: 10,
+      updatedAt: new Date().toISOString(),
+      downloadPath: '/projects/project-1/files/project-file-1/download',
+      editable: true,
+    })),
+    listProjectTicketsForAgent: vi.fn(async () => ({ files: [], tickets: [], myAssignedTickets: [] })),
+    claimProjectTicketForAgent: vi.fn(async () => ({ id: 'ticket-1', title: 'Ticket', status: 'IN_PROGRESS' })),
+    updateProjectTicketForAgent: vi.fn(async () => ({ id: 'ticket-1', title: 'Ticket', status: 'DONE' })),
   },
 }));
 
@@ -151,7 +202,7 @@ describe('toolRegistryService', () => {
   beforeEach(async () => {
     workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'nextgenchat-tools-'));
     state.workspaceRoot = workspaceRoot;
-    state.approvedTools = ['workspace_glob', 'workspace_grep', 'todowrite', 'todoread', 'send_reply'];
+    state.approvedTools = ['workspace_glob', 'workspace_grep', 'todowrite', 'todoread', 'send_reply', 'send_file'];
     state.emittedEvents = [];
     state.relayedMessages = [];
     state.schedules = [];
@@ -161,6 +212,7 @@ describe('toolRegistryService', () => {
     await writeFile(path.join(workspaceRoot, 'src', 'app.ts'), ['export function greet() {', '  return "hello";', '}', ''].join('\n'), 'utf8');
     await writeFile(path.join(workspaceRoot, 'src', 'util.ts'), ['export const answer = 42;', '// TODO: add formatter', ''].join('\n'), 'utf8');
     await writeFile(path.join(workspaceRoot, 'docs', 'notes.md'), ['# Notes', 'workspace search works', ''].join('\n'), 'utf8');
+    await writeFile(path.join(workspaceRoot, 'docs', 'report.md'), ['# Report', '', 'Everything looks good.', ''].join('\n'), 'utf8');
   });
 
   afterEach(async () => {
@@ -238,11 +290,34 @@ describe('toolRegistryService', () => {
     }));
   });
 
+  it('sends workspace files with send_file', async () => {
+    await toolRegistryService.executeToolCall({
+      agentId: 'agent-1',
+      agentSlug: 'agent-1',
+      channelId: 'channel-1',
+      toolName: 'send_file',
+      args: JSON.stringify({ filePath: 'docs/report.md', content: 'Here is the report.' }),
+    });
+
+    expect(state.relayedMessages).toHaveLength(1);
+    expect(state.relayedMessages[0]?.content).toBe('Here is the report.');
+    expect(state.relayedMessages[0]?.metadata).toMatchObject({
+      viaTool: 'send_file',
+      attachments: [
+        expect.objectContaining({
+          fileName: 'report.md',
+          mimeType: 'text/markdown',
+        }),
+      ],
+    });
+  });
+
   it('includes detailed guidance for newly approved tools', async () => {
     const summary = await toolRegistryService.summarizeApprovedTools('agent-1');
 
     expect(summary).toContain('### workspace_grep');
     expect(summary).toContain('### send_reply');
+    expect(summary).toContain('### send_file');
     expect(summary).toContain('Use `todoread` if you need to inspect the current task list before updating it.');
   });
 

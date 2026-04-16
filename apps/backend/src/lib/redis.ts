@@ -48,7 +48,9 @@ class InMemoryRedis {
     return this.store.get(key) ?? null;
   }
 
-  async set(key: string, value: string, _exMode?: string, _ttl?: number) {
+  async set(key: string, value: string, exMode?: string, ttl?: number) {
+    void exMode;
+    void ttl;
     this.store.set(key, value);
     return 'OK' as const;
   }

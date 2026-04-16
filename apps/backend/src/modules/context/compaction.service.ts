@@ -24,14 +24,12 @@
  * - Future phases: per-agent customInstructions, per-provider summarization model selection.
  */
 
-import type { ContentType, SenderType } from '@prisma/client';
 import type { Message } from '@prisma/client';
 
 import { prisma } from '@/db/client.js';
 import { env } from '@/config/env.js';
 import { isMessageVisibleToAgent } from '@/modules/agents/agent-visibility.js';
 import { OpenAIProvider } from '@/modules/providers/openai.provider.js';
-import { getChatNamespace, getChannelRoom } from '@/sockets/socket-server.js';
 
 // ── OpenClaw constants ────────────────────────────────────────────────────────
 
@@ -393,65 +391,6 @@ async function summarizeWithFallback(
   );
 }
 
-// ── Serialization helper (for Socket.io emit) ─────────────────────────────────
-
-function serializeSystemMessage(message: {
-  id: string;
-  channelId: string;
-  senderId: string;
-  senderType: SenderType;
-  senderName?: string | null;
-  content: string;
-  contentType: ContentType;
-  metadata: unknown;
-  createdAt: Date;
-  editedAt?: Date | null;
-  deletedAt?: Date | null;
-}) {
-  return {
-    id: message.id,
-    channelId: message.channelId,
-    senderId: message.senderId,
-    senderType: message.senderType,
-    senderName: message.senderName ?? null,
-    content: message.content,
-    contentType: message.contentType,
-    metadata: (message.metadata as Record<string, unknown> | null) ?? null,
-    createdAt: message.createdAt.toISOString(),
-    editedAt: message.editedAt?.toISOString() ?? null,
-    deletedAt: message.deletedAt?.toISOString() ?? null,
-  };
-}
-
-async function emitCompactionEvent(input: {
-  channelId: string;
-  agentId: string;
-  agentName: string;
-  origin: 'auto' | 'manual';
-}) {
-  const message = await prisma.message.create({
-    data: {
-      channelId: input.channelId,
-      senderId: input.agentId,
-      senderType: 'AGENT',
-      content: `Session compacted for ${input.agentName}.`,
-      contentType: 'SYSTEM',
-      metadata: {
-        compaction: {
-          agentId: input.agentId,
-          agentName: input.agentName,
-          origin: input.origin,
-        },
-      },
-    },
-  });
-
-  getChatNamespace().to(getChannelRoom(input.channelId)).emit('message:new', serializeSystemMessage({
-    ...message,
-    senderName: input.agentName,
-  }));
-}
-
 // ── CompactionService ─────────────────────────────────────────────────────────
 
 class CompactionService {
@@ -639,13 +578,6 @@ class CompactionService {
         covesToMessageId: messages[messages.length - 1].id,
         firstKeptMessageId: null, // manual compaction: let context builder decide dynamically
       },
-    });
-
-    await emitCompactionEvent({
-      channelId: input.channelId,
-      agentId: input.agentId,
-      agentName: agent.name,
-      origin: input.origin,
     });
 
     return { compacted: true, agentId: agent.id, agentName: agent.name };

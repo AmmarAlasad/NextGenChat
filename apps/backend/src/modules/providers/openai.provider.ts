@@ -20,14 +20,6 @@ interface OpenAITextBlock { type: 'text'; text: string; }
 interface OpenAIImageBlock { type: 'image'; mimeType: string; dataBase64: string; }
 type OpenAIContentBlock = OpenAITextBlock | OpenAIImageBlock;
 
-function mapRole(role: LLMMessage['role']) {
-  if (role === 'system') {
-    return 'developer';
-  }
-
-  return role;
-}
-
 function mapContent(content: LLMMessage['content']) {
   if (typeof content === 'string') {
     return content;
@@ -170,6 +162,8 @@ export class OpenAIProvider extends BaseProvider {
       ...(usesMaxCompletionTokens(this.model)
         ? { max_completion_tokens: options.maxTokens }
         : { max_tokens: options.maxTokens }),
+    }, {
+      signal: options.abortSignal as AbortSignal | undefined,
     });
 
     const choice = response.choices[0];
@@ -223,6 +217,8 @@ export class OpenAIProvider extends BaseProvider {
       ...(usesMaxCompletionTokens(this.model)
         ? { max_completion_tokens: options.maxTokens }
         : { max_tokens: options.maxTokens }),
+    }, {
+      signal: options.abortSignal as AbortSignal | undefined,
     });
 
     // Accumulate tool call deltas in case any slip through (defensive — gateway

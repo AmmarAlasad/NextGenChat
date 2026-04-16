@@ -8,8 +8,8 @@
  * Phase 6 implementation status:
  * - Direct Messages: one item per agent, clicking opens or creates a DM channel
  * - Groups: standalone group channels (not in a project), show only group name
- * - Projects: expandable containers with sub-channels and an editable project.md
- * - Project detail panel: edit project name, description, and project.md inline
+ * - Projects: expandable containers with sub-channels, shared project files, and a ticket deck
+ * - Project detail panel: edit project name, description, project.md, shared files, and tickets inline
  * - New-agent and new-group modals remain in place
  * - Live tool-call log streams tool calls in real-time, then the agent answer streams below
  */
@@ -29,6 +29,9 @@ import type {
   CreateAgentInput,
   CreateChannelInput,
   MessageRecord,
+  ProjectFileRecord,
+  StopAgentExecutionResult,
+  ProjectTicketRecord,
   ProviderModelsResponse,
   ProviderStatus,
   ProjectSummary,
@@ -40,7 +43,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import { useAuth } from '@/components/auth-provider';
-import { apiJson } from '@/lib/api';
+import { apiJson, apiRequest } from '@/lib/api';
 import { getChatSocket } from '@/lib/socket';
 
 type AgentState = 'idle' | 'queued' | 'streaming' | 'error';
@@ -54,6 +57,12 @@ type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
 type TodoPriority = 'high' | 'medium' | 'low';
 interface AgentTodo { content: string; status: TodoStatus; priority: TodoPriority; }
 interface AgentTodoList { agentId: string; agentName: string; todos: AgentTodo[]; }
+interface ChannelLiveState {
+  agentState: AgentState;
+  agentStreams: Map<string, AgentStream>;
+  liveToolCalls: Map<string, LiveToolCall[]>;
+  agentTodos: Map<string, AgentTodoList>;
+}
 type NewAgentForm = CreateAgentInput & {
   providerName?: ProviderStatus['providerName'];
   model?: string;
@@ -64,6 +73,19 @@ interface DraftAttachment {
   mimeType: string;
   fileSize: number;
   contentBase64: string;
+}
+
+const SIDEBAR_WIDTH_STORAGE_KEY = 'nextgenchat.sidebar.width';
+const SIDEBAR_MIN_WIDTH = 272;
+const SIDEBAR_MAX_WIDTH = 520;
+
+function createEmptyChannelLiveState(): ChannelLiveState {
+  return {
+    agentState: 'idle',
+    agentStreams: new Map(),
+    liveToolCalls: new Map(),
+    agentTodos: new Map(),
+  };
 }
 
 interface ToolCallDetail {
@@ -87,11 +109,33 @@ const emptyAgentForm: NewAgentForm = {
 };
 
 const SELECTED_CHANNEL_STORAGE_KEY = 'nextgenchat:selected-channel-id';
+const SELECTED_PROJECT_STORAGE_KEY = 'nextgenchat:selected-project-id';
+const NAV_VIEW_STORAGE_KEY = 'nextgenchat:nav-view';
 const UNREAD_COUNTS_STORAGE_KEY = 'nextgenchat:unread-counts';
 
 function readStoredSelectedChannelId() {
   if (typeof window === 'undefined') return null;
   return window.localStorage.getItem(SELECTED_CHANNEL_STORAGE_KEY);
+}
+
+function readStoredSelectedProjectId() {
+  if (typeof window === 'undefined') return null;
+  return window.localStorage.getItem(SELECTED_PROJECT_STORAGE_KEY);
+}
+
+function readStoredNavView(): NavView {
+  if (typeof window === 'undefined') return 'chat';
+  const value = window.localStorage.getItem(NAV_VIEW_STORAGE_KEY);
+  return value === 'project-detail' ? 'project-detail' : 'chat';
+}
+
+function readStoredSidebarWidth() {
+  if (typeof window === 'undefined') return SIDEBAR_MIN_WIDTH;
+
+  const raw = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+  const width = raw ? Number.parseInt(raw, 10) : NaN;
+  if (!Number.isFinite(width)) return SIDEBAR_MIN_WIDTH;
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width));
 }
 
 function readStoredUnreadCounts() {
@@ -134,6 +178,7 @@ function getMessageAttachments(message: MessageRecord) {
     mimeType: string;
     fileSize?: number;
     relativePath?: string;
+    downloadPath?: string;
   }>;
 
   return raw.filter((entry): entry is {
@@ -142,7 +187,66 @@ function getMessageAttachments(message: MessageRecord) {
     mimeType: string;
     fileSize?: number;
     relativePath?: string;
+    downloadPath?: string;
   } => typeof entry === 'object' && entry !== null && typeof (entry as { fileName?: unknown }).fileName === 'string' && typeof (entry as { mimeType?: unknown }).mimeType === 'string');
+}
+
+async function downloadMessageAttachment(input: {
+  accessToken: string | null;
+  downloadPath: string;
+  fileName: string;
+}) {
+  if (!input.accessToken) {
+    throw new Error('You are not signed in.');
+  }
+
+  const response = await apiRequest(input.downloadPath, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${input.accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to download attachment.');
+  }
+
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = input.fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+async function downloadAuthenticatedFile(input: {
+  accessToken: string;
+  downloadPath: string;
+  fileName: string;
+}) {
+  const response = await apiRequest(input.downloadPath, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${input.accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to download file.');
+  }
+
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = input.fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.URL.revokeObjectURL(url);
 }
 
 async function fileToBase64(file: File) {
@@ -983,9 +1087,9 @@ function ProjectItem({ project, subChannels, activeChannelId, activeProjectId, o
 
   return (
     <div>
-      <div className="flex items-center rounded-xl pr-1">
+      <div className="flex min-w-0 items-center gap-1 rounded-xl pr-1">
         <button
-          className="flex flex-1 items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-left transition-all"
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-left transition-all"
           onClick={() => { onSelectProject(project.id); setOpen(true); }}
           style={{
             background: pa ? 'rgba(114,137,192,0.18)' : 'transparent',
@@ -1008,15 +1112,17 @@ function ProjectItem({ project, subChannels, activeChannelId, activeProjectId, o
             <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
           <span
-            className="truncate text-[13px] font-medium"
+            className="min-w-0 flex-1 truncate text-[13px] font-medium"
             style={{ color: pa ? 'var(--ib-100)' : 'var(--ib-400)' }}
           >
             {project.name}
           </span>
-          <UnreadBadge active={pa} count={unreadTotal} />
+          <div className="shrink-0">
+            <UnreadBadge active={pa} count={unreadTotal} />
+          </div>
         </button>
         <button
-          className="ml-0.5 flex h-6 w-6 items-center justify-center rounded-lg transition-colors hover:bg-white/10"
+          className="ml-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-white/10"
           onClick={(e) => { e.stopPropagation(); setOpen(true); onAddChannel(project.id); }}
           style={{ color: 'var(--ib-600)' }}
           title="Add channel"
@@ -1057,49 +1163,134 @@ function ProjectItem({ project, subChannels, activeChannelId, activeProjectId, o
 
 // ── Project Detail Panel ──────────────────────────────────────────────────────
 
-function ProjectDetailPanel({ project, accessToken, onProjectUpdated }: {
-  project: ProjectSummary; accessToken: string; onProjectUpdated: (p: ProjectSummary) => void;
+function ProjectDetailPanel({ project, accessToken, onProjectUpdated, projectAgents }: {
+  project: ProjectSummary; accessToken: string; onProjectUpdated: (p: ProjectSummary) => void; projectAgents: AgentSummary[];
 }) {
+  const [activeTab, setActiveTab] = useState<'details' | 'files' | 'deck'>('details');
+  const [draggingTicketId, setDraggingTicketId] = useState<string | null>(null);
   const [fileDoc, setFileDoc] = useState<WorkspaceDocRecord | null>(null);
   const [fileDraft, setFileDraft] = useState('');
+  const [projectFiles, setProjectFiles] = useState<ProjectFileRecord[]>([]);
+  const [tickets, setTickets] = useState<ProjectTicketRecord[]>([]);
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description ?? '');
+  const [ticketTitle, setTicketTitle] = useState('');
+  const [ticketDescription, setTicketDescription] = useState('');
+  const [ticketAssignmentMode, setTicketAssignmentMode] = useState<'MANUAL' | 'AUTO'>('MANUAL');
+  const [ticketAssignedAgentId, setTicketAssignedAgentId] = useState('');
   const [saving, setSaving] = useState(false);
   const [savingFile, setSavingFile] = useState(false);
+  const [savingTicket, setSavingTicket] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const loadProjectState = useCallback(async () => {
+    const headers = { Authorization: `Bearer ${accessToken}` };
+    const [doc, files, deck] = await Promise.all([
+      apiJson<WorkspaceDocRecord>(`/projects/${project.id}/file`, { headers }),
+      apiJson<ProjectFileRecord[]>(`/projects/${project.id}/files`, { headers }),
+      apiJson<ProjectTicketRecord[]>(`/projects/${project.id}/tickets`, { headers }),
+    ]);
+    setFileDoc(doc);
+    setFileDraft(doc.content);
+    setProjectFiles(files);
+    setTickets(deck);
+  }, [accessToken, project.id]);
 
   useEffect(() => {
-    setName(project.name); setDescription(project.description ?? '');
-    void apiJson<WorkspaceDocRecord>(`/projects/${project.id}/file`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    }).then((doc) => { setFileDoc(doc); setFileDraft(doc.content); }).catch(() => undefined);
-  }, [accessToken, project.description, project.id, project.name]);
+    setName(project.name);
+    setDescription(project.description ?? '');
+    setActiveTab('details');
+    void loadProjectState().catch(() => undefined);
+  }, [loadProjectState, project.description, project.id, project.name]);
 
   async function saveInfo() {
     setSaving(true); setError(null);
     try {
-      const u = await apiJson<ProjectSummary>(`/projects/${project.id}`, {
+      const updated = await apiJson<ProjectSummary>(`/projects/${project.id}`, {
         method: 'PATCH', headers: { Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({ name, description }),
       });
-      onProjectUpdated(u);
-    } catch (e) { setError(e instanceof Error ? e.message : 'Failed.'); }
+      onProjectUpdated(updated);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to save project info.'); }
     finally { setSaving(false); }
   }
 
   async function saveFile() {
     setSavingFile(true); setError(null);
     try {
-      const u = await apiJson<WorkspaceDocRecord>(`/projects/${project.id}/file`, {
+      const updated = await apiJson<WorkspaceDocRecord>(`/projects/${project.id}/file`, {
         method: 'PUT', headers: { Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({ content: fileDraft }),
       });
-      setFileDoc(u);
-    } catch (e) { setError(e instanceof Error ? e.message : 'Failed.'); }
+      setFileDoc(updated);
+      setFileDraft(updated.content);
+      await loadProjectState();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to save project.md.'); }
     finally { setSavingFile(false); }
+  }
+
+  async function uploadFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setUploadingFiles(true); setError(null);
+    try {
+      const drafts = await filesToDraftAttachments(Array.from(files));
+      await Promise.all(drafts.map((file) => apiJson<ProjectFileRecord>(`/projects/${project.id}/files`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ fileName: file.fileName, mimeType: file.mimeType, contentBase64: file.contentBase64 }),
+      })));
+      await loadProjectState();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to upload project files.'); }
+    finally { setUploadingFiles(false); }
+  }
+
+  async function createTicket() {
+    if (!ticketTitle.trim()) return;
+    setSavingTicket(true); setError(null);
+    try {
+      await apiJson<ProjectTicketRecord>(`/projects/${project.id}/tickets`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          title: ticketTitle.trim(),
+          description: ticketDescription.trim() || undefined,
+          assignmentMode: ticketAssignmentMode,
+          assignedAgentId: ticketAssignmentMode === 'MANUAL' && ticketAssignedAgentId ? ticketAssignedAgentId : undefined,
+        }),
+      });
+      setTicketTitle('');
+      setTicketDescription('');
+      setTicketAssignedAgentId('');
+      setTicketAssignmentMode('MANUAL');
+      await loadProjectState();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create ticket.'); }
+    finally { setSavingTicket(false); }
+  }
+
+  async function updateTicket(ticketId: string, patch: Partial<Pick<ProjectTicketRecord, 'status' | 'assignedAgentId'>>) {
+    setError(null);
+    try {
+      await apiJson<ProjectTicketRecord>(`/projects/${project.id}/tickets/${ticketId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify(patch),
+      });
+      await loadProjectState();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to update ticket.'); }
   }
 
   const hasInfo = name !== project.name || description !== (project.description ?? '');
   const hasFile = fileDraft !== (fileDoc?.content ?? '');
   const panelStyle = { background: 'var(--ti-900)', border: '1px solid var(--ib-800)' };
+  const ticketColumns = useMemo(() => ({
+    TODO: tickets.filter((ticket) => ['TODO', 'ASSIGNED'].includes(ticket.status)),
+    IN_PROGRESS: tickets.filter((ticket) => ['IN_PROGRESS', 'BLOCKED'].includes(ticket.status)),
+    DONE: tickets.filter((ticket) => ['DONE', 'CANCELLED'].includes(ticket.status)),
+  }), [tickets]);
+
+  async function moveTicketToStatus(ticketId: string, status: 'TODO' | 'IN_PROGRESS' | 'DONE') {
+    await updateTicket(ticketId, { status });
+  }
 
   return (
     <div className="flex h-full flex-col overflow-y-auto" style={{ background: 'var(--ib-950)' }}>
@@ -1119,24 +1310,21 @@ function ProjectDetailPanel({ project, accessToken, onProjectUpdated }: {
           </div>
         </div>
         <div className="flex gap-2">
-          {(['info', 'file'] as const).map((type) => {
-            const dis = type === 'info' ? !hasInfo || saving : !hasFile || savingFile;
-            const loading = type === 'info' ? saving : savingFile;
-            const label = type === 'info' ? 'Save info' : 'Save project.md';
-            const onClick = type === 'info' ? saveInfo : saveFile;
-            return (
-              <button
-                key={type}
-                className="rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-30"
-                disabled={dis}
-                onClick={onClick}
-                style={{ background: 'var(--ib-500)', color: 'var(--ib-50)' }}
-                type="button"
-              >
-                {loading ? 'Saving…' : label}
+          {activeTab === 'details' ? (
+            <button className="rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-30" disabled={!hasInfo || saving} onClick={saveInfo} style={{ background: 'var(--ib-500)', color: 'var(--ib-50)' }} type="button">
+              {saving ? 'Saving…' : 'Save info'}
+            </button>
+          ) : null}
+          {activeTab === 'files' ? (
+            <>
+              <button className="rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-30" disabled={!hasFile || savingFile} onClick={saveFile} style={{ background: 'var(--ib-500)', color: 'var(--ib-50)' }} type="button">
+                {savingFile ? 'Saving…' : 'Save project.md'}
               </button>
-            );
-          })}
+              <button className="rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-30" disabled={uploadingFiles} onClick={() => fileInputRef.current?.click()} style={{ background: 'var(--ib-500)', color: 'var(--ib-50)' }} type="button">
+                {uploadingFiles ? 'Uploading…' : 'Upload files'}
+              </button>
+            </>
+          ) : null}
         </div>
       </header>
       {error && (
@@ -1144,38 +1332,165 @@ function ProjectDetailPanel({ project, accessToken, onProjectUpdated }: {
           {error}
         </div>
       )}
-      <div className="flex flex-1 gap-6 p-8">
-        <div className="flex min-w-0 flex-1 flex-col gap-5">
-          <section className="rounded-xl p-5" style={panelStyle}>
-            <p className="font-headline mb-4 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--ib-600)' }}>Info</p>
-            <div className="space-y-3">
-              {[
-                { value: name, onChange: setName, placeholder: 'Project name' },
-                { value: description, onChange: setDescription, placeholder: 'Description (optional)' },
-              ].map((p, i) => (
-                i === 0 ? (
-                  <input key={i} className="w-full rounded-lg px-3 py-2 text-sm outline-none" onBlur={mFB} onChange={(e) => p.onChange(e.target.value)} onFocus={mFC} placeholder={p.placeholder} style={{ background: 'var(--ib-900)', border: '1px solid var(--ib-800)', color: 'var(--ib-100)' }} value={p.value} />
-                ) : (
-                  <textarea key={i} className="w-full resize-none rounded-lg px-3 py-2 text-sm outline-none" onBlur={mFB as unknown as React.FocusEventHandler<HTMLTextAreaElement>} onChange={(e) => p.onChange(e.target.value)} onFocus={mFC as unknown as React.FocusEventHandler<HTMLTextAreaElement>} placeholder={p.placeholder} rows={2} style={{ background: 'var(--ib-900)', border: '1px solid var(--ib-800)', color: 'var(--ib-100)' }} value={p.value} />
-                )
-              ))}
-            </div>
-          </section>
-          <section className="flex flex-1 flex-col rounded-xl" style={panelStyle}>
-            <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--ib-800)' }}>
-              <p className="font-headline text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--ib-600)' }}>project.md</p>
-              <p className="mt-1 text-xs" style={{ color: 'var(--ib-500)' }}>Injected into every agent in this project.</p>
-              {fileDoc && <p className="mt-0.5 text-[11px]" style={{ color: 'var(--ib-700)' }}>Saved {new Date(fileDoc.updatedAt).toLocaleString()}</p>}
-            </div>
-            <textarea
-              className="min-h-[40vh] flex-1 resize-none bg-transparent px-5 py-4 font-mono text-sm leading-7 outline-none"
-              onChange={(e) => setFileDraft(e.target.value)}
-              placeholder="# Project&#10;&#10;Context, goals, decisions…"
-              style={{ color: 'var(--ib-200)' }}
-              value={fileDraft}
-            />
-          </section>
+      <input className="hidden" multiple onChange={(e) => { void uploadFiles(e.target.files); e.currentTarget.value = ''; }} ref={fileInputRef} type="file" />
+      <div className="px-8 pt-5">
+        <div className="inline-flex rounded-xl p-1" style={{ background: 'var(--ti-900)', border: '1px solid var(--ib-800)' }}>
+          {[
+            ['details', 'Project Details'],
+            ['files', 'Files'],
+            ['deck', 'Deck'],
+          ].map(([tab, label]) => (
+            <button
+              className="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+              key={tab}
+              onClick={() => setActiveTab(tab as 'details' | 'files' | 'deck')}
+              style={{
+                background: activeTab === tab ? 'rgba(114,137,192,0.18)' : 'transparent',
+                color: activeTab === tab ? 'var(--ib-100)' : 'var(--ib-500)',
+              }}
+              type="button"
+            >
+              {label}
+            </button>
+          ))}
         </div>
+      </div>
+      <div className="flex flex-1 p-8 pt-6">
+        {activeTab === 'details' ? (
+          <div className="flex min-w-0 flex-1 flex-col gap-5">
+            <section className="rounded-xl p-5" style={panelStyle}>
+              <p className="font-headline mb-4 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--ib-600)' }}>Info</p>
+              <div className="space-y-3">
+                <input className="w-full rounded-lg px-3 py-2 text-sm outline-none" onBlur={mFB} onChange={(e) => setName(e.target.value)} onFocus={mFC} placeholder="Project name" style={{ background: 'var(--ib-900)', border: '1px solid var(--ib-800)', color: 'var(--ib-100)' }} value={name} />
+                <textarea className="w-full resize-none rounded-lg px-3 py-2 text-sm outline-none" onBlur={mFB as unknown as React.FocusEventHandler<HTMLTextAreaElement>} onChange={(e) => setDescription(e.target.value)} onFocus={mFC as unknown as React.FocusEventHandler<HTMLTextAreaElement>} placeholder="Description (optional)" rows={3} style={{ background: 'var(--ib-900)', border: '1px solid var(--ib-800)', color: 'var(--ib-100)' }} value={description} />
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {activeTab === 'files' ? (
+          <div className="flex min-w-0 flex-1 flex-col gap-5">
+            <section className="flex min-h-[44vh] flex-col rounded-xl" style={panelStyle}>
+              <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--ib-800)' }}>
+                <p className="font-headline text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--ib-600)' }}>project.md</p>
+                <p className="mt-1 text-xs" style={{ color: 'var(--ib-500)' }}>Injected into every agent in this project.</p>
+                {fileDoc && <p className="mt-0.5 text-[11px]" style={{ color: 'var(--ib-700)' }}>Saved {new Date(fileDoc.updatedAt).toLocaleString()}</p>}
+              </div>
+              <textarea className="min-h-[32vh] flex-1 resize-none bg-transparent px-5 py-4 font-mono text-sm leading-7 outline-none" onChange={(e) => setFileDraft(e.target.value)} placeholder="# Project&#10;&#10;Context, goals, decisions…" style={{ color: 'var(--ib-200)' }} value={fileDraft} />
+            </section>
+            <section className="rounded-xl p-5" style={panelStyle}>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-headline text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--ib-600)' }}>Shared Files</p>
+                  <p className="mt-1 text-xs" style={{ color: 'var(--ib-500)' }}>Agents can read and modify these through project tools.</p>
+                </div>
+              </div>
+              <div className="mt-4 space-y-2">
+                {projectFiles.length === 0 ? (
+                  <div className="rounded-lg px-3 py-3 text-sm" style={{ background: 'var(--ib-900)', color: 'var(--ib-500)' }}>No shared project files yet.</div>
+                ) : projectFiles.map((file) => (
+                  <div className="rounded-lg px-3 py-3" key={file.id} style={{ background: 'var(--ib-900)', border: '1px solid var(--ib-800)' }}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium" style={{ color: 'var(--ib-200)' }}>{file.relativePath}</div>
+                        <div className="mt-1 text-[11px]" style={{ color: 'var(--ib-600)' }}>{file.mimeType} · {Math.max(1, Math.round(file.fileSize / 1024))} KB</div>
+                      </div>
+                      <button className="rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors hover:bg-white/10" onClick={() => { void downloadAuthenticatedFile({ accessToken, downloadPath: file.downloadPath, fileName: file.fileName }).catch(() => undefined); }} style={{ border: '1px solid var(--ib-700)', color: 'var(--ib-300)' }} type="button">
+                        Download
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {activeTab === 'deck' ? (
+          <div className="flex min-w-0 flex-1 flex-col gap-5">
+            <section className="rounded-xl p-5" style={panelStyle}>
+              <p className="font-headline text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--ib-600)' }}>Ticket Deck</p>
+              <div className="mt-4 space-y-3">
+                <input className="w-full rounded-lg px-3 py-2 text-sm outline-none" onBlur={mFB} onChange={(e) => setTicketTitle(e.target.value)} onFocus={mFC} placeholder="Ticket title" style={{ background: 'var(--ib-900)', border: '1px solid var(--ib-800)', color: 'var(--ib-100)' }} value={ticketTitle} />
+                <textarea className="w-full resize-none rounded-lg px-3 py-2 text-sm outline-none" onBlur={mFB as unknown as React.FocusEventHandler<HTMLTextAreaElement>} onChange={(e) => setTicketDescription(e.target.value)} onFocus={mFC as unknown as React.FocusEventHandler<HTMLTextAreaElement>} placeholder="Ticket details" rows={3} style={{ background: 'var(--ib-900)', border: '1px solid var(--ib-800)', color: 'var(--ib-100)' }} value={ticketDescription} />
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <select className={mIC} onBlur={mFB as unknown as React.FocusEventHandler<HTMLSelectElement>} onChange={(e) => setTicketAssignmentMode(e.target.value as 'MANUAL' | 'AUTO')} onFocus={mFC as unknown as React.FocusEventHandler<HTMLSelectElement>} style={mIS} value={ticketAssignmentMode}>
+                    <option value="MANUAL">Manual assignment</option>
+                    <option value="AUTO">Agents decide</option>
+                  </select>
+                  <select className={mIC} disabled={ticketAssignmentMode === 'AUTO'} onBlur={mFB as unknown as React.FocusEventHandler<HTMLSelectElement>} onChange={(e) => setTicketAssignedAgentId(e.target.value)} onFocus={mFC as unknown as React.FocusEventHandler<HTMLSelectElement>} style={mIS} value={ticketAssignedAgentId}>
+                    <option value="">Unassigned</option>
+                    {projectAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                  </select>
+                </div>
+                <button className="w-full rounded-lg px-3 py-2 text-sm font-semibold transition disabled:opacity-30" disabled={savingTicket || !ticketTitle.trim()} onClick={() => { void createTicket(); }} style={{ background: 'var(--ib-500)', color: 'var(--ib-50)' }} type="button">
+                  {savingTicket ? 'Creating…' : 'Add to deck'}
+                </button>
+              </div>
+              <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-3">
+                {([
+                  ['TODO', 'To Do'],
+                  ['IN_PROGRESS', 'In Progress'],
+                  ['DONE', 'Done'],
+                ] as const).map(([columnKey, label]) => (
+                  <div
+                    className="min-h-[320px] rounded-xl p-3"
+                    key={columnKey}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const ticketId = event.dataTransfer.getData('text/plain') || draggingTicketId;
+                      if (!ticketId) return;
+                      setDraggingTicketId(null);
+                      void moveTicketToStatus(ticketId, columnKey);
+                    }}
+                    style={{ background: 'var(--ib-900)', border: '1px solid var(--ib-800)' }}
+                  >
+                    <div className="mb-3 flex items-center justify-between">
+                      <p className="font-headline text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--ib-600)' }}>{label}</p>
+                      <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: 'var(--ti-800)', color: 'var(--ib-400)' }}>{ticketColumns[columnKey].length}</span>
+                    </div>
+                    <div className="space-y-3">
+                      {ticketColumns[columnKey].length === 0 ? (
+                        <div className="rounded-lg px-3 py-3 text-sm" style={{ background: 'rgba(255,255,255,0.02)', color: 'var(--ib-500)' }}>No tickets here.</div>
+                      ) : ticketColumns[columnKey].map((ticket) => (
+                        <div
+                          className="rounded-lg px-3 py-3"
+                          draggable
+                          key={ticket.id}
+                          onDragEnd={() => setDraggingTicketId(null)}
+                          onDragStart={(event) => {
+                            event.dataTransfer.setData('text/plain', ticket.id);
+                            setDraggingTicketId(ticket.id);
+                          }}
+                          style={{ background: 'var(--ti-900)', border: '1px solid var(--ib-800)' }}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold" style={{ color: 'var(--ib-100)' }}>{ticket.title}</div>
+                              {ticket.description ? <div className="mt-1 whitespace-pre-wrap text-[12px]" style={{ color: 'var(--ib-400)' }}>{ticket.description}</div> : null}
+                              <div className="mt-2 text-[11px]" style={{ color: 'var(--ib-600)' }}>#{ticket.id.slice(0, 8)} · by {ticket.createdByUsername}</div>
+                              <div className="mt-1 text-[11px]" style={{ color: 'var(--ib-500)' }}>{ticket.assignedAgentName ? `Assigned to ${ticket.assignedAgentName}` : 'Unassigned'}</div>
+                            </div>
+                            <div className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: 'var(--ti-800)', color: 'var(--ib-300)', border: '1px solid var(--ib-700)' }}>
+                              {ticket.status}
+                            </div>
+                          </div>
+                          <div className="mt-3">
+                            <select className={mIC} onBlur={mFB as unknown as React.FocusEventHandler<HTMLSelectElement>} onChange={(e) => { void updateTicket(ticket.id, { assignedAgentId: e.target.value || null }); }} onFocus={mFC as unknown as React.FocusEventHandler<HTMLSelectElement>} style={mIS} value={ticket.assignedAgentId ?? ''}>
+                              <option value="">Unassigned</option>
+                              {projectAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -1197,12 +1512,10 @@ export function ChatScreen() {
   const [messages, setMessages] = useState<MessageRecord[]>([]);
   const [channelSession, setChannelSession] = useState<ChannelSessionSummary | null>(null);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(() => readStoredSelectedChannelId());
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [navView, setNavView] = useState<NavView>('chat');
-  const [agentStreams, setAgentStreams] = useState<Map<string, AgentStream>>(new Map());
-  const [liveToolCalls, setLiveToolCalls] = useState<Map<string, LiveToolCall[]>>(new Map());
-  const [agentState, setAgentState] = useState<AgentState>('idle');
-  const [agentTodos, setAgentTodos] = useState<Map<string, AgentTodoList>>(new Map());
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => readStoredSelectedProjectId());
+  const [navView, setNavView] = useState<NavView>(() => readStoredNavView());
+  const [sidebarWidth, setSidebarWidth] = useState(() => readStoredSidebarWidth());
+  const [channelLiveStates, setChannelLiveStates] = useState<Map<string, ChannelLiveState>>(new Map());
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>(() => readStoredUnreadCounts());
 
   const [showNewAgent, setShowNewAgent]           = useState(false);
@@ -1227,15 +1540,34 @@ export function ChatScreen() {
   const [providerStatuses, setProviderStatuses]         = useState<ProviderStatus[]>([]);
   const [agentProviderModels, setAgentProviderModels]   = useState<Array<{ id: string; name: string }>>([]);
   const [loadingAgentProviderModels, setLoadingAgentProviderModels] = useState(false);
+  const [selectedSlashSuggestionIndex, setSelectedSlashSuggestionIndex] = useState(0);
 
   const scrollContainerRef  = useRef<HTMLElement | null>(null);
   const attachmentInputRef  = useRef<HTMLInputElement | null>(null);
+  const sidebarResizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const isNearBottomRef     = useRef(true);
   const routingTimeoutRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const routingTimeoutsRef  = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 
   const clearRoutingTimeout = useCallback(() => {
     if (routingTimeoutRef.current) { clearTimeout(routingTimeoutRef.current); routingTimeoutRef.current = null; }
+  }, []);
+
+  const clearChannelRoutingTimeout = useCallback((channelId: string) => {
+    const timeout = routingTimeoutsRef.current.get(channelId);
+    if (!timeout) return;
+    clearTimeout(timeout);
+    routingTimeoutsRef.current.delete(channelId);
+  }, []);
+
+  const updateChannelLiveState = useCallback((channelId: string, updater: (state: ChannelLiveState) => ChannelLiveState) => {
+    setChannelLiveStates((current) => {
+      const next = new Map(current);
+      const previous = next.get(channelId) ?? createEmptyChannelLiveState();
+      next.set(channelId, updater(previous));
+      return next;
+    });
   }, []);
 
   const markChannelAsRead = useCallback((channelId: string) => {
@@ -1251,6 +1583,11 @@ export function ChatScreen() {
   const workspace             = workspaces[0] ?? null;
   const selectedChannel       = channels.find((ch) => ch.id === selectedChannelId) ?? null;
   const selectedProject       = projects.find((p) => p.id === selectedProjectId) ?? null;
+  const currentChannelLiveState = selectedChannelId ? (channelLiveStates.get(selectedChannelId) ?? createEmptyChannelLiveState()) : createEmptyChannelLiveState();
+  const agentStreams = currentChannelLiveState.agentStreams;
+  const liveToolCalls = currentChannelLiveState.liveToolCalls;
+  const agentState = currentChannelLiveState.agentState;
+  const agentTodos = currentChannelLiveState.agentTodos;
   const directChannels        = channels.filter((ch) => ch.type === 'DIRECT');
   const groupChannels         = channels.filter((ch) => ch.type !== 'DIRECT' && !ch.projectId);
   const selectedChannelIsGroup = selectedChannel?.type !== 'DIRECT';
@@ -1258,6 +1595,12 @@ export function ChatScreen() {
   const activeAgents = useMemo(
     () => agents.filter((a) => selectedChannel?.participantAgentIds.includes(a.id)),
     [agents, selectedChannel?.participantAgentIds],
+  );
+  const selectedProjectAgents = useMemo(
+    () => selectedProjectId
+      ? agents.filter((agent) => channels.some((channel) => channel.projectId === selectedProjectId && channel.participantAgentIds.includes(agent.id)))
+      : [],
+    [agents, channels, selectedProjectId],
   );
   const configuredProviders = useMemo(
     () => providerStatuses.filter((provider) => provider.isConfigured),
@@ -1267,9 +1610,19 @@ export function ChatScreen() {
     () => buildSlashSuggestions({ draft, activeAgents }),
     [activeAgents, draft],
   );
+  const visibleSlashSuggestions = slashSuggestions.slice(0, 6);
 
   useEffect(() => { setSelectedChannelAgentIds(selectedChannel?.participantAgentIds ?? []); },
     [selectedChannel?.id, selectedChannel?.participantAgentIds]);
+
+  useEffect(() => {
+    if (visibleSlashSuggestions.length === 0) {
+      setSelectedSlashSuggestionIndex(0);
+      return;
+    }
+
+    setSelectedSlashSuggestionIndex((current) => Math.min(current, visibleSlashSuggestions.length - 1));
+  }, [visibleSlashSuggestions.length]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1283,8 +1636,53 @@ export function ChatScreen() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+
+    if (selectedProjectId) {
+      window.localStorage.setItem(SELECTED_PROJECT_STORAGE_KEY, selectedProjectId);
+    } else {
+      window.localStorage.removeItem(SELECTED_PROJECT_STORAGE_KEY);
+    }
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(NAV_VIEW_STORAGE_KEY, navView);
+  }, [navView]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
     window.localStorage.setItem(UNREAD_COUNTS_STORAGE_KEY, JSON.stringify(unreadCounts));
   }, [unreadCounts]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const onPointerMove = (event: PointerEvent) => {
+      const state = sidebarResizeStateRef.current;
+      if (!state) return;
+      const nextWidth = state.startWidth + (event.clientX - state.startX);
+      setSidebarWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, nextWidth)));
+    };
+
+    const stopResize = () => {
+      sidebarResizeStateRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', stopResize);
+
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', stopResize);
+    };
+  }, []);
 
   useEffect(() => {
     const totalUnread = Object.values(unreadCounts).reduce((sum, count) => sum + count, 0);
@@ -1321,12 +1719,25 @@ export function ChatScreen() {
         setWorkspaces(data.workspaces); setChannels(data.channels);
         setAgents(data.agents); setProjects(data.projects); setProviderStatuses(data.providers ?? []);
         const storedChannelId = readStoredSelectedChannelId();
+        const storedProjectId = readStoredSelectedProjectId();
+        const storedNavView = readStoredNavView();
         const storedChannel = storedChannelId ? data.channels.find((channel) => channel.id === storedChannelId) : null;
+        const storedProject = storedProjectId ? data.projects.find((project) => project.id === storedProjectId) : null;
         const first = data.channels.find((c) => c.type !== 'DIRECT') ?? data.channels[0];
         setSelectedChannelId((cur) => {
+          if (storedNavView === 'project-detail' && storedProject) {
+            return null;
+          }
           const currentChannel = cur ? data.channels.find((channel) => channel.id === cur) : null;
           return currentChannel?.id ?? storedChannel?.id ?? first?.id ?? null;
         });
+        setSelectedProjectId((current) => {
+          const currentProject = current ? data.projects.find((project) => project.id === current) : null;
+          return storedNavView === 'project-detail'
+            ? (currentProject?.id ?? storedProject?.id ?? null)
+            : currentProject?.id ?? null;
+        });
+        setNavView(storedNavView === 'project-detail' && storedProject ? 'project-detail' : 'chat');
         setLoading(false);
       });
     }).catch((e) => { if (cancelled) return; setError(e instanceof Error ? e.message : 'Failed to load.'); setLoading(false); });
@@ -1334,23 +1745,23 @@ export function ChatScreen() {
   }, [accessToken, loadBootstrap, ready, refresh, router, setupRequired, user]);
 
   useEffect(() => {
+    if (navView === 'project-detail') return;
     if (channels.length === 0 || !selectedChannelId) return;
     if (channels.some((channel) => channel.id === selectedChannelId)) return;
 
     const fallback = channels.find((channel) => channel.type !== 'DIRECT') ?? channels[0] ?? null;
     setSelectedChannelId(fallback?.id ?? null);
-  }, [channels, selectedChannelId]);
+  }, [channels, navView, selectedChannelId]);
 
   useEffect(() => {
     if (!accessToken || !selectedChannelId) return;
     let cancelled = false;
-    setAgentStreams(new Map()); setLiveToolCalls(new Map());
-    setAgentState('idle'); setChannelSession(null); clearRoutingTimeout();
+    setChannelSession(null);
     void Promise.all([loadMessages(accessToken, selectedChannelId), loadChannelSession(accessToken, selectedChannelId)])
       .then(([msgs, sess]) => { if (!cancelled) { setMessages(msgs); setChannelSession(sess); } })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load messages.'); });
     return () => { cancelled = true; };
-  }, [accessToken, clearRoutingTimeout, loadChannelSession, loadMessages, selectedChannelId]);
+  }, [accessToken, loadChannelSession, loadMessages, selectedChannelId]);
 
   useEffect(() => {
     if (!selectedChannelId) return;
@@ -1405,7 +1816,9 @@ export function ChatScreen() {
     const onMsg = (m: MessageRecord) => {
       if (m.channelId === selectedChannelId) {
         setMessages((cur) => cur.some((x) => x.id === m.id) ? cur : [...cur, m]);
-        if (isAgentFailure(m)) setAgentState('error');
+        if (isAgentFailure(m)) {
+          updateChannelLiveState(m.channelId, (state) => ({ ...state, agentState: 'error' }));
+        }
         markChannelAsRead(m.channelId);
       } else if (m.senderId !== user?.id) {
         setUnreadCounts((current) => ({
@@ -1420,60 +1833,89 @@ export function ChatScreen() {
     };
 
     const onChunk = (p: { channelId: string; delta: string; tempId: string; agentId: string }) => {
-      if (p.channelId !== selectedChannelId) return;
-      clearRoutingTimeout(); setAgentState('streaming');
-      setAgentStreams((cur) => { const n = new Map(cur); const e = n.get(p.tempId); n.set(p.tempId, { agentId: p.agentId, text: (e?.text ?? '') + p.delta }); return n; });
+      clearChannelRoutingTimeout(p.channelId);
+      updateChannelLiveState(p.channelId, (state) => {
+        const agentStreams = new Map(state.agentStreams);
+        const existing = agentStreams.get(p.tempId);
+        agentStreams.set(p.tempId, { agentId: p.agentId, text: `${existing?.text ?? ''}${p.delta}` });
+        return { ...state, agentState: 'streaming', agentStreams };
+      });
     };
 
     const onEnd = (p: { channelId: string; tempId: string }) => {
-      if (p.channelId !== selectedChannelId) return;
-      clearRoutingTimeout();
-      setAgentStreams((cur) => { const n = new Map(cur); n.delete(p.tempId); return n; });
-      setLiveToolCalls((cur) => { const n = new Map(cur); n.delete(p.tempId); return n; });
+      clearChannelRoutingTimeout(p.channelId);
+      updateChannelLiveState(p.channelId, (state) => {
+        const agentStreams = new Map(state.agentStreams);
+        const liveToolCalls = new Map(state.liveToolCalls);
+        agentStreams.delete(p.tempId);
+        liveToolCalls.delete(p.tempId);
+        const nextState = agentStreams.size > 0 || liveToolCalls.size > 0 ? 'streaming' : 'idle';
+        return { ...state, agentState: nextState, agentStreams, liveToolCalls };
+      });
     };
 
     const onToolStart = (p: { channelId: string; toolName: string; toolCallId: string; turnId: string; agentId: string; arguments?: unknown }) => {
-      if (p.channelId !== selectedChannelId) return;
-      clearRoutingTimeout(); setAgentState('streaming');
-      setAgentStreams((cur) => { const n = new Map(cur); if (!n.has(p.turnId)) n.set(p.turnId, { agentId: p.agentId, text: '' }); return n; });
-      setLiveToolCalls((cur) => {
-        const n = new Map(cur);
-        const calls = n.get(p.turnId) ?? [];
+      clearChannelRoutingTimeout(p.channelId);
+      updateChannelLiveState(p.channelId, (state) => {
+        const agentStreams = new Map(state.agentStreams);
+        const liveToolCalls = new Map(state.liveToolCalls);
+        if (!agentStreams.has(p.turnId)) {
+          agentStreams.set(p.turnId, { agentId: p.agentId, text: '' });
+        }
+        const calls = liveToolCalls.get(p.turnId) ?? [];
         const idx = calls.findIndex((c) => c.toolCallId === p.toolCallId);
         const next: LiveToolCall = { toolCallId: p.toolCallId, toolName: p.toolName, arguments: p.arguments, status: 'running' };
-        if (idx >= 0) { const u = [...calls]; u[idx] = { ...u[idx], ...next }; n.set(p.turnId, u); }
-        else { n.set(p.turnId, [...calls, next]); }
-        return n;
+        if (idx >= 0) {
+          const updated = [...calls];
+          updated[idx] = { ...updated[idx], ...next };
+          liveToolCalls.set(p.turnId, updated);
+        } else {
+          liveToolCalls.set(p.turnId, [...calls, next]);
+        }
+        return { ...state, agentState: 'streaming', agentStreams, liveToolCalls };
+      });
+    };
+
+    const onTurnStart = (p: { channelId: string; turnId: string; agentId: string }) => {
+      clearChannelRoutingTimeout(p.channelId);
+      updateChannelLiveState(p.channelId, (state) => {
+        const agentStreams = new Map(state.agentStreams);
+        if (!agentStreams.has(p.turnId)) agentStreams.set(p.turnId, { agentId: p.agentId, text: '' });
+        return { ...state, agentState: 'streaming', agentStreams };
       });
     };
 
     const onToolEnd = (p: { channelId: string; turnId: string; toolCallId: string; toolName: string; success: boolean; durationMs: number; arguments?: unknown; output?: string; structuredOutput?: Record<string, unknown> }) => {
-      if (p.channelId !== selectedChannelId) return;
-      clearRoutingTimeout();
-      setLiveToolCalls((cur) => {
-        const n = new Map(cur);
-        n.set(p.turnId, (n.get(p.turnId) ?? []).map((c) => c.toolCallId === p.toolCallId ? {
+      clearChannelRoutingTimeout(p.channelId);
+      updateChannelLiveState(p.channelId, (state) => {
+        const liveToolCalls = new Map(state.liveToolCalls);
+        liveToolCalls.set(p.turnId, (liveToolCalls.get(p.turnId) ?? []).map((c) => c.toolCallId === p.toolCallId ? {
           ...c, toolName: p.toolName, arguments: p.arguments ?? c.arguments,
           output: p.output, durationMs: p.durationMs, success: p.success,
           status: p.success ? 'success' : 'failed',
         } : c));
-        return n;
+        return { ...state, agentState: 'streaming', liveToolCalls };
       });
     };
 
-    const onDisconnect = () => { clearRoutingTimeout(); setAgentState('idle'); setAgentStreams(new Map()); setLiveToolCalls(new Map()); };
+    const onDisconnect = () => { clearRoutingTimeout(); };
 
     const onRouting = (p: { channelId: string; selectedCount: number }) => {
-      if (p.channelId !== selectedChannelId) return;
-      if (p.selectedCount === 0) { clearRoutingTimeout(); setAgentState('idle'); setAgentStreams(new Map()); setLiveToolCalls(new Map()); }
+      if (p.selectedCount !== 0) return;
+      clearChannelRoutingTimeout(p.channelId);
+      updateChannelLiveState(p.channelId, (state) => ({
+        ...state,
+        agentState: 'idle',
+        agentStreams: new Map(),
+        liveToolCalls: new Map(),
+      }));
     };
 
     const onTodosUpdate = (p: { agentId: string; channelId: string; agentName: string; todos: AgentTodo[] }) => {
-      if (p.channelId !== selectedChannelId) return;
-      setAgentTodos((cur) => {
-        const n = new Map(cur);
-        n.set(p.agentId, { agentId: p.agentId, agentName: p.agentName, todos: p.todos });
-        return n;
+      updateChannelLiveState(p.channelId, (state) => {
+        const agentTodos = new Map(state.agentTodos);
+        agentTodos.set(p.agentId, { agentId: p.agentId, agentName: p.agentName, todos: p.todos });
+        return { ...state, agentTodos };
       });
     };
 
@@ -1485,20 +1927,21 @@ export function ChatScreen() {
     socket.on('message:stream:chunk', onChunk);
     socket.on('message:stream:end', onEnd);
     socket.on('message:routing:complete', onRouting);
+    socket.on('agent:turn:start', onTurnStart);
     socket.on('agent:tool:start', onToolStart);
     socket.on('agent:tool:end', onToolEnd);
     socket.on('agent:todos:update', onTodosUpdate);
     socket.on('disconnect', onDisconnect);
-    socket.on('error', (p: { message: string }) => { clearRoutingTimeout(); setAgentState('error'); setError(p.message); });
+    socket.on('error', (p: { message: string }) => { clearRoutingTimeout(); setError(p.message); });
 
     return () => {
       channels.forEach((channel) => {
         socket.emit('channel:leave', { channelId: channel.id });
       });
-      (['message:new','message:stream:chunk','message:stream:end','message:routing:complete',
+      (['message:new','message:stream:chunk','message:stream:end','message:routing:complete','agent:turn:start',
        'agent:tool:start','agent:tool:end','agent:todos:update','disconnect','error'] as const).forEach((e) => socket.off(e));
     };
-  }, [accessToken, channels, clearRoutingTimeout, loadChannelSession, markChannelAsRead, selectedChannelId, user?.id]);
+  }, [accessToken, channels, clearChannelRoutingTimeout, clearRoutingTimeout, loadChannelSession, markChannelAsRead, selectedChannelId, updateChannelLiveState, user?.id]);
 
   const handleScroll = useCallback(() => {
     const c = scrollContainerRef.current;
@@ -1516,22 +1959,74 @@ export function ChatScreen() {
   const runCompactCommand = useCallback(async (cmd: { all: true } | { agentSlug: string }) => {
     if (!accessToken || !selectedChannelId) return;
     setError(null);
+    const commandText = 'all' in cmd ? '/compact all' : `/compact ${cmd.agentSlug}`;
+    const optimisticMessage: MessageRecord = {
+      id: `local-compact-${Date.now()}`,
+      channelId: selectedChannelId,
+      senderId: user?.id ?? 'local-user',
+      senderType: 'USER',
+      senderName: user?.username ?? 'You',
+      content: commandText,
+      contentType: 'TEXT',
+      metadata: { localOnly: true, command: 'compact' },
+      createdAt: new Date().toISOString(),
+      editedAt: null,
+      deletedAt: null,
+    };
+    setMessages((current) => current.some((message) => message.id === optimisticMessage.id) ? current : [...current, optimisticMessage]);
     try {
-      await apiJson<CompactChannelSessionResult>(`/channels/${selectedChannelId}/session/compact`, {
+      const result = await apiJson<CompactChannelSessionResult>(`/channels/${selectedChannelId}/session/compact`, {
         method: 'POST', headers: { Authorization: `Bearer ${accessToken}` }, body: JSON.stringify(cmd),
       });
       setChannelSession(await loadChannelSession(accessToken, selectedChannelId));
       setDraft('');
+      if (result.compactedAgentNames.length === 0) {
+        setMessages((current) => current.concat({
+          id: `local-compact-result-${Date.now()}`,
+          channelId: selectedChannelId,
+          senderId: 'system',
+          senderType: 'AGENT',
+          senderName: 'System',
+          content: result.message,
+          contentType: 'SYSTEM',
+          metadata: { localOnly: true, compaction: { skippedAgentNames: result.skippedAgentNames } },
+          createdAt: new Date().toISOString(),
+          editedAt: null,
+          deletedAt: null,
+        }));
+      }
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to compact.'); }
-  }, [accessToken, loadChannelSession, selectedChannelId]);
+  }, [accessToken, loadChannelSession, selectedChannelId, user?.id, user?.username]);
+
+  const applySlashSuggestion = useCallback((suggestion: SlashSuggestion) => {
+    setDraft(suggestion.value);
+    setSelectedSlashSuggestionIndex(0);
+  }, []);
+
+  const hasVisibleSlashSuggestions = visibleSlashSuggestions.length > 0;
 
   const submitMessage = useCallback(async () => {
     if (!canSend || !accessToken || !selectedChannelId) return;
     const cmd = parseCompactCommand(draft);
     if (cmd) { void runCompactCommand(cmd); return; }
-    clearRoutingTimeout(); setAgentState('queued');
-    setAgentStreams(new Map()); setLiveToolCalls(new Map()); setError(null);
-    routingTimeoutRef.current = setTimeout(() => { setAgentState('idle'); setAgentStreams(new Map()); setLiveToolCalls(new Map()); }, 20_000);
+    clearRoutingTimeout();
+    clearChannelRoutingTimeout(selectedChannelId);
+    updateChannelLiveState(selectedChannelId, (state) => ({
+      ...state,
+      agentState: 'queued',
+      agentStreams: new Map(),
+      liveToolCalls: new Map(),
+    }));
+    setError(null);
+    routingTimeoutsRef.current.set(selectedChannelId, setTimeout(() => {
+      updateChannelLiveState(selectedChannelId, (state) => {
+        if (state.agentStreams.size > 0 || state.liveToolCalls.size > 0) {
+          return state;
+        }
+        return { ...state, agentState: 'idle' };
+      });
+      routingTimeoutsRef.current.delete(selectedChannelId);
+    }, 20_000));
 
     try {
       await apiJson<MessageRecord>(`/channels/${selectedChannelId}/messages`, {
@@ -1552,10 +2047,11 @@ export function ChatScreen() {
       setPendingAttachments([]);
     } catch (e) {
       clearRoutingTimeout();
-      setAgentState('error');
+      clearChannelRoutingTimeout(selectedChannelId);
+      updateChannelLiveState(selectedChannelId, (state) => ({ ...state, agentState: 'error' }));
       setError(e instanceof Error ? e.message : 'Failed to send message.');
     }
-  }, [accessToken, canSend, clearRoutingTimeout, draft, pendingAttachments, runCompactCommand, selectedChannelId]);
+  }, [accessToken, canSend, clearChannelRoutingTimeout, clearRoutingTimeout, draft, pendingAttachments, runCompactCommand, selectedChannelId, updateChannelLiveState]);
 
   const handleAttachmentSelect = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
@@ -1650,6 +2146,12 @@ export function ChatScreen() {
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed.'); } finally { setSavingProjectChannel(false); }
   }, [accessToken, projectChannelAgentIds, projectChannelName, showAddProjectChannel]);
 
+  const startSidebarResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    sidebarResizeStateRef.current = { startX: event.clientX, startWidth: sidebarWidth };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, [sidebarWidth]);
+
   const saveGroupMembers = useCallback(async () => {
     if (!accessToken || !selectedChannel || !selectedChannelIsGroup) return;
     setSavingMembers(true);
@@ -1660,15 +2162,44 @@ export function ChatScreen() {
   }, [accessToken, selectedChannel, selectedChannelAgentIds, selectedChannelIsGroup]);
 
   const activeTurnIds   = useMemo(() => new Set([...agentStreams.keys(), ...liveToolCalls.keys()]), [agentStreams, liveToolCalls]);
+  const activeExecutingAgentIds = useMemo(
+    () => new Set(Array.from(agentStreams.values(), (stream) => stream.agentId)),
+    [agentStreams],
+  );
   const activeStreamCount = activeTurnIds.size;
+  const stoppableAgents = useMemo(
+    () => activeAgents.filter((agent) => activeExecutingAgentIds.has(agent.id)),
+    [activeAgents, activeExecutingAgentIds],
+  );
   const agentStateLabel = activeStreamCount > 1 ? `${activeStreamCount} agents replying`
     : agentState === 'streaming' ? 'Replying'
     : agentState === 'queued'   ? 'Routing…'
     : agentState === 'error'    ? 'Error'
     : 'Ready';
 
-  useEffect(() => { if (agentState === 'streaming' && activeStreamCount === 0) setAgentState('idle'); },
-    [activeStreamCount, agentState]);
+  useEffect(() => {
+    if (!selectedChannelId) return;
+    if ((agentState === 'streaming' || agentState === 'queued') && activeStreamCount === 0) {
+      updateChannelLiveState(selectedChannelId, (state) => ({ ...state, agentState: 'idle' }));
+    }
+  }, [activeStreamCount, agentState, selectedChannelId, updateChannelLiveState]);
+
+  const stopAgentExecution = useCallback(async (agentId: string) => {
+    if (!accessToken || !selectedChannelId) return;
+
+    try {
+      const result = await apiJson<StopAgentExecutionResult>(`/channels/${selectedChannelId}/agents/${agentId}/stop`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (!result.stopped) {
+        setError(result.message);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to stop agent.');
+    }
+  }, [accessToken, selectedChannelId]);
 
   if (loading || !ready) {
     return (
@@ -1689,8 +2220,8 @@ export function ChatScreen() {
 
         {/* ── Sidebar ──────────────────────────────────────────────────────── */}
         <aside
-          className="flex w-[272px] shrink-0 flex-col"
-          style={{ background: sdBg, borderRight: sdBdr }}
+          className="relative flex shrink-0 flex-col"
+          style={{ width: sidebarWidth, background: sdBg, borderRight: sdBdr }}
         >
           {/* Workspace header */}
           <div
@@ -1795,6 +2326,15 @@ export function ChatScreen() {
               Provider Settings
             </Link>
           </div>
+          <div
+            aria-label="Resize sidebar"
+            className="absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize"
+            onPointerDown={startSidebarResize}
+            role="separator"
+            style={{ transform: 'translateX(50%)' }}
+          >
+            <div className="mx-auto h-full w-px" style={{ background: 'rgba(255,255,255,0.08)' }} />
+          </div>
         </aside>
 
         {/* ── Main area ────────────────────────────────────────────────────── */}
@@ -1805,6 +2345,7 @@ export function ChatScreen() {
               accessToken={accessToken}
               onProjectUpdated={(p) => setProjects((cur) => cur.map((pr) => pr.id === p.id ? p : pr))}
               project={selectedProject}
+              projectAgents={selectedProjectAgents}
             />
           ) : null}
 
@@ -1872,14 +2413,37 @@ export function ChatScreen() {
                     <span className="text-[12px]" style={{ color: 'var(--ib-600)' }}>{agentStateLabel}</span>
                   </div>
                   {selectedChannel?.type === 'DIRECT' && activeAgents[0] && (
-                    <Link
-                      className="rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors hover:bg-white/10"
-                      href={`/agents/${activeAgents[0].id}`}
-                      style={{ border: '1px solid var(--ib-800)', color: 'var(--ib-400)' }}
-                    >
-                      Workspace
-                    </Link>
+                    <>
+                      {(agentState === 'queued' || agentState === 'streaming') && (
+                        <button
+                          className="rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors hover:bg-white/10"
+                          onClick={() => { void stopAgentExecution(activeAgents[0].id); }}
+                          style={{ border: '1px solid rgba(239,68,68,0.35)', color: '#fca5a5' }}
+                          type="button"
+                        >
+                          Stop
+                        </button>
+                      )}
+                      <Link
+                        className="rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors hover:bg-white/10"
+                        href={`/agents/${activeAgents[0].id}`}
+                        style={{ border: '1px solid var(--ib-800)', color: 'var(--ib-400)' }}
+                      >
+                        Workspace
+                      </Link>
+                    </>
                   )}
+                  {selectedChannelIsGroup && stoppableAgents.map((agent) => (
+                    <button
+                      className="rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors hover:bg-white/10"
+                      key={agent.id}
+                      onClick={() => { void stopAgentExecution(agent.id); }}
+                      style={{ border: '1px solid rgba(239,68,68,0.35)', color: '#fca5a5' }}
+                      type="button"
+                    >
+                      Stop {agent.name}
+                    </button>
+                  ))}
                   {selectedChannelIsGroup && selectedChannel && (
                     <button
                       className="rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors hover:bg-white/10"
@@ -2031,6 +2595,24 @@ export function ChatScreen() {
                                     {attachment.mimeType}
                                     {typeof attachment.fileSize === 'number' ? ` · ${Math.max(1, Math.round(attachment.fileSize / 1024))} KB` : ''}
                                   </div>
+                                  {attachment.downloadPath ? (
+                                    <button
+                                      className="mt-2 inline-flex items-center rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors hover:bg-white/10"
+                                      onClick={() => {
+                                        const downloadPath = attachment.downloadPath;
+                                        if (!downloadPath) return;
+                                        void downloadMessageAttachment({
+                                          accessToken,
+                                          downloadPath,
+                                          fileName: attachment.fileName,
+                                        }).catch(() => null);
+                                      }}
+                                      style={{ border: '1px solid var(--ib-700)', color: 'var(--ib-300)' }}
+                                      type="button"
+                                    >
+                                      Download
+                                    </button>
+                                  ) : null}
                                   {attachment.relativePath ? (
                                     <div className="mt-1 text-[10px] font-mono" style={{ color: 'var(--ib-500)' }}>
                                       Workspace path: {attachment.relativePath}
@@ -2157,18 +2739,19 @@ export function ChatScreen() {
                   className="mx-auto max-w-3xl overflow-hidden rounded-2xl"
                   style={{ background: 'var(--ti-900)', border: '1px solid var(--ib-700)', boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}
                 >
-                  {slashSuggestions.length > 0 && (
+                  {hasVisibleSlashSuggestions && (
                     <div
                       className="px-4 py-2"
                       style={{ borderBottom: '1px solid var(--ib-800)' }}
                     >
                       <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--ib-600)' }}>Commands</div>
                       <div className="space-y-0.5">
-                        {slashSuggestions.slice(0, 6).map((s) => (
+                        {visibleSlashSuggestions.map((s, index) => (
                           <button
                             className="flex w-full items-start justify-between gap-3 rounded-xl px-3 py-1.5 text-left transition-colors hover:bg-white/[0.06]"
                             key={s.value}
-                            onClick={() => setDraft(s.value)}
+                            onClick={() => applySlashSuggestion(s)}
+                            style={{ background: selectedSlashSuggestionIndex === index ? 'rgba(255,255,255,0.06)' : 'transparent' }}
                             type="button"
                           >
                             <span className="font-mono text-[13px] font-medium" style={{ color: 'var(--ib-200)' }}>{s.label}</span>
@@ -2208,6 +2791,28 @@ export function ChatScreen() {
                     className="min-h-[88px] w-full resize-none bg-transparent px-4 pt-3 text-[16px] leading-relaxed outline-none"
                     onChange={(e) => setDraft(e.target.value)}
                     onKeyDown={(e) => {
+                      if (hasVisibleSlashSuggestions && e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        setSelectedSlashSuggestionIndex((current) => (current + 1) % visibleSlashSuggestions.length);
+                        return;
+                      }
+                      if (hasVisibleSlashSuggestions && e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        setSelectedSlashSuggestionIndex((current) => (current - 1 + visibleSlashSuggestions.length) % visibleSlashSuggestions.length);
+                        return;
+                      }
+                      if (hasVisibleSlashSuggestions && e.key === 'Tab') {
+                        e.preventDefault();
+                        const suggestion = visibleSlashSuggestions[selectedSlashSuggestionIndex] ?? visibleSlashSuggestions[0];
+                        if (suggestion) applySlashSuggestion(suggestion);
+                        return;
+                      }
+                      if (hasVisibleSlashSuggestions && e.key === 'Enter' && !e.metaKey && !e.ctrlKey) {
+                        e.preventDefault();
+                        const suggestion = visibleSlashSuggestions[selectedSlashSuggestionIndex] ?? visibleSlashSuggestions[0];
+                        if (suggestion) applySlashSuggestion(suggestion);
+                        return;
+                      }
                       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submitMessage(); }
                     }}
                     onPaste={(e) => { void handleComposerPaste(e); }}

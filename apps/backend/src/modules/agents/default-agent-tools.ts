@@ -66,6 +66,62 @@ export function buildDefaultAgentTools() {
       requiresApproval: false,
     },
     {
+      toolName: 'send_file',
+      config: {
+        description: 'Send an existing workspace file to the current channel as a downloadable attachment.',
+        access: 'current-channel',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'project_list_files',
+      config: {
+        description: 'List shared project files and active tickets in the current project.',
+        access: 'current-channel',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'project_read_file',
+      config: {
+        description: 'Read a shared file from the current project.',
+        access: 'current-channel',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'project_write_file',
+      config: {
+        description: 'Create or update a shared text file in the current project.',
+        access: 'current-channel',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'project_ticket_list',
+      config: {
+        description: 'List active project tickets in the current project.',
+        access: 'current-channel',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'project_ticket_claim',
+      config: {
+        description: 'Claim a current-project ticket and move it into in-progress.',
+        access: 'current-channel',
+      },
+      requiresApproval: false,
+    },
+    {
+      toolName: 'project_ticket_update',
+      config: {
+        description: 'Update the status or description of a current-project ticket.',
+        access: 'current-channel',
+      },
+      requiresApproval: false,
+    },
+    {
       toolName: 'todowrite',
       config: {
         description: 'Create or update a structured todo list for multi-step work.',
