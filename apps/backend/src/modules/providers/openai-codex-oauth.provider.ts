@@ -271,7 +271,9 @@ export class OpenAICodexOAuthProvider extends BaseProvider {
         return;
       }
 
-      throw new Error(formatFetchFailure(error, 'OpenAI Codex OAuth token refresh failed'));
+      throw new Error(formatFetchFailure(error, 'OpenAI Codex OAuth token refresh failed'), {
+        cause: error,
+      });
     }
 
     if (!response.ok) {
@@ -328,7 +330,9 @@ export class OpenAICodexOAuthProvider extends BaseProvider {
           signal: options.abortSignal as AbortSignal | undefined,
         });
       } catch (error) {
-        throw new Error(formatFetchFailure(error, 'OpenAI Codex network request failed'));
+        throw new Error(formatFetchFailure(error, 'OpenAI Codex network request failed'), {
+          cause: error,
+        });
       }
     };
 

@@ -110,8 +110,8 @@ function createEmptyChannelLiveState(): ChannelLiveState {
 function hydrateChannelLiveState(snapshot: ChannelLiveStateSnapshot): ChannelLiveState {
   return {
     agentState: snapshot.agentState,
-    agentStreams: new Map(snapshot.turns.map((turn: any) => [turn.tempId, { agentId: turn.agentId, text: turn.text }])),
-    liveToolCalls: new Map(snapshot.turns.map((turn: any) => [turn.tempId, turn.toolCalls.map((toolCall: any) => ({
+    agentStreams: new Map(snapshot.turns.map((turn) => [turn.tempId, { agentId: turn.agentId, text: turn.text }])),
+    liveToolCalls: new Map(snapshot.turns.map((turn) => [turn.tempId, turn.toolCalls.map((toolCall) => ({
       toolCallId: toolCall.toolCallId,
       toolName: toolCall.toolName,
       status: toolCall.status,
@@ -120,7 +120,7 @@ function hydrateChannelLiveState(snapshot: ChannelLiveStateSnapshot): ChannelLiv
       durationMs: toolCall.durationMs,
       success: toolCall.success,
     }))])),
-    agentTodos: new Map(snapshot.todos.map((todo: any) => [todo.agentId, todo])),
+    agentTodos: new Map(snapshot.todos.map((todo) => [todo.agentId, todo])),
   };
 }
 
@@ -2161,7 +2161,7 @@ export function ChatScreen() {
       setChannels((cur) => cur.some((c) => c.id === ch.id) ? cur.map((c) => c.id === ch.id ? ch : c) : [...cur, ch]);
       selectChannel(ch.id);
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed.'); }
-  }, [accessToken]);
+  }, [accessToken, selectChannel]);
 
   const createGroupChat = useCallback(async () => {
     if (!accessToken || !workspace) return;
@@ -2172,7 +2172,7 @@ export function ChatScreen() {
       setChannels((cur) => [...cur, c]); selectChannel(c.id);
       setShowNewGroup(false); setGroupName(''); setGroupAgentIds([]);
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed.'); } finally { setSavingGroup(false); }
-  }, [accessToken, groupAgentIds, groupName, workspace]);
+  }, [accessToken, groupAgentIds, groupName, selectChannel, workspace]);
 
   const createProject = useCallback(async () => {
     if (!accessToken || !workspace) return;
@@ -2192,7 +2192,7 @@ export function ChatScreen() {
       setChannels((cur) => [...cur, c]); selectChannel(c.id);
       setShowAddProjectChannel(null); setProjectChannelName(''); setProjectChannelAgentIds([]);
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed.'); } finally { setSavingProjectChannel(false); }
-  }, [accessToken, projectChannelAgentIds, projectChannelName, showAddProjectChannel]);
+  }, [accessToken, projectChannelAgentIds, projectChannelName, selectChannel, showAddProjectChannel]);
 
   const startSidebarResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     sidebarResizeStateRef.current = { startX: event.clientX, startWidth: sidebarWidth };
