@@ -100,6 +100,8 @@ Windows local runtime data defaults to:
 systemctl --user status nextgenchat.service
 journalctl --user -u nextgenchat.service -f
 pnpm stop
+pnpm service:disable
+pnpm service:remove
 ```
 
 ### Windows
@@ -107,6 +109,8 @@ pnpm stop
 ```powershell
 schtasks /Query /TN NextGenChat
 pnpm dev:local:win
+pnpm service:disable:win
+pnpm service:remove:win
 ```
 
 ## Development install

@@ -10,6 +10,7 @@ SERVICE_NAME="nextgenchat.service"
 SERVICE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SERVICE_FILE="$SERVICE_DIR/$SERVICE_NAME"
 RESTART_SERVICE="${NEXTGENCHAT_RESTART_SERVICE:-0}"
+LINGER_ENABLED="unknown"
 
 if ! command -v systemctl >/dev/null 2>&1; then
   echo "systemctl is required to install the NextGenChat service." >&2
@@ -18,6 +19,7 @@ fi
 
 if command -v loginctl >/dev/null 2>&1; then
   loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+  LINGER_ENABLED="$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || printf 'unknown')"
 fi
 
 mkdir -p "$SERVICE_DIR"
@@ -52,4 +54,13 @@ if systemctl --user is-active --quiet "$SERVICE_NAME"; then
 else
   systemctl --user start "$SERVICE_NAME"
   echo "Installed and started $SERVICE_NAME"
+fi
+
+if [ "$LINGER_ENABLED" = "yes" ]; then
+  echo "User lingering is enabled; the service should start again after reboot."
+elif [ "$LINGER_ENABLED" = "no" ]; then
+  echo "Warning: user lingering is disabled. The service may not restart after reboot until you log in again." >&2
+  echo "Run: sudo loginctl enable-linger $USER" >&2
+else
+  echo "Warning: could not verify user lingering state. Reboot persistence depends on systemd user lingering." >&2
 fi
