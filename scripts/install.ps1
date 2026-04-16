@@ -30,8 +30,15 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 $repoDir = Ensure-Repo
 Set-Location $repoDir
 
-powershell -ExecutionPolicy Bypass -File "scripts/setup.ps1"
-powershell -ExecutionPolicy Bypass -File "scripts/service-install.ps1"
+& powershell -ExecutionPolicy Bypass -File "scripts/setup.ps1"
+if ($LASTEXITCODE -ne 0) {
+    throw "NextGenChat Windows setup failed with exit code $LASTEXITCODE"
+}
+
+& powershell -ExecutionPolicy Bypass -File "scripts/service-install.ps1"
+if ($LASTEXITCODE -ne 0) {
+    throw "NextGenChat Windows service installation failed with exit code $LASTEXITCODE"
+}
 
 Write-Host ""
 Write-Host "NextGenChat is installed as a Windows Scheduled Task." -ForegroundColor Green

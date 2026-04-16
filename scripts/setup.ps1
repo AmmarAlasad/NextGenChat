@@ -22,6 +22,41 @@ function Invoke-GenerateSecret {
     return (node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))")
 }
 
+function Get-PnpmCommand {
+    if (Get-Command pnpm.cmd -ErrorAction SilentlyContinue) {
+        return @{ FilePath = "pnpm.cmd"; PrefixArgs = @() }
+    }
+
+    if (Get-Command pnpm -ErrorAction SilentlyContinue) {
+        return @{ FilePath = "pnpm"; PrefixArgs = @() }
+    }
+
+    if (Get-Command corepack.cmd -ErrorAction SilentlyContinue) {
+        return @{ FilePath = "corepack.cmd"; PrefixArgs = @("pnpm") }
+    }
+
+    if (Get-Command corepack -ErrorAction SilentlyContinue) {
+        return @{ FilePath = "corepack"; PrefixArgs = @("pnpm") }
+    }
+
+    return $null
+}
+
+function Invoke-Pnpm {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+
+    $pnpmCommand = Get-PnpmCommand
+    if (-not $pnpmCommand) {
+        Write-Error "pnpm is required. Install it with: npm install -g pnpm"
+        exit 1
+    }
+
+    & $pnpmCommand.FilePath @($pnpmCommand.PrefixArgs + $Arguments)
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+}
+
 function Set-EnvValue {
     param([string]$key, [string]$value)
     
@@ -47,7 +82,7 @@ if (Get-Command corepack -ErrorAction SilentlyContinue) {
     corepack prepare pnpm@10.33.0 --activate | Out-Null
 }
 
-if (Get-Command pnpm -ErrorAction SilentlyContinue) { Write-Ok "pnpm is available" } else { Write-Error "pnpm is required. Install it with: npm install -g pnpm"; exit 1 }
+if (Get-PnpmCommand) { Write-Ok "pnpm is available" } else { Write-Error "pnpm is required. Install it with: npm install -g pnpm"; exit 1 }
 
 Write-Step "Creating local environment"
 
@@ -84,12 +119,12 @@ Copy-Item ".env" "apps/backend/.env" -Force
 Write-Ok "Synced backend Prisma env"
 
 Write-Step "Installing workspace dependencies"
-pnpm install
+Invoke-Pnpm install
 Write-Ok "Dependencies installed"
 
 Write-Step "Syncing Prisma client and local database"
-pnpm --filter @nextgenchat/backend prisma:generate
-pnpm --filter @nextgenchat/backend prisma:push
+Invoke-Pnpm --filter @nextgenchat/backend prisma:generate
+Invoke-Pnpm --filter @nextgenchat/backend prisma:push
 Write-Ok "SQLite schema is ready"
 
 Write-Host "`n[OK] Local setup complete" -ForegroundColor Green

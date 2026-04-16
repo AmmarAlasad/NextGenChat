@@ -3,6 +3,26 @@ $ErrorActionPreference = "Stop"
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location (Join-Path $rootDir "..")
 
+function Get-PnpmLaunchCommand {
+    if (Get-Command pnpm.cmd -ErrorAction SilentlyContinue) {
+        return @{ FilePath = "pnpm.cmd"; PrefixArgs = @() }
+    }
+
+    if (Get-Command pnpm -ErrorAction SilentlyContinue) {
+        return @{ FilePath = "pnpm"; PrefixArgs = @() }
+    }
+
+    if (Get-Command corepack.cmd -ErrorAction SilentlyContinue) {
+        return @{ FilePath = "corepack.cmd"; PrefixArgs = @("pnpm") }
+    }
+
+    if (Get-Command corepack -ErrorAction SilentlyContinue) {
+        return @{ FilePath = "corepack"; PrefixArgs = @("pnpm") }
+    }
+
+    throw "pnpm is required to run NextGenChat on Windows."
+}
+
 if (-not (Test-Path ".env")) {
     Write-Error ".env file not found. Run scripts/setup.ps1 first."
     exit 1
@@ -10,16 +30,18 @@ if (-not (Test-Path ".env")) {
 
 Copy-Item ".env" "apps/backend/.env" -Force
 
-pnpm --filter @nextgenchat/backend prisma:generate
-pnpm --filter @nextgenchat/backend prisma:push
-pnpm build
+$pnpmCommand = Get-PnpmLaunchCommand
+
+& $pnpmCommand.FilePath @($pnpmCommand.PrefixArgs + @("--filter", "@nextgenchat/backend", "prisma:generate"))
+& $pnpmCommand.FilePath @($pnpmCommand.PrefixArgs + @("--filter", "@nextgenchat/backend", "prisma:push"))
+& $pnpmCommand.FilePath @($pnpmCommand.PrefixArgs + @("build"))
 
 $backend = $null
 $web = $null
 
 try {
-    $backend = Start-Process -FilePath "pnpm.cmd" -ArgumentList "--filter", "@nextgenchat/backend", "start" -WorkingDirectory (Get-Location).Path -PassThru -Environment @{ PORT = "3001" }
-    $web = Start-Process -FilePath "pnpm.cmd" -ArgumentList "--filter", "@nextgenchat/web", "start" -WorkingDirectory (Get-Location).Path -PassThru -Environment @{ PORT = "3000" }
+    $backend = Start-Process -FilePath $pnpmCommand.FilePath -ArgumentList @($pnpmCommand.PrefixArgs + @("--filter", "@nextgenchat/backend", "start")) -WorkingDirectory (Get-Location).Path -PassThru -Environment @{ PORT = "3001" }
+    $web = Start-Process -FilePath $pnpmCommand.FilePath -ArgumentList @($pnpmCommand.PrefixArgs + @("--filter", "@nextgenchat/web", "start")) -WorkingDirectory (Get-Location).Path -PassThru -Environment @{ PORT = "3000" }
 
     while ($true) {
         Start-Sleep -Seconds 2
