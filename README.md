@@ -152,6 +152,8 @@ pnpm dev:local:win
 - context compaction and token budgeting
 - provider usage status in settings
 
+![Group chat screenshot](./assets/group-chat.png)
+
 ## Agents
 
 NextGenChat lets you create and manage agents as durable entities.
