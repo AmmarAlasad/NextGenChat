@@ -1,15 +1,26 @@
 {
   "name": "nextgenchat",
   "version": "0.1.0",
-  "private": true,
-  "description": "Collaborative AI agent chat platform",
+  "description": "Local-first collaborative AI agent workspace platform",
+  "bin": {
+    "nextgenchat": "./bin/nextgenchat.js"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
   "scripts": {
     "setup": "bash scripts/setup.sh",
     "setup:local": "bash scripts/setup.sh",
     "setup:local:win": "powershell -ExecutionPolicy Bypass -File scripts/setup.ps1",
     "install:local": "bash scripts/install.sh",
+    "install:local:win": "powershell -ExecutionPolicy Bypass -File scripts/install.ps1",
     "service:install": "bash scripts/service-install.sh",
+    "service:install:win": "powershell -ExecutionPolicy Bypass -File scripts/service-install.ps1",
     "service:run": "bash scripts/service-run.sh",
+    "service:run:win": "powershell -ExecutionPolicy Bypass -File scripts/service-run.ps1",
     "service:status": "systemctl --user status nextgenchat.service",
     "service:logs": "journalctl --user -u nextgenchat.service -f",
     "service:stop": "systemctl --user stop nextgenchat.service",
@@ -24,9 +35,30 @@
     "test": "turbo test",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\""
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "ai",
+    "agents",
+    "chat",
+    "local-first",
+    "mcp",
+    "nextjs",
+    "fastify",
+    "workspace",
+    "automation"
+  ],
+  "author": "Ammar Alasad",
+  "license": "MIT",
+  "homepage": "https://github.com/AmmarAlasad/NextGenChat",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AmmarAlasad/NextGenChat.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AmmarAlasad/NextGenChat/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "packageManager": "pnpm@10.33.0",
   "devDependencies": {
     "@eslint/js": "^10.0.1",

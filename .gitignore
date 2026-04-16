@@ -16,6 +16,7 @@ out/
 .idea/
 *.swp
 *.swo
+.claude/settings.local.json
 
 # OS
 .DS_Store
@@ -37,6 +38,7 @@ coverage/
 *.db
 *.db-shm
 *.db-wal
+.nextgenchat-install-state
 
 # Agent workspace runtime data
 apps/backend/agent-workspaces/

@@ -57,6 +57,25 @@ type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
 type TodoPriority = 'high' | 'medium' | 'low';
 interface AgentTodo { content: string; status: TodoStatus; priority: TodoPriority; }
 interface AgentTodoList { agentId: string; agentName: string; todos: AgentTodo[]; }
+interface ChannelLiveStateSnapshot {
+  channelId: string;
+  agentState: AgentState;
+  turns: Array<{
+    tempId: string;
+    agentId: string;
+    text: string;
+    toolCalls: Array<{
+      toolCallId: string;
+      toolName: string;
+      status: ToolCallStatus;
+      arguments?: unknown;
+      output?: string;
+      durationMs?: number;
+      success?: boolean;
+    }>;
+  }>;
+  todos: AgentTodoList[];
+}
 interface ChannelLiveState {
   agentState: AgentState;
   agentStreams: Map<string, AgentStream>;
@@ -85,6 +104,23 @@ function createEmptyChannelLiveState(): ChannelLiveState {
     agentStreams: new Map(),
     liveToolCalls: new Map(),
     agentTodos: new Map(),
+  };
+}
+
+function hydrateChannelLiveState(snapshot: ChannelLiveStateSnapshot): ChannelLiveState {
+  return {
+    agentState: snapshot.agentState,
+    agentStreams: new Map(snapshot.turns.map((turn: any) => [turn.tempId, { agentId: turn.agentId, text: turn.text }])),
+    liveToolCalls: new Map(snapshot.turns.map((turn: any) => [turn.tempId, turn.toolCalls.map((toolCall: any) => ({
+      toolCallId: toolCall.toolCallId,
+      toolName: toolCall.toolName,
+      status: toolCall.status,
+      arguments: toolCall.arguments,
+      output: toolCall.output,
+      durationMs: toolCall.durationMs,
+      success: toolCall.success,
+    }))])),
+    agentTodos: new Map(snapshot.todos.map((todo: any) => [todo.agentId, todo])),
   };
 }
 
@@ -1706,6 +1742,8 @@ export function ChatScreen() {
     apiJson<MessageRecord[]>(`/channels/${cid}/messages?limit=50`, { headers: { Authorization: `Bearer ${t}` } }), []);
   const loadChannelSession = useCallback((t: string, cid: string) =>
     apiJson<ChannelSessionSummary>(`/channels/${cid}/session`, { headers: { Authorization: `Bearer ${t}` } }), []);
+  const loadChannelLiveState = useCallback((t: string, cid: string) =>
+    apiJson<ChannelLiveStateSnapshot>(`/channels/${cid}/live-state`, { headers: { Authorization: `Bearer ${t}` } }), []);
 
   useEffect(() => {
     if (!ready) return;
@@ -1757,11 +1795,21 @@ export function ChatScreen() {
     if (!accessToken || !selectedChannelId) return;
     let cancelled = false;
     setChannelSession(null);
-    void Promise.all([loadMessages(accessToken, selectedChannelId), loadChannelSession(accessToken, selectedChannelId)])
-      .then(([msgs, sess]) => { if (!cancelled) { setMessages(msgs); setChannelSession(sess); } })
+    void Promise.all([
+      loadMessages(accessToken, selectedChannelId),
+      loadChannelSession(accessToken, selectedChannelId),
+      loadChannelLiveState(accessToken, selectedChannelId),
+    ])
+      .then(([msgs, sess, liveState]) => {
+        if (!cancelled) {
+          setMessages(msgs);
+          setChannelSession(sess);
+          updateChannelLiveState(selectedChannelId, () => hydrateChannelLiveState(liveState));
+        }
+      })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load messages.'); });
     return () => { cancelled = true; };
-  }, [accessToken, loadChannelSession, loadMessages, selectedChannelId]);
+  }, [accessToken, loadChannelLiveState, loadChannelSession, loadMessages, selectedChannelId, updateChannelLiveState]);
 
   useEffect(() => {
     if (!selectedChannelId) return;

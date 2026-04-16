@@ -148,6 +148,47 @@ export const StopAgentExecutionResultSchema = z.object({
 });
 export type StopAgentExecutionResult = z.infer<typeof StopAgentExecutionResultSchema>;
 
+export const LiveToolCallSchema = z.object({
+  toolCallId: z.string(),
+  toolName: z.string(),
+  status: z.enum(['running', 'success', 'failed']),
+  arguments: z.unknown().optional(),
+  output: z.string().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  success: z.boolean().optional(),
+});
+export type LiveToolCall = z.infer<typeof LiveToolCallSchema>;
+
+export const AgentTodoItemSchema = z.object({
+  content: z.string(),
+  status: z.enum(['pending', 'in_progress', 'completed', 'cancelled']),
+  priority: z.enum(['high', 'medium', 'low']),
+});
+export type AgentTodoItem = z.infer<typeof AgentTodoItemSchema>;
+
+export const AgentTodoListSchema = z.object({
+  agentId: z.string().uuid(),
+  agentName: z.string(),
+  todos: z.array(AgentTodoItemSchema),
+});
+export type AgentTodoList = z.infer<typeof AgentTodoListSchema>;
+
+export const LiveAgentTurnSchema = z.object({
+  tempId: z.string(),
+  agentId: z.string().uuid(),
+  text: z.string(),
+  toolCalls: z.array(LiveToolCallSchema),
+});
+export type LiveAgentTurn = z.infer<typeof LiveAgentTurnSchema>;
+
+export const ChannelLiveStateSchema = z.object({
+  channelId: z.string().uuid(),
+  agentState: z.enum(['idle', 'queued', 'streaming', 'error']),
+  turns: z.array(LiveAgentTurnSchema),
+  todos: z.array(AgentTodoListSchema),
+});
+export type ChannelLiveState = z.infer<typeof ChannelLiveStateSchema>;
+
 export const EditMessageSchema = z.object({
   content: z.string().min(1).max(32_000),
 });

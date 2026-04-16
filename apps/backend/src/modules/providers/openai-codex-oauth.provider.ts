@@ -36,6 +36,7 @@ const OPENAI_CODEX_BASE_URL = 'https://chatgpt.com/backend-api';
 const TOKEN_REFRESH_BUFFER_SECONDS = 60;
 const OAUTH_AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize';
 const OAUTH_SCOPE = 'openid profile email offline_access';
+const CODEX_REQUEST_RETRY_DELAY_MS = 350;
 
 export interface OAuthCredentials {
   accessToken: string;
@@ -172,6 +173,18 @@ function resolveCodexUrl(baseUrl = OPENAI_CODEX_BASE_URL) {
   return `${normalized}/codex/responses`;
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatFetchFailure(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message.trim()) {
+    return `${fallback}: ${error.message}`;
+  }
+
+  return fallback;
+}
+
 async function* parseSse(response: Response) {
   if (!response.body) {
     throw new Error('Codex returned no response body.');
@@ -240,15 +253,26 @@ export class OpenAICodexOAuthProvider extends BaseProvider {
       return; // Token is fresh enough
     }
 
-    const response = await fetch(OPENAI_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: this.oauthCredentials.refreshToken,
-        client_id: OPENAI_CODEX_CLIENT_ID,
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(OPENAI_TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: this.oauthCredentials.refreshToken,
+          client_id: OPENAI_CODEX_CLIENT_ID,
+        }),
+      });
+    } catch (error) {
+      // If the current token is still valid, keep using it rather than failing hard
+      // on transient refresh endpoint/network issues.
+      if (expiresAt > nowMs) {
+        return;
+      }
+
+      throw new Error(formatFetchFailure(error, 'OpenAI Codex OAuth token refresh failed'));
+    }
 
     if (!response.ok) {
       throw new Error(`OpenAI Codex OAuth token refresh failed: ${response.status} ${response.statusText}`);
@@ -291,14 +315,32 @@ export class OpenAICodexOAuthProvider extends BaseProvider {
 
   private async createCodexResponse(options: LLMRequestOptions) {
     await this.ensureTokenFresh();
-    const accountId = this.requireAccountId();
+    const requestBody = JSON.stringify(buildCodexBody(this.model, options));
 
-    const response = await fetch(resolveCodexUrl(), {
-      method: 'POST',
-      headers: buildCodexHeaders(this.oauthCredentials.accessToken, accountId),
-      body: JSON.stringify(buildCodexBody(this.model, options)),
-      signal: options.abortSignal as AbortSignal | undefined,
-    });
+    const performRequest = async () => {
+      const accountId = this.requireAccountId();
+
+      try {
+        return await fetch(resolveCodexUrl(), {
+          method: 'POST',
+          headers: buildCodexHeaders(this.oauthCredentials.accessToken, accountId),
+          body: requestBody,
+          signal: options.abortSignal as AbortSignal | undefined,
+        });
+      } catch (error) {
+        throw new Error(formatFetchFailure(error, 'OpenAI Codex network request failed'));
+      }
+    };
+
+    let response = await performRequest();
+
+    if (response.status === 401 || response.status === 403) {
+      await this.ensureTokenFresh();
+      response = await performRequest();
+    } else if (!response.ok && response.status >= 500) {
+      await sleep(CODEX_REQUEST_RETRY_DELAY_MS);
+      response = await performRequest();
+    }
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');

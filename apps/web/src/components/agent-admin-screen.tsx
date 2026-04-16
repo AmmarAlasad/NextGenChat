@@ -1066,7 +1066,7 @@ export function AgentAdminScreen({ agentId }: { agentId: string }) {
                       <div>
                         <h3 className="font-headline text-sm font-semibold text-on-surface">Browser MCP</h3>
                         <p className="mt-1 text-[11px] text-on-surface-variant/40">
-                          Exposes Browser MCP tools to this agent only. The workspace keeps one shared Browser MCP server, and this switch grants or removes its tools for the current agent.
+                          Exposes isolated browser automation tools to this agent only. The workspace keeps one shared browser automation server, and it now runs in a dedicated browser profile so agent browsing does not take over your open app tab.
                         </p>
                       </div>
                       <button

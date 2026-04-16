@@ -16,13 +16,15 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { AgentBrowserMcpState, BrowserMcpServerStatus } from '@nextgenchat/types';
 import { Prisma } from '@prisma/client';
+import path from 'node:path';
 
 import { prisma } from '@/db/client.js';
 import { decryptJson, encryptJson } from '@/lib/crypto.js';
+import { env } from '@/config/env.js';
 
 const BROWSER_MCP_SERVER_NAME = 'Browser MCP';
 const BROWSER_MCP_SERVER_COMMAND = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-const BROWSER_MCP_SERVER_ARGS = ['-y', '@browsermcp/mcp@latest'];
+const BROWSER_MCP_SERVER_PACKAGE = '@playwright/mcp@latest';
 const BROWSER_MCP_ENV_VERSION = 1;
 const MCP_CLIENT_INFO = {
   name: 'NextGenChat Browser MCP Client',
@@ -48,6 +50,24 @@ function getBrowserMcpStoredEnv() {
     version: BROWSER_MCP_ENV_VERSION,
     vars: {},
   });
+}
+
+function getBrowserMcpProfileDir(workspaceId: string) {
+  return path.join(path.dirname(env.agentWorkspacesDir), 'browser-mcp', workspaceId, 'profile');
+}
+
+function getBrowserMcpOutputDir(workspaceId: string) {
+  return path.join(path.dirname(env.agentWorkspacesDir), 'browser-mcp', workspaceId, 'output');
+}
+
+function buildBrowserMcpServerArgs(workspaceId: string) {
+  return [
+    '-y',
+    BROWSER_MCP_SERVER_PACKAGE,
+    '--browser', 'chrome',
+    '--user-data-dir', getBrowserMcpProfileDir(workspaceId),
+    '--output-dir', getBrowserMcpOutputDir(workspaceId),
+  ];
 }
 
 function parseBrowserMcpEnv(payload: string | null): Record<string, string> {
@@ -110,6 +130,30 @@ function describeToolResult(result: { [key: string]: unknown }) {
 class McpService {
   private readonly runtimeClients = new Map<string, Promise<RuntimeClient>>();
 
+  private async syncWorkspaceBrowserServerConfig(server: { id: string; workspaceId: string; name: string; command: string; args: Prisma.JsonValue | null; status: string }) {
+    const nextArgs = buildBrowserMcpServerArgs(server.workspaceId);
+    const currentArgs = Array.isArray(server.args) ? server.args.filter((value): value is string => typeof value === 'string') : [];
+    const argsChanged = JSON.stringify(currentArgs) !== JSON.stringify(nextArgs);
+    const commandChanged = server.command !== BROWSER_MCP_SERVER_COMMAND;
+
+    if (!argsChanged && !commandChanged) {
+      return server;
+    }
+
+    if (server.status === 'RUNNING' || server.status === 'STARTING' || this.runtimeClients.has(server.id)) {
+      await this.stopServer(server.id).catch(() => undefined);
+    }
+
+    return prisma.mcpServer.update({
+      where: { id: server.id },
+      data: {
+        command: BROWSER_MCP_SERVER_COMMAND,
+        args: nextArgs,
+        status: 'STOPPED',
+      },
+    });
+  }
+
   private async getWorkspaceBrowserServer(workspaceId: string) {
     return prisma.mcpServer.findFirst({
       where: { workspaceId, name: BROWSER_MCP_SERVER_NAME },
@@ -120,7 +164,7 @@ class McpService {
   private async ensureWorkspaceBrowserServer(workspaceId: string, userId: string) {
     const existing = await this.getWorkspaceBrowserServer(workspaceId);
     if (existing) {
-      return existing;
+      return this.syncWorkspaceBrowserServerConfig(existing);
     }
 
     return prisma.mcpServer.create({
@@ -129,7 +173,7 @@ class McpService {
         createdBy: userId,
         name: BROWSER_MCP_SERVER_NAME,
         command: BROWSER_MCP_SERVER_COMMAND,
-        args: BROWSER_MCP_SERVER_ARGS,
+        args: buildBrowserMcpServerArgs(workspaceId),
         env: getBrowserMcpStoredEnv(),
         status: 'STOPPED',
       },
@@ -340,8 +384,9 @@ class McpService {
 
   async getAgentBrowserMcpState(agentId: string, userId: string): Promise<AgentBrowserMcpState> {
     const { server } = await this.getAgentBrowserServer(agentId, userId);
+    const syncedServer = server ? await this.syncWorkspaceBrowserServerConfig(server) : null;
 
-    if (!server) {
+    if (!syncedServer) {
       return {
         enabled: false,
         serverId: null,
@@ -356,7 +401,7 @@ class McpService {
       where: {
         agentId,
         mcpServerTool: {
-          serverId: server.id,
+          serverId: syncedServer.id,
         },
       },
       include: {
@@ -369,9 +414,9 @@ class McpService {
 
     return {
       enabled: agentTools.length > 0,
-      serverId: server.id,
-      serverName: server.name,
-      serverStatus: isMcpStatus(server.status) ? server.status : 'FAILED',
+      serverId: syncedServer.id,
+      serverName: syncedServer.name,
+      serverStatus: isMcpStatus(syncedServer.status) ? syncedServer.status : 'FAILED',
       toolCount: agentTools.length,
       toolNames: agentTools.map((tool) => tool.mcpServerTool?.name ?? tool.toolName),
     };

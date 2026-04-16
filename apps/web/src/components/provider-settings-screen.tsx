@@ -26,6 +26,23 @@ import type {
 import { useAuth } from '@/components/auth-provider';
 import { apiJson } from '@/lib/api';
 
+function formatUsageReset(resetAt?: string | null) {
+  if (!resetAt) return null;
+  const diffMs = new Date(resetAt).getTime() - Date.now();
+  if (diffMs <= 0) return 'now';
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${hours % 24}h`;
+}
+
+function formatUsageTokens(value: number) {
+  return new Intl.NumberFormat('en-US').format(value);
+}
+
 export function ProviderSettingsScreen() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -265,6 +282,63 @@ export function ProviderSettingsScreen() {
                 </div>
 
                 <div className="mt-4 space-y-4">
+                  <div className="rounded-lg px-3 py-3 text-sm" style={{ background: 'var(--surface-container)', border: '1px solid var(--outline-variant)' }}>
+                    <div className="flex items-center justify-between gap-3">
+                      <span style={{ color: 'var(--on-surface-variant)' }}>Usage status</span>
+                      <span
+                        className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                        style={{
+                          background: provider.usage?.source === 'live' ? 'rgba(34, 197, 94, 0.12)' : provider.usage?.source === 'app' ? 'rgba(114, 137, 192, 0.18)' : 'rgba(255,255,255,0.05)',
+                          color: provider.usage?.source === 'live' ? '#86efac' : provider.usage?.source === 'app' ? 'var(--ib-300)' : 'var(--on-surface-variant)',
+                        }}
+                      >
+                        {provider.usage?.source === 'live' ? 'Live' : provider.usage?.source === 'app' ? 'App' : 'None'}
+                      </span>
+                    </div>
+                    <div className="mt-2 text-sm" style={{ color: 'var(--on-surface)' }}>
+                      {provider.usage?.summary ?? 'No usage data available.'}
+                    </div>
+                    {provider.usage?.error ? (
+                      <div className="mt-2 text-xs" style={{ color: '#ff9aa9' }}>{provider.usage.error}</div>
+                    ) : null}
+                    {provider.usage?.plan ? (
+                      <div className="mt-2 text-xs" style={{ color: 'var(--on-surface-variant)' }}>Plan: {provider.usage.plan}</div>
+                    ) : null}
+                    {provider.usage?.windows?.length ? (
+                      <div className="mt-3 grid gap-3 md:grid-cols-2">
+                        {provider.usage.windows.map((window) => (
+                          <div className="rounded-lg px-3 py-3" key={`${provider.providerName}-${window.label}`} style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid var(--outline-variant)' }}>
+                            <div className="text-[11px] uppercase tracking-wide" style={{ color: 'var(--on-surface-variant)' }}>
+                              {window.label}
+                            </div>
+                            <div className="mt-1 text-2xl font-semibold" style={{ color: 'var(--on-surface)' }}>
+                              {Math.max(0, Math.min(100, 100 - window.usedPercent)).toFixed(0)}%
+                            </div>
+                            <div className="text-[11px]" style={{ color: 'var(--on-surface-variant)' }}>
+                              left{formatUsageReset(window.resetAt) ? ` · resets ${formatUsageReset(window.resetAt)}` : ''}
+                            </div>
+                            <div className="mt-2 h-2 overflow-hidden rounded-full" style={{ background: 'rgba(255,255,255,0.06)' }}>
+                              <div className="h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, window.usedPercent))}%`, background: 'var(--primary)' }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {provider.usage?.source !== 'live' ? (
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]" style={{ color: 'var(--on-surface-variant)' }}>
+                        <div>Turns: {formatUsageTokens(provider.usage?.assistantTurns ?? 0)}</div>
+                        <div>Prompt: {formatUsageTokens(provider.usage?.promptTokens ?? 0)}</div>
+                        <div>Completion: {formatUsageTokens(provider.usage?.completionTokens ?? 0)}</div>
+                        <div>Cached: {formatUsageTokens(provider.usage?.cachedTokens ?? 0)}</div>
+                      </div>
+                    ) : null}
+                    {provider.usage?.lastActivityAt ? (
+                      <div className="mt-2 text-[11px]" style={{ color: 'var(--on-surface-variant)' }}>
+                        Last activity: {new Date(provider.usage.lastActivityAt).toLocaleString()}
+                      </div>
+                    ) : null}
+                  </div>
+
                   {isApiKey ? (
                     <>
                       <input

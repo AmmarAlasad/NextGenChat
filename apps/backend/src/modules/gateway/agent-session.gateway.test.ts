@@ -176,6 +176,11 @@ vi.mock('@/modules/gateway/session-lane.js', () => ({
     getActiveTurn: vi.fn(() => null),
     clearActiveTurn: vi.fn(() => undefined),
     cancelActiveTurn: vi.fn(() => null),
+    appendTurnText: vi.fn(() => undefined),
+    updateToolCall: vi.fn(() => undefined),
+    updateTodos: vi.fn(() => undefined),
+    markChannelError: vi.fn(() => undefined),
+    getLiveState: vi.fn(() => ({ channelId: 'channel-1', agentState: 'idle', turns: [], todos: [] })),
   },
 }));
 

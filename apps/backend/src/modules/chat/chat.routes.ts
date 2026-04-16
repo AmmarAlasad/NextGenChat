@@ -68,6 +68,13 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
     return chatService.getChannelSession(authUser.id, params.id);
   });
 
+  fastify.get('/channels/:id/live-state', { preHandler: authenticateRequest }, async (request) => {
+    const authUser = requireAuthUser(request);
+    const params = request.params as { id: string };
+
+    return chatService.getChannelLiveState(authUser.id, params.id);
+  });
+
   fastify.post('/channels/:id/session/compact', { preHandler: authenticateRequest }, async (request) => {
     const authUser = requireAuthUser(request);
     const params = request.params as { id: string };

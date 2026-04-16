@@ -43,6 +43,33 @@ import { OpenRouterProvider } from '@/modules/providers/openrouter.provider.js';
 import { providerRegistry } from '@/modules/providers/registry.js';
 import { env } from '@/config/env.js';
 
+interface ProviderUsageWindow {
+  label: string;
+  usedPercent: number;
+  resetAt?: string | null;
+}
+
+interface ProviderUsageStatus {
+  source: 'live' | 'app' | 'none';
+  summary: string | null;
+  error?: string | null;
+  plan?: string | null;
+  windows: ProviderUsageWindow[];
+  assistantTurns: number;
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  lastActivityAt?: string | null;
+}
+
+interface ProviderAppUsageAggregate {
+  assistantTurns: number;
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  lastActivityAt: string | null;
+}
+
 const FALLBACK_PROVIDER_KEY = 'FALLBACK_PROVIDER';
 const OAUTH_STATE_TTL = 60 * 10; // 10 minutes
 const SETUP_PENDING_CODEX_KEY = 'SETUP_PENDING_PROVIDER_OPENAI_CODEX_OAUTH';
@@ -52,6 +79,39 @@ const SETUP_PENDING_CODEX_KEY = 'SETUP_PENDING_PROVIDER_OPENAI_CODEX_OAUTH';
 async function listAllProviders(options?: { includeSetupPendingCodex?: boolean }) {
   const allNames = Object.keys(PROVIDER_METADATA);
 
+  const providerMessageUsage = new Map<string, ProviderAppUsageAggregate>();
+  const usageMessages = await prisma.message.findMany({
+    where: {
+      senderType: 'AGENT',
+      contentType: { not: 'SYSTEM' },
+    },
+    select: {
+      createdAt: true,
+      metadata: true,
+    },
+  });
+
+  for (const message of usageMessages) {
+    const metadata = (message.metadata as Record<string, unknown> | null) ?? null;
+    const providerName = typeof metadata?.provider === 'string' ? metadata.provider : null;
+    if (!providerName || !(providerName in PROVIDER_METADATA)) continue;
+
+    const usage = ((metadata?.usage as Record<string, unknown> | null | undefined) ?? null);
+    const current = providerMessageUsage.get(providerName) ?? {
+      assistantTurns: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      cachedTokens: 0,
+      lastActivityAt: null,
+    };
+    current.assistantTurns += 1;
+    current.promptTokens += typeof usage?.promptTokens === 'number' ? usage.promptTokens : 0;
+    current.completionTokens += typeof usage?.completionTokens === 'number' ? usage.completionTokens : 0;
+    current.cachedTokens += typeof usage?.cachedTokens === 'number' ? usage.cachedTokens : 0;
+    current.lastActivityAt = message.createdAt.toISOString();
+    providerMessageUsage.set(providerName, current);
+  }
+
   const globalConfigs = await prisma.globalProviderConfig.findMany({
     where: { providerName: { in: allNames } },
   });
@@ -60,7 +120,100 @@ async function listAllProviders(options?: { includeSetupPendingCodex?: boolean }
     ? await prisma.systemSetting.findUnique({ where: { key: SETUP_PENDING_CODEX_KEY } })
     : null;
 
-  return allNames.map((name) => {
+  async function fetchCodexUsage(credentials: { accessToken: string; accountId?: string | null }) {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${credentials.accessToken}`,
+      'User-Agent': 'NextGenChat',
+      Accept: 'application/json',
+    };
+    if (credentials.accountId) {
+      headers['ChatGPT-Account-Id'] = credentials.accountId;
+    }
+
+    const response = await fetch('https://chatgpt.com/backend-api/wham/usage', { method: 'GET', headers });
+    if (!response.ok) {
+      return {
+        source: 'live' as const,
+        summary: null,
+        error: response.status === 401 || response.status === 403 ? 'Authentication expired' : `Usage unavailable (${response.status})`,
+        windows: [],
+      };
+    }
+
+    const data = await response.json() as {
+      rate_limit?: {
+        primary_window?: { limit_window_seconds?: number; used_percent?: number; reset_at?: number };
+        secondary_window?: { limit_window_seconds?: number; used_percent?: number; reset_at?: number };
+      };
+      plan_type?: string;
+      credits?: { balance?: number | string | null };
+    };
+
+    const windows: ProviderUsageWindow[] = [];
+    if (data.rate_limit?.primary_window) {
+      const windowHours = Math.round((data.rate_limit.primary_window.limit_window_seconds || 10800) / 3600);
+      windows.push({
+        label: `${windowHours}h`,
+        usedPercent: Math.max(0, Math.min(100, data.rate_limit.primary_window.used_percent || 0)),
+        resetAt: data.rate_limit.primary_window.reset_at ? new Date(data.rate_limit.primary_window.reset_at * 1000).toISOString() : null,
+      });
+    }
+    if (data.rate_limit?.secondary_window) {
+      const secondaryHours = Math.round((data.rate_limit.secondary_window.limit_window_seconds || 86400) / 3600);
+      windows.push({
+        label: secondaryHours >= 168 ? 'Week' : secondaryHours < 24 ? `${secondaryHours}h` : 'Day',
+        usedPercent: Math.max(0, Math.min(100, data.rate_limit.secondary_window.used_percent || 0)),
+        resetAt: data.rate_limit.secondary_window.reset_at ? new Date(data.rate_limit.secondary_window.reset_at * 1000).toISOString() : null,
+      });
+    }
+
+    let plan = data.plan_type ?? null;
+    if (data.credits?.balance !== undefined && data.credits.balance !== null) {
+      const balance = typeof data.credits.balance === 'number' ? data.credits.balance : Number.parseFloat(String(data.credits.balance));
+      if (Number.isFinite(balance)) {
+        plan = plan ? `${plan} ($${balance.toFixed(2)})` : `$${balance.toFixed(2)}`;
+      }
+    }
+
+    const summary = windows.length > 0
+      ? windows.map((window) => `${window.label}: ${Math.max(0, Math.min(100, 100 - window.usedPercent)).toFixed(0)}% left`).join(' · ')
+      : plan ? `Connected (${plan})` : 'Connected';
+
+    return {
+      source: 'live' as const,
+      summary,
+      error: null,
+      plan,
+      windows,
+    };
+  }
+
+  function buildAppUsageStatus(name: string): ProviderUsageStatus {
+    const appUsage = providerMessageUsage.get(name) ?? {
+      assistantTurns: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      cachedTokens: 0,
+      lastActivityAt: null,
+    };
+    const summary = appUsage.assistantTurns > 0
+      ? `${appUsage.assistantTurns} turns · ${Intl.NumberFormat('en-US').format(appUsage.promptTokens + appUsage.completionTokens)} tokens`
+      : 'No usage recorded yet';
+    return {
+      source: appUsage.assistantTurns > 0 ? 'app' : 'none',
+      summary,
+      windows: [],
+      assistantTurns: appUsage.assistantTurns,
+      promptTokens: appUsage.promptTokens,
+      completionTokens: appUsage.completionTokens,
+      cachedTokens: appUsage.cachedTokens,
+      lastActivityAt: appUsage.lastActivityAt,
+      plan: null,
+      error: null,
+    };
+  }
+
+  return await Promise.all(allNames.map(async (name) => {
     const meta = PROVIDER_METADATA[name];
     const global = configMap[name];
 
@@ -97,6 +250,33 @@ async function listAllProviders(options?: { includeSetupPendingCodex?: boolean }
       isConfigured = Boolean(envFallbacks[name]);
     }
 
+    let usage = buildAppUsageStatus(name);
+    if (name === 'openai-codex-oauth' && global?.isActive) {
+      try {
+        const creds = decryptJson<{ accessToken: string; accountId?: string | null }>(global.credentials);
+        if (creds?.accessToken) {
+          const live = await fetchCodexUsage(creds);
+          usage = {
+            ...usage,
+            ...live,
+            assistantTurns: usage.assistantTurns,
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            cachedTokens: usage.cachedTokens,
+            lastActivityAt: usage.lastActivityAt,
+          };
+        }
+      } catch {
+        usage = {
+          ...usage,
+          source: 'live',
+          summary: usage.summary,
+          error: 'Stored OAuth credentials are unreadable.',
+          windows: [],
+        };
+      }
+    }
+
     return {
       providerName: name,
       label: meta.label,
@@ -104,8 +284,9 @@ async function listAllProviders(options?: { includeSetupPendingCodex?: boolean }
       isConfigured,
       isActive: Boolean(global?.isActive) || isConfigured,
       oauthExpiresAt,
+      usage,
     };
-  });
+  }));
 }
 
 async function getProviderModels(providerName: string) {

@@ -28,6 +28,22 @@ export const ProviderStatusSchema = z.object({
   isActive: z.boolean(),
   /** Only set for OAuth providers when connected. */
   oauthExpiresAt: z.string().nullable().optional(),
+  usage: z.object({
+    source: z.enum(['live', 'app', 'none']),
+    summary: z.string().nullable(),
+    error: z.string().nullable().optional(),
+    plan: z.string().nullable().optional(),
+    windows: z.array(z.object({
+      label: z.string(),
+      usedPercent: z.number().min(0).max(100),
+      resetAt: z.string().nullable().optional(),
+    })),
+    assistantTurns: z.number().int().nonnegative(),
+    promptTokens: z.number().int().nonnegative(),
+    completionTokens: z.number().int().nonnegative(),
+    cachedTokens: z.number().int().nonnegative(),
+    lastActivityAt: z.string().nullable().optional(),
+  }).optional(),
 });
 export type ProviderStatus = z.infer<typeof ProviderStatusSchema>;
 

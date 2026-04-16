@@ -16,6 +16,10 @@ if ! command -v systemctl >/dev/null 2>&1; then
   exit 1
 fi
 
+if command -v loginctl >/dev/null 2>&1; then
+  loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+fi
+
 mkdir -p "$SERVICE_DIR"
 
 cat > "$SERVICE_FILE" <<EOF

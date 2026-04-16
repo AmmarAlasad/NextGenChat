@@ -42,6 +42,40 @@ class SessionLane {
   }
 }
 
+interface LiveToolCallRecord {
+  toolCallId: string;
+  toolName: string;
+  status: 'running' | 'success' | 'failed';
+  arguments?: unknown;
+  output?: string;
+  durationMs?: number;
+  success?: boolean;
+}
+
+interface LiveTurnSnapshot {
+  tempId: string;
+  agentId: string;
+  text: string;
+  toolCalls: LiveToolCallRecord[];
+}
+
+interface LiveTodoSnapshot {
+  agentId: string;
+  agentName: string;
+  todos: Array<{
+    content: string;
+    status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+    priority: 'high' | 'medium' | 'low';
+  }>;
+}
+
+interface ChannelExecutionSnapshot {
+  channelId: string;
+  agentState: 'idle' | 'queued' | 'streaming' | 'error';
+  turns: Map<string, LiveTurnSnapshot>;
+  todos: Map<string, LiveTodoSnapshot>;
+}
+
 export interface ActiveTurnRecord {
   agentId: string;
   channelId: string;
@@ -53,9 +87,34 @@ export interface ActiveTurnRecord {
 class SessionLaneRegistry {
   private readonly lanes = new Map<string, SessionLane>();
   private readonly activeTurns = new Map<string, ActiveTurnRecord>();
+  private readonly channelSnapshots = new Map<string, ChannelExecutionSnapshot>();
 
   private buildKey(agentId: string, channelId: string) {
     return `${agentId}:${channelId}`;
+  }
+
+  private getChannelSnapshot(channelId: string) {
+    let snapshot = this.channelSnapshots.get(channelId);
+    if (!snapshot) {
+      snapshot = {
+        channelId,
+        agentState: 'idle',
+        turns: new Map(),
+        todos: new Map(),
+      };
+      this.channelSnapshots.set(channelId, snapshot);
+    }
+    return snapshot;
+  }
+
+  private syncChannelState(channelId: string) {
+    const snapshot = this.getChannelSnapshot(channelId);
+    if (snapshot.turns.size === 0 && snapshot.agentState === 'streaming') {
+      snapshot.agentState = 'idle';
+    }
+    if (snapshot.turns.size === 0 && snapshot.todos.size === 0 && snapshot.agentState === 'idle') {
+      return;
+    }
   }
 
   getLane(agentId: string, channelId: string): SessionLane {
@@ -75,6 +134,14 @@ class SessionLaneRegistry {
       ...turn,
       cancelled: false,
     });
+    const snapshot = this.getChannelSnapshot(turn.channelId);
+    snapshot.agentState = 'streaming';
+    snapshot.turns.set(turn.tempId, {
+      tempId: turn.tempId,
+      agentId: turn.agentId,
+      text: '',
+      toolCalls: [],
+    });
   }
 
   getActiveTurn(agentId: string, channelId: string) {
@@ -89,6 +156,11 @@ class SessionLaneRegistry {
     if (tempId && current.tempId !== tempId) return;
 
     this.activeTurns.delete(key);
+    if (tempId) {
+      const snapshot = this.getChannelSnapshot(channelId);
+      snapshot.turns.delete(tempId);
+      this.syncChannelState(channelId);
+    }
   }
 
   cancelActiveTurn(agentId: string, channelId: string) {
@@ -98,6 +170,42 @@ class SessionLaneRegistry {
     turn.cancelled = true;
     turn.cancel();
     return turn;
+  }
+
+  appendTurnText(channelId: string, tempId: string, delta: string) {
+    const turn = this.getChannelSnapshot(channelId).turns.get(tempId);
+    if (!turn) return;
+    turn.text += delta;
+  }
+
+  updateToolCall(channelId: string, tempId: string, toolCall: LiveToolCallRecord) {
+    const turn = this.getChannelSnapshot(channelId).turns.get(tempId);
+    if (!turn) return;
+    const index = turn.toolCalls.findIndex((entry) => entry.toolCallId === toolCall.toolCallId);
+    if (index >= 0) {
+      turn.toolCalls[index] = { ...turn.toolCalls[index], ...toolCall };
+      return;
+    }
+    turn.toolCalls.push(toolCall);
+  }
+
+  updateTodos(channelId: string, todoSnapshot: LiveTodoSnapshot) {
+    const snapshot = this.getChannelSnapshot(channelId);
+    snapshot.todos.set(todoSnapshot.agentId, todoSnapshot);
+  }
+
+  markChannelError(channelId: string) {
+    this.getChannelSnapshot(channelId).agentState = 'error';
+  }
+
+  getLiveState(channelId: string) {
+    const snapshot = this.getChannelSnapshot(channelId);
+    return {
+      channelId,
+      agentState: snapshot.agentState,
+      turns: Array.from(snapshot.turns.values()),
+      todos: Array.from(snapshot.todos.values()),
+    };
   }
 }
 

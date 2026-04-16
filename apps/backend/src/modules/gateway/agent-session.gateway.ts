@@ -453,6 +453,13 @@ export class AgentSessionGateway {
           let structuredOutput: Record<string, unknown> = {};
           const parsedArguments: unknown = safeParseToolArguments(toolCall.arguments);
 
+          sessionLaneRegistry.updateToolCall(channelId, tempId, {
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            status: 'running',
+            arguments: parsedArguments,
+          });
+
           // Notify frontend that a tool is starting.
           chatNamespace.to(getChannelRoom(channelId)).emit('agent:tool:start', {
             agentId,
@@ -480,6 +487,16 @@ export class AgentSessionGateway {
           }
 
           const durationMs = Date.now() - startedAt;
+
+          sessionLaneRegistry.updateToolCall(channelId, tempId, {
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            status: success ? 'success' : 'failed',
+            arguments: parsedArguments,
+            output,
+            durationMs,
+            success,
+          });
 
           // Notify frontend that the tool finished.
           chatNamespace.to(getChannelRoom(channelId)).emit('agent:tool:end', {
@@ -524,6 +541,11 @@ export class AgentSessionGateway {
 
             // Broadcast the updated todo list so the frontend can render a live task panel.
             if (toolCall.name === TODO_WRITE_TOOL_NAME) {
+              sessionLaneRegistry.updateTodos(channelId, {
+                agentId,
+                agentName,
+                todos: taskState.todos,
+              });
               chatNamespace.to(getChannelRoom(channelId)).emit('agent:todos:update', {
                 agentId,
                 channelId,
@@ -598,6 +620,7 @@ export class AgentSessionGateway {
         channelId,
         delta: rawContent,
       });
+      sessionLaneRegistry.appendTurnText(channelId, tempId, rawContent);
 
       // ── Extract relay commands, persist message ───────────────────────────
       // rawContent was already streamed token-by-token to the socket above.
@@ -688,6 +711,7 @@ export class AgentSessionGateway {
       }
 
       const errorMessage = error instanceof Error ? error.message : 'Agent processing failed.';
+      sessionLaneRegistry.markChannelError(channelId);
 
       if (triggerMetadata?.internal === true && triggerMetadata?.source === PROJECT_TICKET_SOURCE) {
         chatNamespace.to(getChannelRoom(channelId)).emit('message:stream:end', {

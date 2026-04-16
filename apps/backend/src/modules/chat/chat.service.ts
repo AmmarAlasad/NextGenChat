@@ -33,6 +33,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '@/db/client.js';
 import { agentRoutingService } from '@/modules/agents/agent-routing.service.js';
 import { compactionService } from '@/modules/context/compaction.service.js';
+import { sessionLaneRegistry } from '@/modules/gateway/session-lane.js';
 import { getChatNamespace, getChannelRoom } from '@/sockets/socket-server.js';
 import { workspaceService } from '@/modules/workspace/workspace.service.js';
 
@@ -72,6 +73,34 @@ interface AgentMessageAttachmentInput {
   relativePath: string;
   contentBuffer: Buffer;
   textPreview?: string | null;
+}
+
+interface ChannelLiveStateSnapshot {
+  channelId: string;
+  agentState: 'idle' | 'queued' | 'streaming' | 'error';
+  turns: Array<{
+    tempId: string;
+    agentId: string;
+    text: string;
+    toolCalls: Array<{
+      toolCallId: string;
+      toolName: string;
+      status: 'running' | 'success' | 'failed';
+      arguments?: unknown;
+      output?: string;
+      durationMs?: number;
+      success?: boolean;
+    }>;
+  }>;
+  todos: Array<{
+    agentId: string;
+    agentName: string;
+    todos: Array<{
+      content: string;
+      status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+      priority: 'high' | 'medium' | 'low';
+    }>;
+  }>;
 }
 
 type SendMessageWithAttachmentsInput = SendMessageInput & {
@@ -1099,6 +1128,11 @@ export class ChatService {
       summaryCount,
       lastActiveAt,
     };
+  }
+
+  async getChannelLiveState(userId: string, channelId: string): Promise<ChannelLiveStateSnapshot> {
+    await ensureChannelMembership(userId, channelId);
+    return sessionLaneRegistry.getLiveState(channelId);
   }
 
   async compactChannelSession(userId: string, channelId: string, input: CompactChannelSessionInput): Promise<CompactChannelSessionResult> {
