@@ -18,8 +18,8 @@ $backend = $null
 $web = $null
 
 try {
-    $backend = Start-Process -FilePath "pnpm.cmd" -ArgumentList "--filter", "@nextgenchat/backend", "start" -WorkingDirectory (Get-Location).Path -PassThru
-    $web = Start-Process -FilePath "pnpm.cmd" -ArgumentList "--filter", "@nextgenchat/web", "start" -WorkingDirectory (Get-Location).Path -PassThru
+    $backend = Start-Process -FilePath "pnpm.cmd" -ArgumentList "--filter", "@nextgenchat/backend", "start" -WorkingDirectory (Get-Location).Path -PassThru -Environment @{ PORT = "3001" }
+    $web = Start-Process -FilePath "pnpm.cmd" -ArgumentList "--filter", "@nextgenchat/web", "start" -WorkingDirectory (Get-Location).Path -PassThru -Environment @{ PORT = "3000" }
 
     while ($true) {
         Start-Sleep -Seconds 2

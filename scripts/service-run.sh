@@ -37,10 +37,10 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-pnpm --filter @nextgenchat/backend start &
+PORT=3001 pnpm --filter @nextgenchat/backend start &
 backend_pid=$!
 
-pnpm --filter @nextgenchat/web start &
+PORT=3000 pnpm --filter @nextgenchat/web start &
 web_pid=$!
 
 wait -n "$backend_pid" "$web_pid"

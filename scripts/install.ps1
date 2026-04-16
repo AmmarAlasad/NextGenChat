@@ -9,9 +9,9 @@ function Ensure-Repo {
     }
 
     if (-not (Test-Path (Join-Path $installDir ".git"))) {
-        git clone $repoUrl $installDir
+        git clone $repoUrl $installDir | Out-Host
     } else {
-        git -C $installDir pull --ff-only
+        git -C $installDir pull --ff-only | Out-Host
     }
 
     return $installDir

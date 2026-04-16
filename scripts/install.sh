@@ -34,9 +34,9 @@ ensure_repo() {
   fi
 
   if [ ! -d "$INSTALL_DIR/.git" ]; then
-    git clone "$REPO_URL" "$INSTALL_DIR"
+    git clone "$REPO_URL" "$INSTALL_DIR" >&2
   else
-    git -C "$INSTALL_DIR" pull --ff-only
+    git -C "$INSTALL_DIR" pull --ff-only >&2
   fi
 
   printf '%s\n' "$INSTALL_DIR"

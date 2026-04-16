@@ -9,7 +9,10 @@
 
 import { spawn } from 'node:child_process';
 
-const DEFAULT_INSTALL_SCRIPT_URL = 'https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install.sh';
+const DEFAULT_INSTALL_SCRIPT_URLS = {
+  windows: 'https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install.ps1',
+  unix: 'https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install.sh',
+};
 
 function printHelp() {
   process.stdout.write(`NextGenChat installer CLI
@@ -27,7 +30,8 @@ Environment overrides:
 }
 
 async function runInstall() {
-  const installScriptUrl = process.env.NEXTGENCHAT_INSTALL_SCRIPT_URL || DEFAULT_INSTALL_SCRIPT_URL;
+  const installScriptUrl = process.env.NEXTGENCHAT_INSTALL_SCRIPT_URL
+    || (process.platform === 'win32' ? DEFAULT_INSTALL_SCRIPT_URLS.windows : DEFAULT_INSTALL_SCRIPT_URLS.unix);
   const response = await fetch(installScriptUrl);
 
   if (!response.ok) {
@@ -35,10 +39,15 @@ async function runInstall() {
   }
 
   const script = await response.text();
-  const child = spawn('bash', ['-s'], {
-    stdio: ['pipe', 'inherit', 'inherit'],
-    env: process.env,
-  });
+  const child = process.platform === 'win32'
+    ? spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '-'], {
+        stdio: ['pipe', 'inherit', 'inherit'],
+        env: process.env,
+      })
+    : spawn('bash', ['-s'], {
+        stdio: ['pipe', 'inherit', 'inherit'],
+        env: process.env,
+      });
 
   child.stdin.write(script);
   child.stdin.end();
