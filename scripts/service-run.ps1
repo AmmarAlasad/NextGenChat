@@ -5,62 +5,7 @@ $repoDir = (Resolve-Path (Join-Path $rootDir "..")).Path
 $logsDir = Join-Path $env:LOCALAPPDATA "NextGenChat\logs"
 
 Set-Location $repoDir
-
-function Get-NpmCommand {
-    if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { return "npm.cmd" }
-    if (Get-Command npm -ErrorAction SilentlyContinue) { return "npm" }
-    return $null
-}
-
-function Test-NativeCommand {
-    param(
-        [string]$FilePath,
-        [string[]]$Arguments = @("--version")
-    )
-
-    if (-not $FilePath) { return $false }
-    if (-not (Test-Path $FilePath)) { return $false }
-
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        & $FilePath @Arguments 2>$null | Out-Null
-        return ($LASTEXITCODE -eq 0)
-    }
-    catch {
-        return $false
-    }
-    finally {
-        $ErrorActionPreference = $previousPreference
-    }
-}
-
-function Get-PnpmPath {
-    $npmCommand = Get-NpmCommand
-    if (-not $npmCommand) {
-        throw "npm is required to locate pnpm on Windows."
-    }
-
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        $npmPrefix = (& $npmCommand prefix -g 2>$null | Select-Object -First 1)
-    }
-    finally {
-        $ErrorActionPreference = $previousPreference
-    }
-
-    if ($LASTEXITCODE -ne 0 -or -not $npmPrefix) {
-        throw "Could not determine npm global prefix."
-    }
-
-    $pnpmPath = Join-Path ($npmPrefix.Trim()) "pnpm.cmd"
-    if (-not (Test-NativeCommand -FilePath $pnpmPath)) {
-        throw "Standalone pnpm.cmd not found. Re-run the installer."
-    }
-
-    return $pnpmPath
-}
+. (Join-Path $rootDir "windows-pnpm.ps1")
 
 function Invoke-NativeLogged {
     param(
@@ -72,16 +17,21 @@ function Invoke-NativeLogged {
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Null
 
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
+    $stdoutLog = "$LogPath.stdout"
+    $stderrLog = "$LogPath.stderr"
+
     try {
-        Push-Location $WorkingDirectory
-        & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $LogPath
-        $exitCode = $LASTEXITCODE
+        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+        $exitCode = $process.ExitCode
+
+        $output = @()
+        if (Test-Path -LiteralPath $stdoutLog) { $output += Get-Content -Path $stdoutLog -Encoding UTF8 }
+        if (Test-Path -LiteralPath $stderrLog) { $output += Get-Content -Path $stderrLog -Encoding UTF8 }
+        $output | Set-Content -Path $LogPath -Encoding UTF8
+        $output | ForEach-Object { Write-Host $_ }
     }
     finally {
-        Pop-Location
-        $ErrorActionPreference = $previousPreference
+        Remove-Item -LiteralPath $stdoutLog, $stderrLog -Force -ErrorAction SilentlyContinue
     }
 
     if ($exitCode -ne 0) {
@@ -97,6 +47,9 @@ New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 Copy-Item ".env" "apps/backend/.env" -Force
 
 $pnpmPath = Get-PnpmPath
+if (-not $pnpmPath) {
+    throw "pnpm is unavailable. Re-run the installer."
+}
 
 Invoke-NativeLogged -FilePath $pnpmPath -Arguments @("--filter", "@nextgenchat/backend", "prisma:generate") -LogPath (Join-Path $logsDir "service-prisma-generate.log")
 Invoke-NativeLogged -FilePath $pnpmPath -Arguments @("--filter", "@nextgenchat/backend", "prisma:push") -LogPath (Join-Path $logsDir "service-prisma-push.log")

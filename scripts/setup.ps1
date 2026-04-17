@@ -1,11 +1,12 @@
 $ErrorActionPreference = "Stop"
 
-$pnpmVersion = "10.33.0"
+$script:PnpmVersion = "10.33.0"
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoDir = (Resolve-Path (Join-Path $rootDir "..")).Path
 $logsDir = Join-Path $env:LOCALAPPDATA "NextGenChat\logs"
 
 Set-Location $repoDir
+. (Join-Path $rootDir "windows-pnpm.ps1")
 
 function Write-Step {
     param([string]$Text)
@@ -48,93 +49,6 @@ function Invoke-GenerateSecret {
     return (node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))")
 }
 
-function Get-NpmCommand {
-    if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { return "npm.cmd" }
-    if (Get-Command npm -ErrorAction SilentlyContinue) { return "npm" }
-    return $null
-}
-
-function Get-PnpmShimCommand {
-    $command = Get-Command pnpm.cmd -ErrorAction SilentlyContinue
-    if ($command -and $command.Source) { return $command.Source }
-
-    $command = Get-Command pnpm -ErrorAction SilentlyContinue
-    if ($command -and $command.Source) { return $command.Source }
-
-    return $null
-}
-
-function Test-NativeCommand {
-    param(
-        [string]$FilePath,
-        [string[]]$Arguments = @("--version")
-    )
-
-    if (-not $FilePath) { return $false }
-    if (-not (Test-Path $FilePath)) { return $false }
-
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        & $FilePath @Arguments 2>$null | Out-Null
-        return ($LASTEXITCODE -eq 0)
-    }
-    catch {
-        return $false
-    }
-    finally {
-        $ErrorActionPreference = $previousPreference
-    }
-}
-
-function Get-StandalonePnpmPath {
-    $npmCommand = Get-NpmCommand
-    if (-not $npmCommand) { return $null }
-
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        $npmPrefix = (& $npmCommand prefix -g 2>$null | Select-Object -First 1)
-    }
-    finally {
-        $ErrorActionPreference = $previousPreference
-    }
-
-    if ($LASTEXITCODE -ne 0 -or -not $npmPrefix) { return $null }
-
-    $pnpmPath = Join-Path ($npmPrefix.Trim()) "pnpm.cmd"
-    if (Test-NativeCommand -FilePath $pnpmPath) {
-        return $pnpmPath
-    }
-
-    return $null
-}
-
-function Ensure-PnpmCommand {
-    $standalonePnpm = Get-StandalonePnpmPath
-    if ($standalonePnpm) {
-        return $standalonePnpm
-    }
-
-    $npmCommand = Get-NpmCommand
-    if (-not $npmCommand) {
-        Write-Fail "npm is required to install pnpm on Windows."
-    }
-
-    Write-Warn "No working standalone pnpm installation found. Installing pnpm@$pnpmVersion with npm..."
-    & $npmCommand install -g "pnpm@$pnpmVersion"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail "Failed to install pnpm@$pnpmVersion with npm."
-    }
-
-    $standalonePnpm = Get-StandalonePnpmPath
-    if (-not $standalonePnpm) {
-        Write-Fail "pnpm is still unavailable after npm installation."
-    }
-
-    return $standalonePnpm
-}
-
 function Invoke-NativeLogged {
     param(
         [string]$FilePath,
@@ -146,11 +60,11 @@ function Invoke-NativeLogged {
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Null
 
-    $previousPreference = $ErrorActionPreference
     $previousDebug = $env:DEBUG
     $previousBacktrace = $env:RUST_BACKTRACE
+    $stdoutLog = "$LogPath.stdout"
+    $stderrLog = "$LogPath.stderr"
 
-    $ErrorActionPreference = "Continue"
     try {
         if ($Environment) {
             foreach ($entry in $Environment.GetEnumerator()) {
@@ -158,12 +72,16 @@ function Invoke-NativeLogged {
             }
         }
 
-        Push-Location $WorkingDirectory
-        & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $LogPath
-        $exitCode = $LASTEXITCODE
+        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+        $exitCode = $process.ExitCode
+
+        $output = @()
+        if (Test-Path -LiteralPath $stdoutLog) { $output += Get-Content -Path $stdoutLog -Encoding UTF8 }
+        if (Test-Path -LiteralPath $stderrLog) { $output += Get-Content -Path $stderrLog -Encoding UTF8 }
+        $output | Set-Content -Path $LogPath -Encoding UTF8
+        $output | ForEach-Object { Write-Host $_ }
     }
     finally {
-        Pop-Location
         if ($Environment) {
             foreach ($entry in $Environment.GetEnumerator()) {
                 [Environment]::SetEnvironmentVariable($entry.Key, $null)
@@ -171,7 +89,7 @@ function Invoke-NativeLogged {
         }
         $env:DEBUG = $previousDebug
         $env:RUST_BACKTRACE = $previousBacktrace
-        $ErrorActionPreference = $previousPreference
+        Remove-Item -LiteralPath $stdoutLog, $stderrLog -Force -ErrorAction SilentlyContinue
     }
 
     return $exitCode
@@ -266,7 +184,13 @@ $npmCommand = Get-NpmCommand
 if (-not $npmCommand) { Write-Fail "npm is required. Install Node.js LTS, then run the command again." }
 Write-Ok "npm $((Get-CommandVersion -FilePath $npmCommand))"
 
-$pnpmPath = Ensure-PnpmCommand
+$pnpmPath = $null
+try {
+    $pnpmPath = Ensure-PnpmCommand -Version $script:PnpmVersion
+}
+catch {
+    Write-Fail $_.Exception.Message
+}
 Write-Ok "pnpm $((Get-CommandVersion -FilePath $pnpmPath))"
 
 Write-Step "Creating local environment"
@@ -279,7 +203,10 @@ $workspacesPath = "$winDirPosix/agent-workspaces"
 New-Item -ItemType Directory -Force -Path $winDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $winDir "agent-workspaces") | Out-Null
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
-New-Item -ItemType File -Force -Path (Join-Path $winDir "dev.db") | Out-Null
+$dbFile = Join-Path $winDir "dev.db"
+if (-not (Test-Path -LiteralPath $dbFile)) {
+    New-Item -ItemType File -Path $dbFile | Out-Null
+}
 
 if (-not (Test-Path ".env")) {
     Copy-Item ".env.example" ".env"

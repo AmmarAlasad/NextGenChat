@@ -4,18 +4,57 @@ $repoUrl = if ($env:NEXTGENCHAT_REPO_URL) { $env:NEXTGENCHAT_REPO_URL } else { "
 $installDir = if ($env:NEXTGENCHAT_DIR) { $env:NEXTGENCHAT_DIR } else { Join-Path $env:USERPROFILE "NextGenChat" }
 $logsDir = Join-Path $env:LOCALAPPDATA "NextGenChat\logs"
 
+function Invoke-GitCommand {
+    param([string[]]$Arguments)
+
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & git @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+        $output | ForEach-Object { Write-Host $_ }
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+
+    if ($exitCode -ne 0) {
+        throw "git $($Arguments -join ' ') failed with exit code $exitCode"
+    }
+}
+
 function Ensure-Repo {
     if ((Test-Path "package.json") -and (Test-Path "scripts/setup.ps1") -and (Test-Path ".git")) {
         return (Get-Location).Path
     }
 
     if (-not (Test-Path (Join-Path $installDir ".git"))) {
-        git clone $repoUrl $installDir | Out-Host
+        Invoke-GitCommand -Arguments @("clone", $repoUrl, $installDir)
     } else {
-        git -C $installDir pull --ff-only | Out-Host
+        Invoke-GitCommand -Arguments @("-C", $installDir, "pull", "--ff-only")
     }
 
     return $installDir
+}
+
+function Stop-ExistingNextGenChat {
+    $task = Get-ScheduledTask -TaskName "NextGenChat" -ErrorAction SilentlyContinue
+    if ($task) {
+        Stop-ScheduledTask -TaskName "NextGenChat" -ErrorAction SilentlyContinue
+
+        $deadline = (Get-Date).AddSeconds(20)
+        do {
+            Start-Sleep -Seconds 1
+            $task = Get-ScheduledTask -TaskName "NextGenChat" -ErrorAction SilentlyContinue
+        } while ($task -and $task.State -eq "Running" -and (Get-Date) -lt $deadline)
+    }
+
+    $portOwners = Get-NetTCPConnection -LocalPort 3000,3001 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
+    foreach ($processId in $portOwners) {
+        if ($processId -and $processId -ne $PID) {
+            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Wait-NextGenChatStartup {
@@ -46,31 +85,6 @@ function Wait-NextGenChatStartup {
     return $false
 }
 
-function Get-NpmCommand {
-    if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { return "npm.cmd" }
-    if (Get-Command npm -ErrorAction SilentlyContinue) { return "npm" }
-    return $null
-}
-
-function Get-PnpmPath {
-    $npmCommand = Get-NpmCommand
-    if (-not $npmCommand) {
-        throw "npm is required to locate pnpm on Windows."
-    }
-
-    $npmPrefix = (& $npmCommand prefix -g).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $npmPrefix) {
-        throw "Could not determine npm global prefix."
-    }
-
-    $pnpmPath = Join-Path $npmPrefix "pnpm.cmd"
-    if (-not (Test-Path $pnpmPath)) {
-        throw "Standalone pnpm.cmd was not found after setup."
-    }
-
-    return $pnpmPath
-}
-
 function Invoke-NativeLogged {
     param(
         [string]$FilePath,
@@ -81,16 +95,21 @@ function Invoke-NativeLogged {
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Null
 
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
+    $stdoutLog = "$LogPath.stdout"
+    $stderrLog = "$LogPath.stderr"
+
     try {
-        Push-Location $WorkingDirectory
-        & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $LogPath
-        $exitCode = $LASTEXITCODE
+        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+        $exitCode = $process.ExitCode
+
+        $output = @()
+        if (Test-Path -LiteralPath $stdoutLog) { $output += Get-Content -Path $stdoutLog -Encoding UTF8 }
+        if (Test-Path -LiteralPath $stderrLog) { $output += Get-Content -Path $stderrLog -Encoding UTF8 }
+        $output | Set-Content -Path $LogPath -Encoding UTF8
+        $output | ForEach-Object { Write-Host $_ }
     }
     finally {
-        Pop-Location
-        $ErrorActionPreference = $previousPreference
+        Remove-Item -LiteralPath $stdoutLog, $stderrLog -Force -ErrorAction SilentlyContinue
     }
 
     if ($exitCode -ne 0) {
@@ -110,6 +129,9 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 
 $repoDir = Ensure-Repo
 Set-Location $repoDir
+. (Join-Path $repoDir "scripts/windows-pnpm.ps1")
+
+Stop-ExistingNextGenChat
 
 & powershell -ExecutionPolicy Bypass -File "scripts/setup.ps1"
 if ($LASTEXITCODE -ne 0) {
@@ -117,6 +139,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $pnpmPath = Get-PnpmPath
+if (-not $pnpmPath) {
+    throw "pnpm is unavailable after setup. Re-run the installer from a new PowerShell window or check $logsDir."
+}
 Invoke-NativeLogged -FilePath $pnpmPath -Arguments @("build") -LogPath (Join-Path $logsDir "build.log")
 
 & powershell -ExecutionPolicy Bypass -File "scripts/service-install.ps1"
