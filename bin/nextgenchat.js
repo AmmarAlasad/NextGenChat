@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 
-const { existsSync } = require('node:fs');
+const { existsSync, mkdirSync } = require('node:fs');
 const { join, resolve } = require('node:path');
 const { spawn } = require('node:child_process');
 
 const DEFAULT_INSTALL_SCRIPT_URLS = {
   windows: 'https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install.ps1',
+  macos: 'https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install-macos.sh',
   unix: 'https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install.sh',
 };
 
 const isWindows = process.platform === 'win32';
+const isMacos = process.platform === 'darwin';
 const binDir = __dirname;
 const packagedRepoDir = resolve(binDir, '..');
 
@@ -102,7 +104,11 @@ function run(command, args, options = {}) {
 
 async function runInstall() {
   const installScriptUrl = process.env.NEXTGENCHAT_INSTALL_SCRIPT_URL
-    || (isWindows ? DEFAULT_INSTALL_SCRIPT_URLS.windows : DEFAULT_INSTALL_SCRIPT_URLS.unix);
+    || (isWindows
+      ? DEFAULT_INSTALL_SCRIPT_URLS.windows
+      : isMacos
+        ? DEFAULT_INSTALL_SCRIPT_URLS.macos
+        : DEFAULT_INSTALL_SCRIPT_URLS.unix);
   const response = await fetch(installScriptUrl);
 
   if (!response.ok) {
@@ -154,7 +160,9 @@ async function runWindowsService(command, options) {
 
 async function runUnixService(command, options) {
   const dir = ensureInstalledRepo();
-  const script = join(dir, 'scripts', 'service-disable.sh');
+  const script = isMacos
+    ? join(dir, 'scripts', 'service-disable-macos.sh')
+    : join(dir, 'scripts', 'service-disable.sh');
   const args = [script, command];
   if (options.removeData) args.push('--remove-data');
   if (options.keepData) args.push('--keep-data');
@@ -166,12 +174,21 @@ async function startService() {
     await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'Start-ScheduledTask -TaskName NextGenChat']);
     return;
   }
+  if (isMacos) {
+    const dir = ensureInstalledRepo();
+    await run('bash', [join(dir, 'scripts', 'service-install-macos.sh'), 'start']);
+    return;
+  }
   await run('systemctl', ['--user', 'start', 'nextgenchat.service']);
 }
 
 async function statusService() {
   if (isWindows) {
     await run('schtasks.exe', ['/Query', '/TN', 'NextGenChat', '/V', '/FO', 'LIST']);
+    return;
+  }
+  if (isMacos) {
+    await run('launchctl', ['print', `gui/${process.getuid()}/com.nextgenchat.local`]);
     return;
   }
   await run('systemctl', ['--user', 'status', 'nextgenchat.service']);
@@ -188,6 +205,14 @@ async function logsService() {
       '-Command',
       `Get-ChildItem -LiteralPath '${join(logs, 'logs').replaceAll("'", "''")}' -Filter '*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 6 | Format-Table LastWriteTime,Name,Length -AutoSize`,
     ]);
+    return;
+  }
+  if (isMacos) {
+    const logs = join(process.env.HOME || process.cwd(), 'Library', 'Logs', 'NextGenChat');
+    mkdirSync(logs, { recursive: true });
+    await run('touch', [join(logs, 'service.out.log'), join(logs, 'service.err.log')]);
+    process.stdout.write(`NextGenChat logs are in:\n  ${logs}\n\n`);
+    await run('tail', ['-f', join(logs, 'service.out.log'), join(logs, 'service.err.log')]);
     return;
   }
   await run('journalctl', ['--user', '-u', 'nextgenchat.service', '-f']);

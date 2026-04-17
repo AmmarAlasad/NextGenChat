@@ -20,9 +20,7 @@ It is built around a simple idea:
 
 - Linux: supported
 - Windows: supported
-- macOS: **not supported yet**
-
-macOS support is planned for a future release.
+- macOS: supported
 
 ## One-line install from GitHub
 
@@ -30,6 +28,12 @@ macOS support is planned for a future release.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install.sh | bash
+```
+
+### macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install-macos.sh | bash
 ```
 
 ### Windows
@@ -41,6 +45,12 @@ irm https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/insta
 ## One-line install from npm
 
 ### Linux
+
+```bash
+npx nextgenchat@latest install
+```
+
+### macOS
 
 ```bash
 npx nextgenchat@latest install
@@ -67,6 +77,19 @@ The Linux installer:
 - enables user lingering when possible so the user service survives reboot
 - starts the frontend and backend stack
 
+### macOS install path
+
+The macOS installer:
+
+- clones or updates the repo
+- creates `.env` from `.env.example`
+- generates local secrets
+- installs dependencies
+- syncs Prisma
+- installs a LaunchAgent called `com.nextgenchat.local`
+- starts the frontend and backend stack in the background
+- restarts the app when you log in again
+
 ### Windows install path
 
 The Windows installer:
@@ -86,6 +109,15 @@ Linux local runtime data defaults to:
 - `~/.nextgenchat/agent-workspaces/`
 - `~/.nextgenchat/project-workspaces/`
 - `~/.nextgenchat/install/`
+
+macOS local runtime data defaults to:
+
+- `~/.nextgenchat/dev.db`
+- `~/.nextgenchat/agent-workspaces/`
+- `~/.nextgenchat/project-workspaces/`
+- `~/.nextgenchat/install/`
+- `~/Library/LaunchAgents/com.nextgenchat.local.plist`
+- `~/Library/Logs/NextGenChat/`
 
 Windows local runtime data defaults to:
 
@@ -117,6 +149,17 @@ ngc --uninstall
 ngc --uninstall --remove-data
 ```
 
+### macOS
+
+```bash
+ngc --status
+ngc --logs
+ngc --stop
+ngc --disable
+ngc --uninstall
+ngc --uninstall --remove-data
+```
+
 ### Windows
 
 ```powershell
@@ -128,7 +171,7 @@ ngc --uninstall
 ngc --uninstall --remove-data
 ```
 
-On Linux and Windows:
+On Linux, macOS, and Windows:
 
 - `ngc --stop` stops the running app but keeps automatic startup enabled.
 - `ngc --disable` stops the running app and disables automatic startup.
@@ -136,7 +179,7 @@ On Linux and Windows:
 - `ngc --uninstall --keep-data` uninstalls and keeps local data without prompting.
 - `ngc --uninstall --remove-data` uninstalls and deletes local data without prompting.
 
-Local data includes conversations, the local database, logs, and agent workspaces under `%LOCALAPPDATA%/NextGenChat` on Windows and `~/.nextgenchat` on Linux.
+Local data includes conversations, the local database, logs, and agent workspaces under `%LOCALAPPDATA%/NextGenChat` on Windows and `~/.nextgenchat` on Linux and macOS.
 
 ## Development install
 
@@ -154,6 +197,12 @@ git clone https://github.com/AmmarAlasad/NextGenChat.git
 cd NextGenChat
 pnpm setup:local:win
 pnpm dev:local:win
+```
+
+macOS service install from a cloned repo:
+
+```bash
+pnpm install:local:macos
 ```
 
 ## What NextGenChat already supports
@@ -432,7 +481,6 @@ Planned future directions include:
 - more agent isolation and restrictions
 - stricter tool sandboxes
 - stronger workspace boundaries
-- macOS support
 - more production-hardening and release packaging
 - richer mobile and multi-user support over time
 
