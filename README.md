@@ -111,13 +111,17 @@ schtasks /Query /TN NextGenChat
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" stop
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" disable
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" remove
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" remove -RemoveData
 ```
 
 On Windows:
 
 - `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" stop` stops the running app but keeps the scheduled task enabled, so NextGenChat starts again at the next Windows logon.
 - `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" disable` stops the running app and disables automatic startup.
-- `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" remove` stops the running app and removes the `NextGenChat` scheduled task.
+- `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" remove` stops the running app, removes the `NextGenChat` scheduled task, and asks whether to keep or delete local data.
+- `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" remove -RemoveData` uninstalls and deletes local data without prompting.
+
+Local data includes conversations, the local database, logs, and agent workspaces under `%LOCALAPPDATA%/NextGenChat`.
 
 ## Development install
 

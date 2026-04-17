@@ -1,7 +1,14 @@
+param(
+    [ValidateSet("stop", "disable", "remove")]
+    [string]$Mode,
+    [switch]$RemoveData,
+    [switch]$KeepData
+)
+
 $ErrorActionPreference = "Stop"
 
 $taskName = "NextGenChat"
-$mode = if ($args.Length -gt 0) { $args[0] } else { "disable" }
+$mode = if ($Mode) { $Mode } elseif ($args.Length -gt 0) { $args[0] } else { "disable" }
 $runtimeDir = Join-Path $env:LOCALAPPDATA "NextGenChat"
 $pidFile = Join-Path $runtimeDir "service-pids.json"
 $installDir = Join-Path $env:USERPROFILE "NextGenChat"
@@ -46,6 +53,29 @@ function Stop-NextGenChatProcesses {
     Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
 }
 
+function Confirm-RemoveData {
+    if ($RemoveData) { return $true }
+    if ($KeepData) { return $false }
+
+    Write-Host ""
+    Write-Host "Local NextGenChat data is stored at:" -ForegroundColor Yellow
+    Write-Host "  $runtimeDir" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "This includes conversations, the local database, logs, and agent workspaces." -ForegroundColor Yellow
+    $answer = Read-Host "Type DELETE to remove this data, or press Enter to keep it"
+
+    return ($answer -ceq "DELETE")
+}
+
+function Remove-NextGenChatData {
+    if (Test-Path -LiteralPath $runtimeDir) {
+        Remove-Item -LiteralPath $runtimeDir -Recurse -Force
+        Write-Host "Removed local NextGenChat data at '$runtimeDir'." -ForegroundColor Green
+    } else {
+        Write-Host "No local NextGenChat data directory found at '$runtimeDir'." -ForegroundColor Yellow
+    }
+}
+
 switch ($mode) {
     "stop" {
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null
@@ -63,10 +93,15 @@ switch ($mode) {
         Disable-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         Stop-NextGenChatProcesses
+        if (Confirm-RemoveData) {
+            Remove-NextGenChatData
+        } else {
+            Write-Host "Kept local NextGenChat data at '$runtimeDir'." -ForegroundColor Green
+        }
         Write-Host "Stopped, disabled, and removed Windows Scheduled Task '$taskName'." -ForegroundColor Green
     }
     default {
-        Write-Error "Usage: powershell -ExecutionPolicy Bypass -File scripts/service-disable.ps1 [stop|disable|remove]"
+        Write-Error "Usage: powershell -ExecutionPolicy Bypass -File scripts/service-disable.ps1 [stop|disable|remove] [-KeepData|-RemoveData]"
         exit 1
     }
 }
