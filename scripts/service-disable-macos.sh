@@ -31,6 +31,23 @@ bootout_service() {
   fi
 }
 
+remove_command_shims() {
+  local shim_dirs=()
+
+  if [ -n "${NEXTGENCHAT_BIN_DIR:-}" ]; then
+    shim_dirs+=("$NEXTGENCHAT_BIN_DIR")
+  else
+    shim_dirs+=("/opt/homebrew/bin" "/usr/local/bin" "$HOME/.local/bin")
+  fi
+
+  for shim_dir in "${shim_dirs[@]}"; do
+    [ -n "$shim_dir" ] || continue
+    rm -f "$shim_dir/nextgenchat" "$shim_dir/ngc"
+  done
+
+  echo "Removed command shims: nextgenchat, ngc"
+}
+
 confirm_remove_data() {
   if [ "$REMOVE_DATA" = "1" ]; then
     return 0
@@ -78,6 +95,7 @@ case "$MODE" in
     bootout_service
     launchctl disable "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
     rm -f "$PLIST_FILE"
+    remove_command_shims
     if confirm_remove_data; then
       remove_nextgenchat_data
     else

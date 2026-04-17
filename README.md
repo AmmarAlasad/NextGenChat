@@ -175,7 +175,7 @@ On Linux, macOS, and Windows:
 
 - `ngc --stop` stops the running app but keeps automatic startup enabled.
 - `ngc --disable` stops the running app and disables automatic startup.
-- `ngc --uninstall` stops the running app, removes the background service, and asks whether to keep or delete local data.
+- `ngc --uninstall` stops the running app, removes the background service and the `ngc` / `nextgenchat` commands, and asks whether to keep or delete local data.
 - `ngc --uninstall --keep-data` uninstalls and keeps local data without prompting.
 - `ngc --uninstall --remove-data` uninstalls and deletes local data without prompting.
 

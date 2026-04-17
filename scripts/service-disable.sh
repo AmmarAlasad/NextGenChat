@@ -27,6 +27,13 @@ if ! command -v systemctl >/dev/null 2>&1; then
   exit 1
 fi
 
+remove_command_shims() {
+  local bin_dir="${NEXTGENCHAT_BIN_DIR:-$HOME/.local/bin}"
+
+  rm -f "$bin_dir/nextgenchat" "$bin_dir/ngc"
+  echo "Removed command shims: nextgenchat, ngc"
+}
+
 confirm_remove_data() {
   if [ "$REMOVE_DATA" = "1" ]; then
     return 0
@@ -70,6 +77,7 @@ case "$MODE" in
     systemctl --user disable "$SERVICE_NAME" >/dev/null 2>&1 || true
     rm -f "$SERVICE_FILE"
     systemctl --user daemon-reload
+    remove_command_shims
     if confirm_remove_data; then
       remove_nextgenchat_data
     else

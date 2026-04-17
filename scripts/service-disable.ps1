@@ -12,6 +12,37 @@ $mode = if ($Mode) { $Mode } elseif ($args.Length -gt 0) { $args[0] } else { "di
 $runtimeDir = Join-Path $env:LOCALAPPDATA "NextGenChat"
 $pidFile = Join-Path $runtimeDir "service-pids.json"
 
+function Remove-CommandShims {
+    $shimDirs = New-Object System.Collections.Generic.List[string]
+
+    $repoDir = Split-Path -Parent $PSScriptRoot
+    $windowsPnpm = Join-Path $PSScriptRoot "windows-pnpm.ps1"
+    if (Test-Path -LiteralPath $windowsPnpm) {
+        . $windowsPnpm
+        $npmPrefix = Get-NpmGlobalPrefix
+        if ($npmPrefix) { $shimDirs.Add($npmPrefix) }
+    }
+
+    if ($env:APPDATA) {
+        $shimDirs.Add((Join-Path $env:APPDATA "npm"))
+    }
+
+    foreach ($shimDir in ($shimDirs | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $shimDir)) { continue }
+
+        foreach ($commandName in @("nextgenchat", "ngc")) {
+            foreach ($extension in @(".cmd", ".ps1")) {
+                $shimPath = Join-Path $shimDir "$commandName$extension"
+                if (Test-Path -LiteralPath $shimPath) {
+                    Remove-Item -LiteralPath $shimPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+
+    Write-Host "Removed command shims: nextgenchat, ngc" -ForegroundColor Green
+}
+
 function Stop-NextGenChatProcesses {
     $processIds = New-Object System.Collections.Generic.List[int]
 
@@ -90,6 +121,7 @@ switch ($mode) {
         Disable-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         Stop-NextGenChatProcesses
+        Remove-CommandShims
         if (Confirm-RemoveData) {
             Remove-NextGenChatData
         } else {
