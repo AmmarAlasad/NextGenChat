@@ -108,16 +108,16 @@ pnpm service:remove
 
 ```powershell
 schtasks /Query /TN NextGenChat
-pnpm service:stop:win
-pnpm service:disable:win
-pnpm service:remove:win
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" stop
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" disable
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" remove
 ```
 
 On Windows:
 
-- `pnpm service:stop:win` stops the running app but keeps the scheduled task enabled, so NextGenChat starts again at the next Windows logon.
-- `pnpm service:disable:win` stops the running app and disables automatic startup.
-- `pnpm service:remove:win` stops the running app and removes the `NextGenChat` scheduled task.
+- `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" stop` stops the running app but keeps the scheduled task enabled, so NextGenChat starts again at the next Windows logon.
+- `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" disable` stops the running app and disables automatic startup.
+- `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" remove` stops the running app and removes the `NextGenChat` scheduled task.
 
 ## Development install
 
