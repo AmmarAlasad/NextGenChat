@@ -5,21 +5,35 @@ $pnpmVersion = "10.33.0"
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location (Join-Path $rootDir "..")
 
+function Test-PnpmLaunchCommand {
+    param(
+        [string]$FilePath,
+        [string[]]$PrefixArgs = @()
+    )
+
+    try {
+        & $FilePath @($PrefixArgs + @("--version")) | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Get-PnpmLaunchCommand {
-    if (Get-Command pnpm.cmd -ErrorAction SilentlyContinue) {
-        return @{ FilePath = "pnpm.cmd"; PrefixArgs = @() }
-    }
+    $candidates = @(
+        @{ FilePath = "pnpm.cmd"; PrefixArgs = @() },
+        @{ FilePath = "pnpm"; PrefixArgs = @() },
+        @{ FilePath = "corepack.cmd"; PrefixArgs = @("pnpm@$pnpmVersion") },
+        @{ FilePath = "corepack"; PrefixArgs = @("pnpm@$pnpmVersion") }
+    )
 
-    if (Get-Command pnpm -ErrorAction SilentlyContinue) {
-        return @{ FilePath = "pnpm"; PrefixArgs = @() }
-    }
-
-    if (Get-Command corepack.cmd -ErrorAction SilentlyContinue) {
-        return @{ FilePath = "corepack.cmd"; PrefixArgs = @("pnpm@$pnpmVersion") }
-    }
-
-    if (Get-Command corepack -ErrorAction SilentlyContinue) {
-        return @{ FilePath = "corepack"; PrefixArgs = @("pnpm@$pnpmVersion") }
+    foreach ($candidate in $candidates) {
+        if (Get-Command $candidate.FilePath -ErrorAction SilentlyContinue) {
+            if (Test-PnpmLaunchCommand -FilePath $candidate.FilePath -PrefixArgs $candidate.PrefixArgs) {
+                return $candidate
+            }
+        }
     }
 
     throw "pnpm is required to run NextGenChat on Windows."

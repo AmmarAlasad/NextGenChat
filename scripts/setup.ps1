@@ -24,34 +24,78 @@ function Invoke-GenerateSecret {
     return (node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))")
 }
 
+function Test-PnpmCommand {
+    param(
+        [string]$FilePath,
+        [string[]]$PrefixArgs = @()
+    )
+
+    try {
+        & $FilePath @($PrefixArgs + @("--version")) | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Get-PnpmCommand {
-    if (Get-Command pnpm.cmd -ErrorAction SilentlyContinue) {
-        return @{ FilePath = "pnpm.cmd"; PrefixArgs = @() }
-    }
+    $candidates = @(
+        @{ FilePath = "pnpm.cmd"; PrefixArgs = @() },
+        @{ FilePath = "pnpm"; PrefixArgs = @() },
+        @{ FilePath = "corepack.cmd"; PrefixArgs = @("pnpm@$pnpmVersion") },
+        @{ FilePath = "corepack"; PrefixArgs = @("pnpm@$pnpmVersion") }
+    )
 
-    if (Get-Command pnpm -ErrorAction SilentlyContinue) {
-        return @{ FilePath = "pnpm"; PrefixArgs = @() }
-    }
-
-    if (Get-Command corepack.cmd -ErrorAction SilentlyContinue) {
-        return @{ FilePath = "corepack.cmd"; PrefixArgs = @("pnpm@$pnpmVersion") }
-    }
-
-    if (Get-Command corepack -ErrorAction SilentlyContinue) {
-        return @{ FilePath = "corepack"; PrefixArgs = @("pnpm@$pnpmVersion") }
+    foreach ($candidate in $candidates) {
+        if (Get-Command $candidate.FilePath -ErrorAction SilentlyContinue) {
+            if (Test-PnpmCommand -FilePath $candidate.FilePath -PrefixArgs $candidate.PrefixArgs) {
+                return $candidate
+            }
+        }
     }
 
     return $null
 }
 
-function Invoke-Pnpm {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+function Ensure-PnpmCommand {
+    $pnpmCommand = Get-PnpmCommand
+    if ($pnpmCommand) {
+        return $pnpmCommand
+    }
+
+    Write-Warn "No working pnpm command found. Attempting to install pnpm@$pnpmVersion with npm..."
+
+    if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue) -and -not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        Write-Error "npm is required to install pnpm on Windows."
+        exit 1
+    }
+
+    if (Get-Command npm.cmd -ErrorAction SilentlyContinue) {
+        & npm.cmd install -g "pnpm@$pnpmVersion"
+    }
+    else {
+        & npm install -g "pnpm@$pnpmVersion"
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to install pnpm@$pnpmVersion with npm."
+        exit $LASTEXITCODE
+    }
 
     $pnpmCommand = Get-PnpmCommand
     if (-not $pnpmCommand) {
-        Write-Error "pnpm is required. Install it with: npm install -g pnpm"
+        Write-Error "pnpm is still unavailable after npm installation."
         exit 1
     }
+
+    return $pnpmCommand
+}
+
+function Invoke-Pnpm {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+
+    $pnpmCommand = Ensure-PnpmCommand
 
     & $pnpmCommand.FilePath @($pnpmCommand.PrefixArgs + $Arguments)
     if ($LASTEXITCODE -ne 0) {
@@ -84,7 +128,8 @@ if (Get-Command corepack -ErrorAction SilentlyContinue) {
     corepack prepare pnpm@$pnpmVersion --activate | Out-Null
 }
 
-if (Get-PnpmCommand) { Write-Ok "pnpm is available" } else { Write-Error "pnpm is required. Install it with: npm install -g pnpm"; exit 1 }
+$resolvedPnpm = Ensure-PnpmCommand
+Write-Ok "pnpm is available via $($resolvedPnpm.FilePath)"
 
 Write-Step "Creating local environment"
 
