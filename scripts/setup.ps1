@@ -24,14 +24,26 @@ function Invoke-GenerateSecret {
     return (node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))")
 }
 
-function Test-PnpmCommand {
-    param(
-        [string]$FilePath,
-        [string[]]$PrefixArgs = @()
-    )
+function Get-NpmCommand {
+    if (Get-Command npm.cmd -ErrorAction SilentlyContinue) {
+        return "npm.cmd"
+    }
+
+    if (Get-Command npm -ErrorAction SilentlyContinue) {
+        return "npm"
+    }
+
+    return $null
+}
+
+function Test-StandalonePnpmPath {
+    param([string]$FilePath)
+
+    if (-not $FilePath) { return $false }
+    if (-not (Test-Path $FilePath)) { return $false }
 
     try {
-        & $FilePath @($PrefixArgs + @("--version")) | Out-Null
+        & $FilePath --version | Out-Null
         return ($LASTEXITCODE -eq 0)
     }
     catch {
@@ -40,18 +52,21 @@ function Test-PnpmCommand {
 }
 
 function Get-PnpmCommand {
-    $candidates = @(
-        @{ FilePath = "pnpm.cmd"; PrefixArgs = @() },
-        @{ FilePath = "pnpm"; PrefixArgs = @() },
-        @{ FilePath = "corepack.cmd"; PrefixArgs = @("pnpm@$pnpmVersion") },
-        @{ FilePath = "corepack"; PrefixArgs = @("pnpm@$pnpmVersion") }
-    )
+    $command = Get-Command pnpm.cmd -ErrorAction SilentlyContinue
+    if ($command -and $command.Source -and ($command.Source -notmatch "corepack")) {
+        if (Test-StandalonePnpmPath -FilePath $command.Source) {
+            return @{ FilePath = $command.Source }
+        }
+    }
 
-    foreach ($candidate in $candidates) {
-        if (Get-Command $candidate.FilePath -ErrorAction SilentlyContinue) {
-            if (Test-PnpmCommand -FilePath $candidate.FilePath -PrefixArgs $candidate.PrefixArgs) {
-                return $candidate
-            }
+    $npmCommand = Get-NpmCommand
+    if ($npmCommand) {
+        $npmPrefix = (& $npmCommand prefix -g).Trim()
+        if ($LASTEXITCODE -eq 0 -and $npmPrefix) {
+          $pnpmPath = Join-Path $npmPrefix "pnpm.cmd"
+          if (Test-StandalonePnpmPath -FilePath $pnpmPath) {
+              return @{ FilePath = $pnpmPath }
+          }
         }
     }
 
@@ -64,19 +79,14 @@ function Ensure-PnpmCommand {
         return $pnpmCommand
     }
 
-    Write-Warn "No working pnpm command found. Attempting to install pnpm@$pnpmVersion with npm..."
-
-    if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue) -and -not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    $npmCommand = Get-NpmCommand
+    if (-not $npmCommand) {
         Write-Error "npm is required to install pnpm on Windows."
         exit 1
     }
 
-    if (Get-Command npm.cmd -ErrorAction SilentlyContinue) {
-        & npm.cmd install -g "pnpm@$pnpmVersion"
-    }
-    else {
-        & npm install -g "pnpm@$pnpmVersion"
-    }
+    Write-Warn "No standalone pnpm installation found. Installing pnpm@$pnpmVersion with npm..."
+    & $npmCommand install -g "pnpm@$pnpmVersion"
 
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Failed to install pnpm@$pnpmVersion with npm."
@@ -122,11 +132,6 @@ Write-Host ""
 Write-Step "Checking prerequisites"
 if (Get-Command git -ErrorAction SilentlyContinue) { Write-Ok "git is available" } else { Write-Error "git is required"; exit 1 }
 if (Get-Command node -ErrorAction SilentlyContinue) { Write-Ok "Node.js is available" } else { Write-Error "Node.js 20+ is required"; exit 1 }
-
-if (Get-Command corepack -ErrorAction SilentlyContinue) {
-    corepack enable | Out-Null
-    corepack prepare pnpm@$pnpmVersion --activate | Out-Null
-}
 
 $resolvedPnpm = Ensure-PnpmCommand
 Write-Ok "pnpm is available via $($resolvedPnpm.FilePath)"

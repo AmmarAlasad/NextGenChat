@@ -5,14 +5,26 @@ $pnpmVersion = "10.33.0"
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location (Join-Path $rootDir "..")
 
-function Test-PnpmLaunchCommand {
-    param(
-        [string]$FilePath,
-        [string[]]$PrefixArgs = @()
-    )
+function Get-NpmLaunchCommand {
+    if (Get-Command npm.cmd -ErrorAction SilentlyContinue) {
+        return "npm.cmd"
+    }
+
+    if (Get-Command npm -ErrorAction SilentlyContinue) {
+        return "npm"
+    }
+
+    return $null
+}
+
+function Test-StandalonePnpmPath {
+    param([string]$FilePath)
+
+    if (-not $FilePath) { return $false }
+    if (-not (Test-Path $FilePath)) { return $false }
 
     try {
-        & $FilePath @($PrefixArgs + @("--version")) | Out-Null
+        & $FilePath --version | Out-Null
         return ($LASTEXITCODE -eq 0)
     }
     catch {
@@ -21,17 +33,20 @@ function Test-PnpmLaunchCommand {
 }
 
 function Get-PnpmLaunchCommand {
-    $candidates = @(
-        @{ FilePath = "pnpm.cmd"; PrefixArgs = @() },
-        @{ FilePath = "pnpm"; PrefixArgs = @() },
-        @{ FilePath = "corepack.cmd"; PrefixArgs = @("pnpm@$pnpmVersion") },
-        @{ FilePath = "corepack"; PrefixArgs = @("pnpm@$pnpmVersion") }
-    )
+    $command = Get-Command pnpm.cmd -ErrorAction SilentlyContinue
+    if ($command -and $command.Source -and ($command.Source -notmatch "corepack")) {
+        if (Test-StandalonePnpmPath -FilePath $command.Source) {
+            return @{ FilePath = $command.Source; PrefixArgs = @() }
+        }
+    }
 
-    foreach ($candidate in $candidates) {
-        if (Get-Command $candidate.FilePath -ErrorAction SilentlyContinue) {
-            if (Test-PnpmLaunchCommand -FilePath $candidate.FilePath -PrefixArgs $candidate.PrefixArgs) {
-                return $candidate
+    $npmCommand = Get-NpmLaunchCommand
+    if ($npmCommand) {
+        $npmPrefix = (& $npmCommand prefix -g).Trim()
+        if ($LASTEXITCODE -eq 0 -and $npmPrefix) {
+            $pnpmPath = Join-Path $npmPrefix "pnpm.cmd"
+            if (Test-StandalonePnpmPath -FilePath $pnpmPath) {
+                return @{ FilePath = $pnpmPath; PrefixArgs = @() }
             }
         }
     }
