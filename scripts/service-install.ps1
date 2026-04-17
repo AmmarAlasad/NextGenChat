@@ -4,8 +4,11 @@ $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoDir = (Resolve-Path (Join-Path $rootDir "..")).Path
 $taskName = "NextGenChat"
 $runScript = Join-Path $repoDir "scripts/service-run.ps1"
+$logsDir = Join-Path $env:LOCALAPPDATA "NextGenChat\logs"
 
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$runScript`""
+New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runScript`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 
@@ -13,3 +16,4 @@ Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Se
 Start-ScheduledTask -TaskName $taskName
 
 Write-Host "Installed and started Windows Scheduled Task '$taskName'." -ForegroundColor Green
+Write-Host "Logs: $logsDir" -ForegroundColor Cyan

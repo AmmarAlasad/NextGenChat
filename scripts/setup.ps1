@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $pnpmVersion = "10.33.0"
+$logsDir = Join-Path $env:LOCALAPPDATA "NextGenChat\logs"
 
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location (Join-Path $rootDir "..")
@@ -36,6 +37,15 @@ function Get-NpmCommand {
     return $null
 }
 
+function Get-StandalonePnpmPath {
+    $npmCommand = Get-NpmCommand
+    if (-not $npmCommand) { return $null }
+
+    $npmPrefix = (& $npmCommand prefix -g).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $npmPrefix) { return $null }
+    return (Join-Path $npmPrefix "pnpm.cmd")
+}
+
 function Test-StandalonePnpmPath {
     param([string]$FilePath)
 
@@ -52,22 +62,9 @@ function Test-StandalonePnpmPath {
 }
 
 function Get-PnpmCommand {
-    $command = Get-Command pnpm.cmd -ErrorAction SilentlyContinue
-    if ($command -and $command.Source -and ($command.Source -notmatch "corepack")) {
-        if (Test-StandalonePnpmPath -FilePath $command.Source) {
-            return @{ FilePath = $command.Source }
-        }
-    }
-
-    $npmCommand = Get-NpmCommand
-    if ($npmCommand) {
-        $npmPrefix = (& $npmCommand prefix -g).Trim()
-        if ($LASTEXITCODE -eq 0 -and $npmPrefix) {
-          $pnpmPath = Join-Path $npmPrefix "pnpm.cmd"
-          if (Test-StandalonePnpmPath -FilePath $pnpmPath) {
-              return @{ FilePath = $pnpmPath }
-          }
-        }
+    $pnpmPath = Get-StandalonePnpmPath
+    if ($pnpmPath -and (Test-StandalonePnpmPath -FilePath $pnpmPath)) {
+        return @{ FilePath = $pnpmPath }
     }
 
     return $null
@@ -85,7 +82,7 @@ function Ensure-PnpmCommand {
         exit 1
     }
 
-    Write-Warn "No standalone pnpm installation found. Installing pnpm@$pnpmVersion with npm..."
+    Write-Warn "No working standalone pnpm installation found. Installing pnpm@$pnpmVersion with npm..."
     & $npmCommand install -g "pnpm@$pnpmVersion"
 
     if ($LASTEXITCODE -ne 0) {
@@ -113,6 +110,16 @@ function Invoke-Pnpm {
     }
 }
 
+function Get-EnvValue {
+    param([string]$key)
+
+    if (-not (Test-Path ".env")) { return $null }
+
+    $line = Get-Content ".env" | Where-Object { $_ -match "^$key=" } | Select-Object -Last 1
+    if (-not $line) { return $null }
+    return ($line -replace "^$key=", "").Trim('"')
+}
+
 function Set-EnvValue {
     param([string]$key, [string]$value)
     
@@ -124,6 +131,81 @@ function Set-EnvValue {
         $content += "`n$key=$value"
     }
     Set-Content ".env" $content -NoNewline
+}
+
+function Ensure-SqliteParentDirectory {
+    $databaseUrl = Get-EnvValue "DATABASE_URL"
+    if (-not $databaseUrl -or -not $databaseUrl.StartsWith("file:")) { return }
+
+    $sqlitePath = $databaseUrl.Substring(5)
+    if (-not [System.IO.Path]::IsPathRooted($sqlitePath)) {
+        $sqlitePath = Join-Path (Get-Location).Path $sqlitePath
+    }
+
+    $parentDir = Split-Path -Parent $sqlitePath
+    if ($parentDir) {
+        New-Item -ItemType Directory -Force -Path $parentDir | Out-Null
+    }
+}
+
+function Invoke-PrismaCommand {
+    param(
+        [string[]]$Arguments,
+        [string]$LogFile,
+        [switch]$EnableDebug
+    )
+
+    New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+    Copy-Item ".env" "apps/backend/.env" -Force
+    Ensure-SqliteParentDirectory
+
+    $backendDir = Join-Path (Get-Location).Path "apps/backend"
+    $logPath = Join-Path $logsDir $LogFile
+    $pnpmCommand = Ensure-PnpmCommand
+    $originalDebug = $env:DEBUG
+    $originalBacktrace = $env:RUST_BACKTRACE
+
+    if ($EnableDebug) {
+        $env:DEBUG = "prisma:*"
+        $env:RUST_BACKTRACE = "1"
+    }
+
+    try {
+        Push-Location $backendDir
+        & $pnpmCommand.FilePath @Arguments *>&1 | Tee-Object -FilePath $logPath
+        return ($LASTEXITCODE -eq 0)
+    }
+    finally {
+        Pop-Location
+        $env:DEBUG = $originalDebug
+        $env:RUST_BACKTRACE = $originalBacktrace
+    }
+}
+
+function Invoke-PrismaBootstrap {
+    Write-Step "Syncing Prisma client and local database"
+
+    $generateOk = Invoke-PrismaCommand -Arguments @("exec", "prisma", "generate") -LogFile "prisma-generate.log"
+    if (-not $generateOk) {
+        Write-Error "Prisma generate failed. Check $logsDir\prisma-generate.log"
+        exit 1
+    }
+
+    $pushOk = Invoke-PrismaCommand -Arguments @("exec", "prisma", "db", "push", "--skip-generate") -LogFile "prisma-push.log"
+    if (-not $pushOk) {
+        Write-Warn "Prisma db push failed. Retrying once with detailed debug logs..."
+        Copy-Item ".env" "apps/backend/.env" -Force
+        Ensure-SqliteParentDirectory
+        $pushOk = Invoke-PrismaCommand -Arguments @("exec", "prisma", "db", "push", "--skip-generate") -LogFile "prisma-push-retry.log" -EnableDebug
+        if (-not $pushOk) {
+            $databaseUrl = Get-EnvValue "DATABASE_URL"
+            Write-Error "Prisma db push failed after retry. DATABASE_URL=$databaseUrl"
+            Write-Error "Check logs: $logsDir\prisma-push.log and $logsDir\prisma-push-retry.log"
+            exit 1
+        }
+    }
+
+    Write-Ok "SQLite schema is ready"
 }
 
 Write-Host "`nNextGenChat - Local setup (Windows Native)" -ForegroundColor Cyan
@@ -156,6 +238,7 @@ if (-not (Test-Path ".env")) {
 
 New-Item -ItemType Directory -Force -Path $winDir | Out-Null
 New-Item -ItemType Directory -Force -Path "$winDir\agent-workspaces" | Out-Null
+New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 
 Set-EnvValue "DEPLOYMENT_MODE" "local"
 Set-EnvValue "DATABASE_URL" "file:$dbPath"
@@ -174,10 +257,7 @@ Write-Step "Installing workspace dependencies"
 Invoke-Pnpm install
 Write-Ok "Dependencies installed"
 
-Write-Step "Syncing Prisma client and local database"
-Invoke-Pnpm --filter @nextgenchat/backend prisma:generate
-Invoke-Pnpm --filter @nextgenchat/backend prisma:push
-Write-Ok "SQLite schema is ready"
+Invoke-PrismaBootstrap
 
 Write-Host "`n[OK] Local setup complete" -ForegroundColor Green
 Write-Host "`n  pnpm dev:local:win   - start the app"

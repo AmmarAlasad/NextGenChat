@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $pnpmVersion = "10.33.0"
+$logsDir = Join-Path $env:LOCALAPPDATA "NextGenChat\logs"
 
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location (Join-Path $rootDir "..")
@@ -15,6 +16,15 @@ function Get-NpmLaunchCommand {
     }
 
     return $null
+}
+
+function Get-StandalonePnpmPath {
+    $npmCommand = Get-NpmLaunchCommand
+    if (-not $npmCommand) { return $null }
+
+    $npmPrefix = (& $npmCommand prefix -g).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $npmPrefix) { return $null }
+    return (Join-Path $npmPrefix "pnpm.cmd")
 }
 
 function Test-StandalonePnpmPath {
@@ -33,22 +43,9 @@ function Test-StandalonePnpmPath {
 }
 
 function Get-PnpmLaunchCommand {
-    $command = Get-Command pnpm.cmd -ErrorAction SilentlyContinue
-    if ($command -and $command.Source -and ($command.Source -notmatch "corepack")) {
-        if (Test-StandalonePnpmPath -FilePath $command.Source) {
-            return @{ FilePath = $command.Source; PrefixArgs = @() }
-        }
-    }
-
-    $npmCommand = Get-NpmLaunchCommand
-    if ($npmCommand) {
-        $npmPrefix = (& $npmCommand prefix -g).Trim()
-        if ($LASTEXITCODE -eq 0 -and $npmPrefix) {
-            $pnpmPath = Join-Path $npmPrefix "pnpm.cmd"
-            if (Test-StandalonePnpmPath -FilePath $pnpmPath) {
-                return @{ FilePath = $pnpmPath; PrefixArgs = @() }
-            }
-        }
+    $pnpmPath = Get-StandalonePnpmPath
+    if ($pnpmPath -and (Test-StandalonePnpmPath -FilePath $pnpmPath)) {
+        return @{ FilePath = $pnpmPath; PrefixArgs = @() }
     }
 
     throw "pnpm is required to run NextGenChat on Windows."
@@ -60,19 +57,23 @@ if (-not (Test-Path ".env")) {
 }
 
 Copy-Item ".env" "apps/backend/.env" -Force
+New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 
 $pnpmCommand = Get-PnpmLaunchCommand
 
-& $pnpmCommand.FilePath @($pnpmCommand.PrefixArgs + @("--filter", "@nextgenchat/backend", "prisma:generate"))
-& $pnpmCommand.FilePath @($pnpmCommand.PrefixArgs + @("--filter", "@nextgenchat/backend", "prisma:push"))
-& $pnpmCommand.FilePath @($pnpmCommand.PrefixArgs + @("build"))
+& $pnpmCommand.FilePath @($pnpmCommand.PrefixArgs + @("--filter", "@nextgenchat/backend", "prisma:generate")) *>&1 | Tee-Object -FilePath (Join-Path $logsDir "service-prisma-generate.log")
+& $pnpmCommand.FilePath @($pnpmCommand.PrefixArgs + @("--filter", "@nextgenchat/backend", "prisma:push")) *>&1 | Tee-Object -FilePath (Join-Path $logsDir "service-prisma-push.log")
+& $pnpmCommand.FilePath @($pnpmCommand.PrefixArgs + @("build")) *>&1 | Tee-Object -FilePath (Join-Path $logsDir "service-build.log")
 
 $backend = $null
 $web = $null
 
 try {
-    $backend = Start-Process -FilePath $pnpmCommand.FilePath -ArgumentList @($pnpmCommand.PrefixArgs + @("--filter", "@nextgenchat/backend", "start")) -WorkingDirectory (Get-Location).Path -PassThru -Environment @{ PORT = "3001" }
-    $web = Start-Process -FilePath $pnpmCommand.FilePath -ArgumentList @($pnpmCommand.PrefixArgs + @("--filter", "@nextgenchat/web", "start")) -WorkingDirectory (Get-Location).Path -PassThru -Environment @{ PORT = "3000" }
+    $backendCommand = "$env:PORT='3001'; & '$($pnpmCommand.FilePath)' --filter '@nextgenchat/backend' start"
+    $webCommand = "$env:PORT='3000'; & '$($pnpmCommand.FilePath)' --filter '@nextgenchat/web' start"
+
+    $backend = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -WorkingDirectory (Get-Location).Path -PassThru -RedirectStandardOutput (Join-Path $logsDir "backend.log") -RedirectStandardError (Join-Path $logsDir "backend.error.log")
+    $web = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $webCommand) -WorkingDirectory (Get-Location).Path -PassThru -RedirectStandardOutput (Join-Path $logsDir "web.log") -RedirectStandardError (Join-Path $logsDir "web.error.log")
 
     while ($true) {
         Start-Sleep -Seconds 2
