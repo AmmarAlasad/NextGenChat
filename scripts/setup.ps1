@@ -1,5 +1,7 @@
 $ErrorActionPreference = "Stop"
 
+$pnpmVersion = "10.33.0"
+
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location (Join-Path $rootDir "..")
 
@@ -32,11 +34,11 @@ function Get-PnpmCommand {
     }
 
     if (Get-Command corepack.cmd -ErrorAction SilentlyContinue) {
-        return @{ FilePath = "corepack.cmd"; PrefixArgs = @("pnpm") }
+        return @{ FilePath = "corepack.cmd"; PrefixArgs = @("pnpm@$pnpmVersion") }
     }
 
     if (Get-Command corepack -ErrorAction SilentlyContinue) {
-        return @{ FilePath = "corepack"; PrefixArgs = @("pnpm") }
+        return @{ FilePath = "corepack"; PrefixArgs = @("pnpm@$pnpmVersion") }
     }
 
     return $null
@@ -79,7 +81,7 @@ if (Get-Command node -ErrorAction SilentlyContinue) { Write-Ok "Node.js is avail
 
 if (Get-Command corepack -ErrorAction SilentlyContinue) {
     corepack enable | Out-Null
-    corepack prepare pnpm@10.33.0 --activate | Out-Null
+    corepack prepare pnpm@$pnpmVersion --activate | Out-Null
 }
 
 if (Get-PnpmCommand) { Write-Ok "pnpm is available" } else { Write-Error "pnpm is required. Install it with: npm install -g pnpm"; exit 1 }
