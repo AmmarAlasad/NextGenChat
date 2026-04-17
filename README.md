@@ -2,7 +2,20 @@
 
 > Local-first collaborative AI agent workspace software with persistent agents, real-time chat, project workspaces, shared files, task decks, browser automation, and multi-provider model support.
 
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
+![Platform: Linux](https://img.shields.io/badge/platform-Linux-blue)
+![Platform: Windows](https://img.shields.io/badge/platform-Windows-blue)
+![Platform: macOS](https://img.shields.io/badge/platform-macOS-blue)
+![Status: Experimental](https://img.shields.io/badge/status-experimental-orange)
+![Local First](https://img.shields.io/badge/local--first-yes-6f42c1)
+
 ![NextGenChat repository image](./assets/repo-image.png)
+
+> ⚠️ **Warning**
+>
+> NextGenChat is a powerful local agent runtime. It can run tools, modify files, browse the web, and automate actions. It is **not** a toy and it is **not** safe to use carelessly.
+>
+> If you do not understand what this software is doing, do **not** run it on important machines, sensitive accounts, production systems, or environments containing secrets.
 
 NextGenChat is an open source platform for people who want AI agents to behave more like durable collaborators than disposable prompt completions.
 
@@ -16,11 +29,17 @@ It is built around a simple idea:
 
 ## Installation
 
-## Platform support
+> 🚨 **Before you install**
+>
+> You are responsible for what this software is allowed to access on your machine.
+>
+> Recommended safe starting point:
+>
+> - use a non-critical machine or VM
+> - do not store secrets in agent or project files
+> - do not connect browser automation to sensitive sessions
+> - review enabled tools before trusting an agent with real work
 
-- Linux: supported
-- Windows: supported
-- macOS: supported
 
 ## One-line install from GitHub
 
@@ -438,6 +457,18 @@ scripts/
 
 This project is powerful, and that means it carries real risk.
 
+> ⚠️ **High-Risk Software Notice**
+>
+> By design, this application can:
+>
+> - read and write files
+> - run shell commands
+> - browse and interact with websites
+> - retain memory and project state
+> - act across shared project workspaces
+>
+> That means incorrect setup, unsafe prompts, bad tool choices, weak boundaries, or malicious instructions can cause real damage.
+
 ### Important risk note
 
 NextGenChat can give agents access to:
@@ -450,6 +481,15 @@ NextGenChat can give agents access to:
 - persistent memory
 
 That means **this application can be dangerous if misconfigured, over-trusted, or deployed carelessly**.
+
+### Examples of what can go wrong
+
+- an agent could overwrite or delete useful files
+- a browser automation task could click, submit, or navigate incorrectly
+- a project agent could change shared project files in ways you did not intend
+- a shell-enabled agent could run commands that modify the local system or repo state
+- imported prompts or documents could steer an agent into unsafe behavior
+- provider credentials, browser sessions, and project data could be exposed if you operate the app carelessly
 
 You should assume the following:
 
@@ -469,6 +509,17 @@ You should assume the following:
 - treat browser automation as high-risk
 - do not store secrets in project or agent files unless you fully understand the consequences
 - use separate environments for experimentation and important work
+- prefer demo/test accounts for automated browser sessions
+- assume any agent with shell or browser access can make expensive mistakes
+- keep backups of important work before testing autonomous flows
+
+### Not recommended
+
+- ❌ running this on a production workstation without understanding the tool surface
+- ❌ giving agents access to personal email, banking, cloud consoles, or sensitive admin sessions
+- ❌ storing private keys, API secrets, or customer data in shared project files
+- ❌ exposing the app to untrusted users without stronger sandboxing and policy controls
+- ❌ assuming the software will prevent all misuse, unsafe prompts, or destructive actions
 
 ## Future plans
 
@@ -488,13 +539,34 @@ Planned future directions include:
 
 This software is provided **as-is**.
 
+> ⚖️ **Liability Notice**
+>
+> By downloading, installing, running, modifying, or distributing this software, you accept that you do so **at your own risk**.
+
 By using this project, you accept that:
 
 - the developers and contributors are **not liable** for misuse of the software
 - the developers and contributors are **not liable** for data loss, security incidents, automation mistakes, browser misuse, prompt injection outcomes, destructive shell actions, or other harmful outcomes caused by use or misuse of the software
 - you are responsible for how you configure, expose, operate, and authorize the system
+- you are responsible for reviewing whether the enabled tools, providers, browser sessions, and file access are appropriate for your environment
+- you are responsible for complying with local law, platform rules, provider terms, and any data-handling obligations that apply to you
+
+Without limiting the generality of the above, the developers and contributors disclaim responsibility for:
+
+- loss of data
+- corrupted files or repositories
+- damaged operating system state
+- unintended browser actions
+- account lockouts or account misuse
+- provider charges or quota consumption
+- prompt injection side effects
+- automation mistakes
+- business interruption
+- indirect, incidental, special, or consequential damages of any kind
 
 This README is not legal advice. You are responsible for assessing whether this software is appropriate for your environment and jurisdiction.
+
+If you do not accept these conditions, do not install or use the software.
 
 ## License
 
