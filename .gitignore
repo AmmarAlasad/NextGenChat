@@ -10,6 +10,7 @@ out/
 # Environment
 .env*
 !.env.example
+.npmrc
 
 # IDE
 .vscode/
