@@ -19,7 +19,7 @@ function Ensure-Repo {
 }
 
 function Wait-NextGenChatStartup {
-    param([int]$TimeoutSeconds = 120)
+    param([int]$TimeoutSeconds = 90)
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
@@ -46,6 +46,58 @@ function Wait-NextGenChatStartup {
     return $false
 }
 
+function Get-NpmCommand {
+    if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { return "npm.cmd" }
+    if (Get-Command npm -ErrorAction SilentlyContinue) { return "npm" }
+    return $null
+}
+
+function Get-PnpmPath {
+    $npmCommand = Get-NpmCommand
+    if (-not $npmCommand) {
+        throw "npm is required to locate pnpm on Windows."
+    }
+
+    $npmPrefix = (& $npmCommand prefix -g).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $npmPrefix) {
+        throw "Could not determine npm global prefix."
+    }
+
+    $pnpmPath = Join-Path $npmPrefix "pnpm.cmd"
+    if (-not (Test-Path $pnpmPath)) {
+        throw "Standalone pnpm.cmd was not found after setup."
+    }
+
+    return $pnpmPath
+}
+
+function Invoke-NativeLogged {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$LogPath,
+        [string]$WorkingDirectory = $repoDir
+    )
+
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Null
+
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        Push-Location $WorkingDirectory
+        & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $LogPath
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+        $ErrorActionPreference = $previousPreference
+    }
+
+    if ($exitCode -ne 0) {
+        throw "Command failed with exit code $exitCode. See $LogPath"
+    }
+}
+
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Error "git is required"
     exit 1
@@ -64,6 +116,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "NextGenChat Windows setup failed with exit code $LASTEXITCODE"
 }
 
+$pnpmPath = Get-PnpmPath
+Invoke-NativeLogged -FilePath $pnpmPath -Arguments @("build") -LogPath (Join-Path $logsDir "build.log")
+
 & powershell -ExecutionPolicy Bypass -File "scripts/service-install.ps1"
 if ($LASTEXITCODE -ne 0) {
     throw "NextGenChat Windows service installation failed with exit code $LASTEXITCODE"
@@ -72,11 +127,13 @@ if ($LASTEXITCODE -ne 0) {
 if (-not (Wait-NextGenChatStartup)) {
     $taskInfo = Get-ScheduledTaskInfo -TaskName "NextGenChat" -ErrorAction SilentlyContinue
     $lastResult = if ($taskInfo) { $taskInfo.LastTaskResult } else { "unknown" }
-    throw "NextGenChat installed the Windows task but the app did not become healthy. Scheduled Task LastTaskResult=$lastResult. Check logs under $logsDir"
+    & schtasks /Query /TN NextGenChat /V /FO LIST | Out-Host
+    throw "NextGenChat was installed, but startup failed. Scheduled Task LastTaskResult=$lastResult. Check logs under $logsDir"
 }
 
 Write-Host ""
-Write-Host "NextGenChat is installed as a Windows Scheduled Task." -ForegroundColor Green
+Write-Host "NextGenChat is running." -ForegroundColor Green
 Write-Host "Frontend: http://localhost:3000"
 Write-Host "Backend:  http://localhost:3001"
+Write-Host "Logs:     $logsDir"
 Write-Host "Task:     $env:WINDIR\System32\schtasks.exe /Query /TN NextGenChat"
