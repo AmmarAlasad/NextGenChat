@@ -108,10 +108,16 @@ pnpm service:remove
 
 ```powershell
 schtasks /Query /TN NextGenChat
-pnpm dev:local:win
+pnpm service:stop:win
 pnpm service:disable:win
 pnpm service:remove:win
 ```
+
+On Windows:
+
+- `pnpm service:stop:win` stops the running app but keeps the scheduled task enabled, so NextGenChat starts again at the next Windows logon.
+- `pnpm service:disable:win` stops the running app and disables automatic startup.
+- `pnpm service:remove:win` stops the running app and removes the `NextGenChat` scheduled task.
 
 ## Development install
 
