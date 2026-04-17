@@ -1,5 +1,5 @@
 {
-  "name": "nextgenchat",
+  "name": "@asapr0/nextgenchat",
   "version": "0.1.0",
   "description": "Local-first collaborative AI agent workspace platform",
   "bin": {

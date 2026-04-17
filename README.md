@@ -66,19 +66,19 @@ irm https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/insta
 ### Linux
 
 ```bash
-npx nextgenchat@latest install
+npx @asapr0/nextgenchat@latest install
 ```
 
 ### macOS
 
 ```bash
-npx nextgenchat@latest install
+npx @asapr0/nextgenchat@latest install
 ```
 
 ### Windows
 
 ```powershell
-npx nextgenchat@latest install
+npx @asapr0/nextgenchat@latest install
 ```
 
 ## What the installer does
