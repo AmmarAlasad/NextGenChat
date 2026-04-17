@@ -26,6 +26,7 @@
     "service:stop": "systemctl --user stop nextgenchat.service",
     "service:disable": "bash scripts/service-disable.sh disable",
     "service:remove": "bash scripts/service-disable.sh remove",
+    "service:stop:win": "powershell -ExecutionPolicy Bypass -File scripts/service-disable.ps1 stop",
     "service:disable:win": "powershell -ExecutionPolicy Bypass -File scripts/service-disable.ps1 disable",
     "service:remove:win": "powershell -ExecutionPolicy Bypass -File scripts/service-disable.ps1 remove",
     "dev:local": "bash scripts/dev.sh",

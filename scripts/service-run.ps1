@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoDir = (Resolve-Path (Join-Path $rootDir "..")).Path
 $logsDir = Join-Path $env:LOCALAPPDATA "NextGenChat\logs"
+$pidFile = Join-Path $env:LOCALAPPDATA "NextGenChat\service-pids.json"
 
 Set-Location $repoDir
 . (Join-Path $rootDir "windows-pnpm.ps1")
@@ -61,8 +62,15 @@ try {
     $backendCommand = "$env:PORT='3001'; & '$pnpmPath' --filter '@nextgenchat/backend' start"
     $webCommand = "$env:PORT='3000'; & '$pnpmPath' --filter '@nextgenchat/web' start"
 
-    $backend = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -WorkingDirectory $repoDir -PassThru -RedirectStandardOutput (Join-Path $logsDir "backend.log") -RedirectStandardError (Join-Path $logsDir "backend.error.log")
-    $web = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $webCommand) -WorkingDirectory $repoDir -PassThru -RedirectStandardOutput (Join-Path $logsDir "web.log") -RedirectStandardError (Join-Path $logsDir "web.error.log")
+    $backend = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -WindowStyle Hidden -WorkingDirectory $repoDir -PassThru -RedirectStandardOutput (Join-Path $logsDir "backend.log") -RedirectStandardError (Join-Path $logsDir "backend.error.log")
+    $web = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", $webCommand) -WindowStyle Hidden -WorkingDirectory $repoDir -PassThru -RedirectStandardOutput (Join-Path $logsDir "web.log") -RedirectStandardError (Join-Path $logsDir "web.error.log")
+
+    @{
+        runner = $PID
+        backend = $backend.Id
+        web = $web.Id
+        startedAt = (Get-Date).ToString("o")
+    } | ConvertTo-Json | Set-Content -Path $pidFile -Encoding UTF8
 
     while ($true) {
         Start-Sleep -Seconds 2
@@ -77,6 +85,8 @@ try {
     }
 }
 finally {
+    Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+
     if ($backend -and -not $backend.HasExited) {
         Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
     }
