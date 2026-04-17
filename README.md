@@ -94,34 +94,49 @@ Windows local runtime data defaults to:
 
 ## Useful commands after install
 
+After install, these commands are available:
+
+```bash
+nextgenchat --help
+ngc --help
+ngc --status
+ngc --stop
+ngc --uninstall
+```
+
+`nextgenchat` and `ngc` are the same command. Use whichever is easier to remember.
+
 ### Linux
 
 ```bash
-systemctl --user status nextgenchat.service
-journalctl --user -u nextgenchat.service -f
-pnpm stop
-pnpm service:disable
-pnpm service:remove
+ngc --status
+ngc --logs
+ngc --stop
+ngc --disable
+ngc --uninstall
+ngc --uninstall --remove-data
 ```
 
 ### Windows
 
 ```powershell
-schtasks /Query /TN NextGenChat
-powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" stop
-powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" disable
-powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" remove
-powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" remove -RemoveData
+ngc --status
+ngc --logs
+ngc --stop
+ngc --disable
+ngc --uninstall
+ngc --uninstall --remove-data
 ```
 
-On Windows:
+On Linux and Windows:
 
-- `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" stop` stops the running app but keeps the scheduled task enabled, so NextGenChat starts again at the next Windows logon.
-- `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" disable` stops the running app and disables automatic startup.
-- `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" remove` stops the running app, removes the `NextGenChat` scheduled task, and asks whether to keep or delete local data.
-- `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\NextGenChat\scripts\service-disable.ps1" remove -RemoveData` uninstalls and deletes local data without prompting.
+- `ngc --stop` stops the running app but keeps automatic startup enabled.
+- `ngc --disable` stops the running app and disables automatic startup.
+- `ngc --uninstall` stops the running app, removes the background service, and asks whether to keep or delete local data.
+- `ngc --uninstall --keep-data` uninstalls and keeps local data without prompting.
+- `ngc --uninstall --remove-data` uninstalls and deletes local data without prompting.
 
-Local data includes conversations, the local database, logs, and agent workspaces under `%LOCALAPPDATA%/NextGenChat`.
+Local data includes conversations, the local database, logs, and agent workspaces under `%LOCALAPPDATA%/NextGenChat` on Windows and `~/.nextgenchat` on Linux.
 
 ## Development install
 

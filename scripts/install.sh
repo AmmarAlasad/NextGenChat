@@ -42,6 +42,29 @@ ensure_repo() {
   printf '%s\n' "$INSTALL_DIR"
 }
 
+install_command_shims() {
+  local bin_dir="${NEXTGENCHAT_BIN_DIR:-$HOME/.local/bin}"
+  mkdir -p "$bin_dir"
+
+  cat > "$bin_dir/nextgenchat" <<EOF
+#!/usr/bin/env bash
+exec node "$REPO_DIR/bin/nextgenchat.js" "\$@"
+EOF
+
+  cat > "$bin_dir/ngc" <<EOF
+#!/usr/bin/env bash
+exec node "$REPO_DIR/bin/nextgenchat.js" "\$@"
+EOF
+
+  chmod +x "$bin_dir/nextgenchat" "$bin_dir/ngc"
+
+  echo "Installed commands: nextgenchat, ngc"
+  case ":$PATH:" in
+    *":$bin_dir:"*) ;;
+    *) echo "Note: add $bin_dir to PATH if your shell cannot find nextgenchat or ngc." >&2 ;;
+  esac
+}
+
 command -v git >/dev/null 2>&1 || { echo "git is required"; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "Node.js 20+ is required"; exit 1; }
 
@@ -56,6 +79,7 @@ if [ -f "$STATE_FILE_NAME" ]; then
 fi
 
 bash scripts/setup.sh
+install_command_shims
 
 CURRENT_STATE="$(compute_install_state)"
 
@@ -71,5 +95,7 @@ echo
 echo "NextGenChat is installed as a user service."
 echo "Frontend: http://localhost:3000"
 echo "Backend:  http://localhost:3001"
+echo "Command:  nextgenchat --help"
+echo "Alias:    ngc --help"
 echo "Status:   systemctl --user status nextgenchat.service"
 echo "Logs:     journalctl --user -u nextgenchat.service -f"

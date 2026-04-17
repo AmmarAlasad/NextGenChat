@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "description": "Local-first collaborative AI agent workspace platform",
   "bin": {
-    "nextgenchat": "./bin/nextgenchat.js"
+    "nextgenchat": "./bin/nextgenchat.js",
+    "ngc": "./bin/nextgenchat.js"
   },
   "files": [
     "bin",

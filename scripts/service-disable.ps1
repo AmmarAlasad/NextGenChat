@@ -11,7 +11,6 @@ $taskName = "NextGenChat"
 $mode = if ($Mode) { $Mode } elseif ($args.Length -gt 0) { $args[0] } else { "disable" }
 $runtimeDir = Join-Path $env:LOCALAPPDATA "NextGenChat"
 $pidFile = Join-Path $runtimeDir "service-pids.json"
-$installDir = Join-Path $env:USERPROFILE "NextGenChat"
 
 function Stop-NextGenChatProcesses {
     $processIds = New-Object System.Collections.Generic.List[int]
@@ -34,8 +33,6 @@ function Stop-NextGenChatProcesses {
 
     $matchingProcesses = Get-CimInstance Win32_Process | Where-Object {
         $_.ProcessId -ne $PID -and (
-            $_.CommandLine -like "*$installDir*" -or
-            $_.CommandLine -like "*$runtimeDir*" -or
             $_.CommandLine -like "*@nextgenchat/backend*start*" -or
             $_.CommandLine -like "*@nextgenchat/web*start*"
         )

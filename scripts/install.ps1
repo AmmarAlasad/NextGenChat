@@ -117,6 +117,29 @@ function Invoke-NativeLogged {
     }
 }
 
+function Install-CommandShims {
+    $npmPrefix = Get-NpmGlobalPrefix
+    if (-not $npmPrefix) {
+        Write-Warning "Could not determine npm global prefix; skipping nextgenchat/ngc command shims."
+        return
+    }
+
+    New-Item -ItemType Directory -Force -Path $npmPrefix | Out-Null
+
+    $nodePath = (Get-Command node -ErrorAction Stop).Source
+    $cliPath = Join-Path $repoDir "bin\nextgenchat.js"
+
+    foreach ($commandName in @("nextgenchat", "ngc")) {
+        $cmdPath = Join-Path $npmPrefix "$commandName.cmd"
+        $psPath = Join-Path $npmPrefix "$commandName.ps1"
+
+        Set-Content -Path $cmdPath -Encoding ASCII -Value "@echo off`r`n`"$nodePath`" `"$cliPath`" %*`r`n"
+        Set-Content -Path $psPath -Encoding UTF8 -Value "& `"$nodePath`" `"$cliPath`" @args`n"
+    }
+
+    Write-Host "Installed commands: nextgenchat, ngc" -ForegroundColor Green
+}
+
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Error "git is required"
     exit 1
@@ -142,6 +165,7 @@ $pnpmPath = Get-PnpmPath
 if (-not $pnpmPath) {
     throw "pnpm is unavailable after setup. Re-run the installer from a new PowerShell window or check $logsDir."
 }
+Install-CommandShims
 Invoke-NativeLogged -FilePath $pnpmPath -Arguments @("build") -LogPath (Join-Path $logsDir "build.log")
 
 & powershell -ExecutionPolicy Bypass -File "scripts/service-install.ps1"
