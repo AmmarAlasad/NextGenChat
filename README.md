@@ -1,6 +1,6 @@
 # NextGenChat
 
-> Local-first collaborative AI agent workspace software with persistent agents, real-time chat, project workspaces, shared files, task decks, browser automation, and multi-provider model support.
+> A local-first workspace for collaborating with persistent AI agents that have memory, tools, files, and project context.
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-blue)
@@ -11,196 +11,184 @@
 
 ![NextGenChat repository image](./assets/repo-image.png)
 
-> ⚠️ **Warning**
->
-> NextGenChat is a powerful local agent runtime. It can run tools, modify files, browse the web, and automate actions. It is **not** a toy and it is **not** safe to use carelessly.
->
-> If you do not understand what this software is doing, do **not** run it on important machines, sensitive accounts, production systems, or environments containing secrets.
+NextGenChat is for people who want AI agents to behave less like disposable chat tabs and more like durable collaborators.
 
-NextGenChat is an open source platform for people who want AI agents to behave more like durable collaborators than disposable prompt completions.
+Instead of giving you one long prompt window, it gives you:
 
-It is built around a simple idea:
+- **persistent agents** with identity, memory, and private workspace state
+- **project workspaces** with shared files, channels, and task tracking
+- **real-time chat** with streamed replies, tool calls, and execution updates
+- **operator control** over what agents can do, where they work, and how they are configured
 
-- an agent should have identity
-- an agent should have durable memory and private state
-- a project should have shared context and shared files
-- work should be trackable through tickets, not lost in one long transcript
-- the operator should be able to inspect, interrupt, and guide agent execution
+## Why this exists
 
-## Installation
+A lot of current AI tooling breaks down the moment work gets bigger than a single conversation.
 
-> 🚨 **Before you install**
->
-> You are responsible for what this software is allowed to access on your machine.
->
-> Recommended safe starting point:
->
-> - use a non-critical machine or VM
-> - do not store secrets in agent or project files
-> - do not connect browser automation to sensitive sessions
-> - review enabled tools before trusting an agent with real work
+You end up juggling:
 
+- multiple agent instances by hand
+- lost context across chats
+- no durable workspace per agent
+- no shared project memory
+- no clear way to inspect, interrupt, or coordinate agent work
 
-## One-line install from GitHub
+NextGenChat is an attempt to fix that.
 
-### Linux
+## What makes it different
+
+NextGenChat is built around a simple idea:
+
+**an agent should be a long-lived workspace participant, not just a prompt response.**
+
+That means agents can have:
+
+- their own identity and behavior
+- durable memory and markdown-based workspace docs
+- tools and execution capabilities
+- access to project-level shared context
+- tickets and work status inside a project
+- operator-visible execution, not hidden black-box behavior
+
+## What you can do with it
+
+### Talk to persistent agents
+- direct chat with individual agents
+- group chat with multiple agents
+- streamed responses and visible progress updates
+- stop running agents when needed
+
+![Group chat screenshot](./assets/group-chat.png)
+
+### Give agents real working context
+- agent-private workspace docs like identity, memory, and user notes
+- project workspaces with shared files and deliverables
+- project-aware execution when agents work inside a project channel
+
+![Agent workspace screenshot](./assets/agent-workspace.png)
+
+### Organize work as projects
+- create projects and project channels
+- upload shared project files
+- keep shared specs and artifacts in one place
+- manage project tickets through a deck UI
+
+![Project files upload screenshot](./assets/project-files-upload.png)
+
+### Track work with a task deck
+- `TODO`
+- `ASSIGNED`
+- `IN_PROGRESS`
+- `DONE`
+- `BLOCKED`
+- `CANCELLED`
+
+Current workflow supports:
+- manual assignment
+- auto-claim behavior for matching work
+- in-progress ownership by agents
+- project-channel completion updates
+- drag-and-drop deck movement in the UI
+
+![Project deck screenshot](./assets/project-deck.png)
+
+### Connect different model providers
+Currently supported:
+- OpenAI
+- OpenAI Codex OAuth
+- Anthropic
+- Kimi
+- OpenRouter
+
+You can configure providers globally and choose models per agent.
+
+![Provider settings screenshot](./assets/provider-settings.png)
+
+### Let agents use tools
+Built-in capabilities include:
+- workspace file read/write/search
+- shell execution in the agent workspace
+- project file tools
+- project ticket tools
+- todo/task tools
+- web search and web fetch
+- skill activation and installation
+- scheduling tools
+- file send-back into chat
+- browser automation via MCP-backed tooling
+
+## Who this is for
+
+NextGenChat is especially interesting if you want one of these:
+
+- a **local-first AI workspace**
+- a way to run **multiple persistent agents** without manually juggling separate instances
+- a system where agents can work with **shared project files and tickets**
+- a more operational, inspectable alternative to “just another AI chat app”
+- a foundation for **multi-agent workflows** with stronger operator control
+
+## Quick start
+
+> **Important:** this is powerful software. It can read files, write files, run tools, and automate actions. Start on a machine you control, ideally a non-critical one.
+
+### Install from npm
+
+#### Linux / macOS
+
+```bash
+npx @asapr0/nextgenchat@latest install
+```
+
+#### Windows
+
+```powershell
+npx @asapr0/nextgenchat@latest install
+```
+
+### Install from GitHub scripts
+
+#### Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install.sh | bash
 ```
 
-### macOS
+#### macOS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install-macos.sh | bash
 ```
 
-### Windows
+#### Windows
 
 ```powershell
 irm https://raw.githubusercontent.com/AmmarAlasad/NextGenChat/main/scripts/install.ps1 | iex
 ```
 
-## One-line install from npm
+## After install
 
-### Linux
+The CLI is available as both:
 
-```bash
-npx @asapr0/nextgenchat@latest install
-```
+- `nextgenchat`
+- `ngc`
 
-### macOS
-
-```bash
-npx @asapr0/nextgenchat@latest install
-```
-
-### Windows
-
-```powershell
-npx @asapr0/nextgenchat@latest install
-```
-
-## What the installer does
-
-### Linux install path
-
-The Linux installer:
-
-- clones or updates the repo
-- creates `.env` from `.env.example`
-- generates local secrets
-- installs dependencies
-- syncs Prisma
-- installs a `systemd --user` service
-- enables user lingering when possible so the user service survives reboot
-- starts the frontend and backend stack
-
-### macOS install path
-
-The macOS installer:
-
-- clones or updates the repo
-- creates `.env` from `.env.example`
-- generates local secrets
-- installs dependencies
-- syncs Prisma
-- installs a LaunchAgent called `com.nextgenchat.local`
-- starts the frontend and backend stack in the background
-- restarts the app when you log in again
-
-### Windows install path
-
-The Windows installer:
-
-- clones or updates the repo
-- creates `.env`
-- installs dependencies
-- syncs Prisma
-- installs a Windows Scheduled Task called `NextGenChat`
-- starts the stack through that scheduled task
-
-### Runtime data locations
-
-Linux local runtime data defaults to:
-
-- `~/.nextgenchat/dev.db`
-- `~/.nextgenchat/agent-workspaces/`
-- `~/.nextgenchat/project-workspaces/`
-- `~/.nextgenchat/install/`
-
-macOS local runtime data defaults to:
-
-- `~/.nextgenchat/dev.db`
-- `~/.nextgenchat/agent-workspaces/`
-- `~/.nextgenchat/project-workspaces/`
-- `~/.nextgenchat/install/`
-- `~/Library/LaunchAgents/com.nextgenchat.local.plist`
-- `~/Library/Logs/NextGenChat/`
-
-Windows local runtime data defaults to:
-
-- `%LOCALAPPDATA%/NextGenChat/dev.db`
-- `%LOCALAPPDATA%/NextGenChat/agent-workspaces/`
-
-## Useful commands after install
-
-After install, these commands are available:
+Useful commands:
 
 ```bash
-nextgenchat --help
 ngc --help
 ngc --status
-ngc --stop
-ngc --uninstall
-```
-
-`nextgenchat` and `ngc` are the same command. Use whichever is easier to remember.
-
-### Linux
-
-```bash
-ngc --status
 ngc --logs
 ngc --stop
 ngc --disable
 ngc --uninstall
-ngc --uninstall --remove-data
 ```
 
-### macOS
+On all supported platforms:
+- `ngc --stop` stops the app but keeps auto-start enabled
+- `ngc --disable` stops it and disables automatic startup
+- `ngc --uninstall` removes the service and CLI wiring
+- `ngc --uninstall --remove-data` also deletes local runtime data
 
-```bash
-ngc --status
-ngc --logs
-ngc --stop
-ngc --disable
-ngc --uninstall
-ngc --uninstall --remove-data
-```
-
-### Windows
-
-```powershell
-ngc --status
-ngc --logs
-ngc --stop
-ngc --disable
-ngc --uninstall
-ngc --uninstall --remove-data
-```
-
-On Linux, macOS, and Windows:
-
-- `ngc --stop` stops the running app but keeps automatic startup enabled.
-- `ngc --disable` stops the running app and disables automatic startup.
-- `ngc --uninstall` stops the running app, removes the background service and the `ngc` / `nextgenchat` commands, and asks whether to keep or delete local data.
-- `ngc --uninstall --keep-data` uninstalls and keeps local data without prompting.
-- `ngc --uninstall --remove-data` uninstalls and deletes local data without prompting.
-
-Local data includes conversations, the local database, logs, and agent workspaces under `%LOCALAPPDATA%/NextGenChat` on Windows and `~/.nextgenchat` on Linux and macOS.
-
-## Development install
+## Development
 
 ```bash
 git clone https://github.com/AmmarAlasad/NextGenChat.git
@@ -218,204 +206,13 @@ pnpm setup:local:win
 pnpm dev:local:win
 ```
 
-macOS service install from a cloned repo:
+macOS local service install from a cloned repo:
 
 ```bash
 pnpm install:local:macos
 ```
 
-## What NextGenChat already supports
-
-## Core product capabilities
-
-- owner setup and login
-- direct chats with agents
-- group chats with multiple agents
-- projects and project channels
-- per-project shared workspaces
-- project file uploads and shared artifacts
-- project task deck / ticket board
-- drag-and-drop ticket status management
-- real-time streamed agent replies
-- live tool calls during execution
-- live todo/task updates during execution
-- stop controls for active agents
-- file upload in chat
-- clipboard image paste
-- agent file send-back to chat
-- browser automation tools via MCP
-- project-aware and agent-aware workspaces
-- multi-provider LLM support
-- context compaction and token budgeting
-- provider usage status in settings
-
-![Group chat screenshot](./assets/group-chat.png)
-
-## Agents
-
-NextGenChat lets you create and manage agents as durable entities.
-
-You can:
-
-- create agents
-- edit agent names and behavior
-- choose per-agent providers and models
-- change trigger mode and status
-- enable browser automation per agent
-- manage the agent in a dedicated admin screen
-
-### Agent trigger modes
-
-- `AUTO`
-- `WAKEUP`
-- `MENTIONS_ONLY`
-- `ALL_MESSAGES`
-- `DISABLED`
-
-### Agent statuses
-
-- `ACTIVE`
-- `PAUSED`
-- `ARCHIVED`
-
-### Agent private workspace
-
-Every agent has a private workspace and durable docs such as:
-
-- `agent.md`
-- `identity.md`
-- `soul.md`
-- `user.md`
-- `memory.md`
-- `Heartbeat.md`
-- `wakeup.md`
-- `pickup.md`
-
-These files are used to keep the agent stable across time and across chat compaction.
-
-![Agent workspace screenshot](./assets/agent-workspace.png)
-
-## Projects
-
-NextGenChat lets you create **projects** and use them as shared workspaces for people and agents.
-
-Each project can include:
-
-- project-level `project.md`
-- project shared files
-- project channels
-- project ticket deck
-- shared deliverables
-- shared execution context for project agents
-
-This is one of the most important parts of the app: agents are not only isolated personal assistants, they can also work together inside shared project spaces.
-
-### Project workspace behavior
-
-NextGenChat distinguishes between:
-
-- **agent-private workspace**
-- **project workspace**
-
-When an agent is in a project channel, it is instructed to prefer the **project workspace** for shared user files, project specs, project deliverables, and shared artifacts.
-
-The agent workspace remains the place for:
-
-- `Heartbeat.md`
-- `memory.md`
-- `user.md`
-- private working notes
-
-![Project files upload screenshot](./assets/project-files-upload.png)
-
-## Ticket deck / work management
-
-Projects include a task deck with ticket states such as:
-
-- `TODO`
-- `ASSIGNED`
-- `IN_PROGRESS`
-- `DONE`
-- `BLOCKED`
-- `CANCELLED`
-
-Current workflow supports:
-
-- manual assignment by the user
-- auto-claim behavior when agents evaluate whether a ticket fits their role
-- agent ownership of in-progress work
-- project-channel completion updates
-- drag-and-drop deck movement in the UI
-
-![Project deck screenshot](./assets/project-deck.png)
-
-## Providers
-
-NextGenChat currently supports these providers:
-
-- OpenAI
-- OpenAI Codex OAuth
-- Anthropic
-- Kimi
-- OpenRouter
-
-### Provider configuration model
-
-- global provider settings
-- per-agent provider selection
-- provider usage status cards
-- setup-time provider choice for the initial agent
-- fallback provider support
-
-![Provider settings screenshot](./assets/provider-settings.png)
-
-### Provider auth types
-
-- API key providers:
-  - OpenAI
-  - Anthropic
-  - Kimi
-  - OpenRouter
-- OAuth provider:
-  - OpenAI Codex via ChatGPT OAuth
-
-## Browser automation / MCP
-
-Browser automation is available per agent through MCP-backed tools.
-
-Current browser automation design:
-
-- opt-in per agent
-- workspace-scoped automation server
-- isolated Playwright MCP-backed browser profile per workspace
-
-That means the automation browser is intentionally separate from the tab where the operator is using NextGenChat.
-
-## Built-in agent tool capabilities
-
-The platform includes a substantial built-in tool surface.
-
-Examples include:
-
-- workspace file read/write/search
-- shell execution inside the agent workspace
-- project shared file tools
-- project ticket tools
-- todo/task tools
-- web search and fetch tools
-- browser automation MCP tools
-- skill activation and installation
-- scheduling tools
-- file send-back into chat
-
-The canonical tool definitions live in:
-
-- `apps/backend/src/modules/agents/default-agent-tools.ts`
-- `apps/backend/src/modules/tools/tool-registry.service.ts`
-
-
-
-## Architecture overview
+## Architecture at a glance
 
 ### Monorepo layout
 
@@ -428,145 +225,75 @@ apps/
 packages/
   types/     shared zod schemas and TypeScript contracts
   config/    shared lint/typescript config
-
-scripts/
-  setup.sh / setup.ps1
-  install.sh / install.ps1
-  service-install.sh / service-install.ps1
-  service-run.sh / service-run.ps1
-  dev.sh / dev.ps1
 ```
 
-### Backend stack
+### Stack
 
-- Node.js + TypeScript
+**Frontend**
+- Next.js
+- React
+- TypeScript
+- Socket.io client
+
+**Backend**
+- Node.js
 - Fastify
 - Socket.io
 - Prisma
 - SQLite in local mode
-- optional Redis/BullMQ in shared/cloud-oriented modes
 
-### Frontend stack
+## Safety and trust model
 
-- Next.js App Router
-- TypeScript
-- Socket.io client
-- dedicated chat, agent, project, and settings surfaces
+NextGenChat is intentionally powerful. That is a feature, but also a risk.
 
-## Security, risk, and operational warnings
+It may be able to:
+- read and write files
+- run shell commands
+- browse the web
+- automate browser actions
+- retain memory and workspace state
+- act in shared project contexts
 
-This project is powerful, and that means it carries real risk.
+So the right way to use it is:
 
-> ⚠️ **High-Risk Software Notice**
->
-> By design, this application can:
->
-> - read and write files
-> - run shell commands
-> - browse and interact with websites
-> - retain memory and project state
-> - act across shared project workspaces
->
-> That means incorrect setup, unsafe prompts, bad tool choices, weak boundaries, or malicious instructions can cause real damage.
-
-### Important risk note
-
-NextGenChat can give agents access to:
-
-- local files
-- project files
-- browser automation
-- shell execution
-- web access
-- persistent memory
-
-That means **this application can be dangerous if misconfigured, over-trusted, or deployed carelessly**.
-
-### Examples of what can go wrong
-
-- an agent could overwrite or delete useful files
-- a browser automation task could click, submit, or navigate incorrectly
-- a project agent could change shared project files in ways you did not intend
-- a shell-enabled agent could run commands that modify the local system or repo state
-- imported prompts or documents could steer an agent into unsafe behavior
-- provider credentials, browser sessions, and project data could be exposed if you operate the app carelessly
-
-You should assume the following:
-
-- agents can make mistakes
-- prompts can be adversarial
-- imported files can contain unsafe instructions or sensitive content
-- browser automation can perform unintended actions
-- shell access can modify files or execute commands
-- project agents can affect shared workspaces and project artifacts
-
-### Recommended safe usage
-
-- run it on machines you control
-- do not expose it publicly without understanding the security model
-- do not grant excessive filesystem access
-- review enabled tools per agent
-- treat browser automation as high-risk
-- do not store secrets in project or agent files unless you fully understand the consequences
-- use separate environments for experimentation and important work
-- prefer demo/test accounts for automated browser sessions
-- assume any agent with shell or browser access can make expensive mistakes
-- keep backups of important work before testing autonomous flows
+- start on a machine you control
+- avoid sensitive accounts and sessions at first
+- do not store secrets carelessly in agent or project files
+- review enabled tools before trusting an agent with real work
+- assume agents can make mistakes
 
 ### Not recommended
+- running this on a critical production workstation without understanding the tool surface
+- giving agents access to banking, personal email, cloud admin, or sensitive business systems
+- exposing the app publicly without stronger sandboxing and policy controls
+- treating autonomous tool use as risk-free
 
-- ❌ running this on a production workstation without understanding the tool surface
-- ❌ giving agents access to personal email, banking, cloud consoles, or sensitive admin sessions
-- ❌ storing private keys, API secrets, or customer data in shared project files
-- ❌ exposing the app to untrusted users without stronger sandboxing and policy controls
-- ❌ assuming the software will prevent all misuse, unsafe prompts, or destructive actions
+## Current status
 
-## Future plans
+NextGenChat is already substantial, but it is still **experimental**.
 
-The project already does a lot, but more work is planned.
+That means:
+- the core direction is real
+- many important features already exist
+- the project is usable and promising
+- but it is still being hardened, refined, and expanded
 
-Planned future directions include:
+## Roadmap direction
 
-- importing external coding agents such as **OpenAI Codex** and **Claude Code** as agents inside chat
-- stronger security-focused implementation throughout the stack
-- more agent isolation and restrictions
-- stricter tool sandboxes
-- stronger workspace boundaries
-- more production-hardening and release packaging
-- richer mobile and multi-user support over time
+Planned and ongoing areas of improvement include:
+- stronger security boundaries
+- more isolation and sandboxing
+- richer multi-agent collaboration flows
+- better production hardening
+- better packaging and operator UX
+- deeper mobile and multi-user support over time
 
-## Legal and responsibility notice
+## If you want to understand it faster
 
-This software is provided **as-is**.
-
-> ⚖️ **Liability Notice**
->
-> By downloading, installing, running, modifying, or distributing this software, you accept that you do so **at your own risk**.
-
-By using this project, you accept that:
-
-- the developers and contributors are **not liable** for misuse of the software
-- the developers and contributors are **not liable** for data loss, security incidents, automation mistakes, browser misuse, prompt injection outcomes, destructive shell actions, or other harmful outcomes caused by use or misuse of the software
-- you are responsible for how you configure, expose, operate, and authorize the system
-- you are responsible for reviewing whether the enabled tools, providers, browser sessions, and file access are appropriate for your environment
-- you are responsible for complying with local law, platform rules, provider terms, and any data-handling obligations that apply to you
-
-Without limiting the generality of the above, the developers and contributors disclaim responsibility for:
-
-- loss of data
-- corrupted files or repositories
-- damaged operating system state
-- unintended browser actions
-- account lockouts or account misuse
-- provider charges or quota consumption
-- prompt injection side effects
-- automation mistakes
-- business interruption
-- indirect, incidental, special, or consequential damages of any kind
-
-This README is not legal advice. You are responsible for assessing whether this software is appropriate for your environment and jurisdiction.
-
-If you do not accept these conditions, do not install or use the software.
+Start here:
+- [`docs/architecture.md`](./docs/architecture.md)
+- [`architecture.pdf`](./architecture.pdf)
+- [`architecture.puml`](./architecture.puml)
 
 ## License
 
