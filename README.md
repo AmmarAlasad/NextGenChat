@@ -11,6 +11,16 @@
 
 ![NextGenChat repository image](./assets/repo-image.png)
 
+> ⚠️ **Warning**
+>
+> NextGenChat is powerful software. It can read files, write files, run tools, browse the web, and automate actions depending on how you configure it.
+>
+> It is **not** a toy, and it is **not** something you should run carelessly on important machines, sensitive accounts, production systems, or environments containing secrets.
+>
+> If you install, run, modify, or expose this software, you do so **at your own risk**.
+>
+> You are responsible for how it is configured, what it can access, which tools are enabled, and what consequences follow from using it.
+
 NextGenChat is for people who want AI agents to behave less like disposable chat tabs and more like durable collaborators.
 
 Instead of giving you one long prompt window, it gives you:
@@ -242,11 +252,11 @@ packages/
 - Prisma
 - SQLite in local mode
 
-## Safety and trust model
+## Safety, risk, and responsibility
 
 NextGenChat is intentionally powerful. That is a feature, but also a risk.
 
-It may be able to:
+Depending on configuration, it may be able to:
 - read and write files
 - run shell commands
 - browse the web
@@ -254,19 +264,44 @@ It may be able to:
 - retain memory and workspace state
 - act in shared project contexts
 
-So the right way to use it is:
+That means misuse, bad configuration, weak boundaries, unsafe prompts, imported malicious content, or simple agent mistakes can cause real damage.
 
+You should assume the following:
+- agents can make mistakes
+- prompts can be adversarial
+- imported files can contain unsafe instructions
+- browser automation can perform unintended actions
+- shell access can modify or damage local state
+- shared project context can affect more than one conversation
+
+### Use at your own risk
+
+By installing, running, modifying, or distributing this software, you accept that you do so **at your own risk**.
+
+The authors and contributors are **not liable** for misuse of the software, operator mistakes, unsafe configuration, prompt injection outcomes, automation mistakes, data loss, damaged files, damaged repositories, account misuse, provider charges, or other harmful outcomes resulting from use or misuse.
+
+You are responsible for:
+- how the software is configured and exposed
+- which tools and permissions agents receive
+- which accounts, files, browsers, and services it can access
+- whether your environment is appropriate for autonomous or semi-autonomous execution
+- complying with applicable laws, policies, terms, and data-handling obligations
+
+### Recommended safe usage
 - start on a machine you control
-- avoid sensitive accounts and sessions at first
+- prefer a non-critical machine or VM at first
+- avoid sensitive accounts and sessions initially
 - do not store secrets carelessly in agent or project files
 - review enabled tools before trusting an agent with real work
-- assume agents can make mistakes
+- keep backups before testing powerful autonomous flows
+- assume any agent with shell or browser access can make expensive mistakes
 
 ### Not recommended
 - running this on a critical production workstation without understanding the tool surface
 - giving agents access to banking, personal email, cloud admin, or sensitive business systems
 - exposing the app publicly without stronger sandboxing and policy controls
 - treating autonomous tool use as risk-free
+- assuming the software will prevent all misuse or unsafe behavior
 
 ## Current status
 
